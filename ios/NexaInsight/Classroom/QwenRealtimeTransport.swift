@@ -15,7 +15,10 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     private var channel: RTCDataChannel?
     private var instructions = ""
     private var onEvent: ((RealtimeEvent) -> Void)?
-    let remoteAudioTrack = AsyncStream<RTCAudioTrack>.makeStream()
+    // nonisolated: the remote track arrives on RTCPeerConnectionDelegate
+    // callbacks, which are not main-actor. An immutable stream needs no
+    // isolation, and the consumer awaits it from wherever it likes.
+    nonisolated let remoteAudioTrack = AsyncStream<RTCAudioTrack>.makeStream()
 
     override init() {
         RTCInitializeSSL()

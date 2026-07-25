@@ -4,12 +4,21 @@ options:
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
+packages:
+  # Prebuilt WebRTC xcframework (binary target). Supplies the real
+  # QwenRealtimeTransport path; without it the app compiles against the stub
+  # in QwenRealtimeTransport.swift that throws NotIntegrated on connect.
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    exactVersion: "150.0.0"
 targets:
   NexaInsight:
     type: application
     platform: iOS
     sources:
       - path: NexaInsight
+    dependencies:
+      - package: WebRTC
     info:
       path: NexaInsight/Info.plist
       properties:
