@@ -25,6 +25,28 @@ final class LiveClassSessionTests: XCTestCase {
         XCTAssertTrue(text.contains("Classroom material:"))
     }
 
+    func testNoticeClearsItself() async throws {
+        let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
+                                       episodeId: 1, playback: FakePlayback())
+        session.noticeLifetime = .milliseconds(60)
+        session.showNotice("Paused at 1:20")
+        XCTAssertEqual(session.notice, "Paused at 1:20")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(session.notice, "", "a playback notice is transient")
+    }
+
+    // A later notice must not be cleared early by the previous one's timer.
+    func testLatestNoticeOwnsItsFullLifetime() async throws {
+        let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
+                                       episodeId: 1, playback: FakePlayback())
+        session.noticeLifetime = .milliseconds(120)
+        session.showNotice("Paused at 1:20")
+        try await Task.sleep(for: .milliseconds(80))
+        session.showNotice("Podcast playing")
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(session.notice, "Podcast playing", "the first timer must not clear the second notice")
+    }
+
     func testContextForBuildsWindowAtPosition() throws {
         let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
                                        episodeId: 1, playback: FakePlayback())

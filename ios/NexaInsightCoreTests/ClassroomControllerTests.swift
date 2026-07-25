@@ -84,6 +84,19 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertEqual(playback.seeks.last, 2000)
     }
 
+    // Bringing the teacher in must NOT interrupt the source: a fresh controller
+    // starts in podcastPlaying with a live cursor, and touches playback not at
+    // all. Only the learner speaking freezes it (see testSpeechStartedFreezes...).
+    // Regression guard — an earlier version froze the podcast at connect time.
+    func testFreshControllerLeavesPlaybackAlone() {
+        let (c, playback, _, _) = make()
+        XCTAssertEqual(c.state.phase, .podcastPlaying)
+        XCTAssertNil(c.frozenPositionMs)
+        XCTAssertFalse(playback.didPause, "joining must not pause the source")
+        XCTAssertFalse(playback.didPlay)
+        XCTAssertTrue(playback.seeks.isEmpty, "joining must not move playback")
+    }
+
     func testToolCallEventRunsToolAndAcks() {
         let (c, playback, transport, _) = make()
         c.handleRealtimeEvent(.toolCall(name: .pause_playback, args: [:], callId: "abc"))

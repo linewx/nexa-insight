@@ -12,10 +12,7 @@ struct StudyView: View {
     @State private var query = ""
     @State private var shadowingSentence: SentenceDTO?
     @State private var liveSession: LiveClassSession?
-    @State private var discussionAnchor: SentenceDTO?
-    @State private var insightNotice: String?
     private let sentences: [SentenceDTO]
-    private let chapters: [ChapterDTO]
     private let episode: EpisodeDTO?
 
     init(episodeId: Int, store: EpisodeStore, backendBaseURL: URL) {
@@ -23,7 +20,6 @@ struct StudyView: View {
         self.store = store
         self.backendBaseURL = backendBaseURL
         self.sentences = store.sentences(for: episodeId)
-        self.chapters = store.chapters(for: episodeId)
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
         let relative = store.localAudioPath(for: episodeId) ?? "audio/\(episodeId).mp3"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -36,27 +32,21 @@ struct StudyView: View {
     var body: some View {
         StudyWorkspace(
             episode: episode,
-            chapters: chapters,
-            sentences: sentences,
             visible: visible,
             current: current,
-            selected: discussionAnchor,
             query: $query,
             audioRefreshState: audioRefreshState,
             following: vm.following,
             player: player,
             onSentenceTap: { sentence in
-                discussionAnchor = sentence
                 player.seek(sentence.startMs)
                 player.play()
             },
             onShadow: { sentence in shadowingSentence = sentence },
             onSync: { vm.syncNow() },
             onRefreshAudio: { Task { await refreshAudio() } },
-            onTalk: { startDiscussion(anchor: discussionAnchor ?? current) },
+            onTalk: startDiscussion,
             discussionSession: liveSession,
-            onStartDiscussion: { startDiscussion(anchor: $0) },
-            onSaveInsight: saveInsight,
             onEndDiscussion: endDiscussion
         )
         .navigationBarTitleDisplayMode(.inline)
@@ -65,19 +55,6 @@ struct StudyView: View {
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
                 ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if let insightNotice {
-                Text(insightNotice)
-                    .font(NXFont.control)
-                    .foregroundStyle(NXColor.text(.dark))
-                    .padding(.horizontal, NXSpacing.x4)
-                    .padding(.vertical, NXSpacing.x3)
-                    .background(NXColor.surface1(.dark), in: RoundedRectangle(cornerRadius: NXRadius.popover))
-                    .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.border(.dark), lineWidth: 1))
-                    .padding(.bottom, NXSpacing.x6)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
@@ -97,32 +74,16 @@ struct StudyView: View {
             }
     }
 
-    private func startDiscussion(anchor: SentenceDTO?) {
-        let selected = anchor ?? sentences.first
-        guard let selected else { return }
-        discussionAnchor = selected
-        player.seek(selected.startMs)
-        player.pause()
+    // Joining does not interrupt the source: the session connects while the
+    // podcast keeps playing, and the model is told where playback currently is.
+    // The learner speaking is what pauses it (see ClassroomController).
+    private func startDiscussion() {
         liveSession = LiveClassSession(store: store, keychain: KeychainStore(), episodeId: episodeId, playback: player)
     }
 
     private func endDiscussion() {
         liveSession?.end()
         liveSession = nil
-    }
-
-    private func saveInsight(_ body: String, _ anchor: SentenceDTO) {
-        let title = body.split(separator: "\n").first.map(String.init) ?? "Insight at \(formatTime(anchor.startMs))"
-        do {
-            _ = try store.addInsight(episodeId: episodeId, title: String(title.prefix(96)), body: body, sourceText: anchor.sourceText, startMs: anchor.startMs, endMs: anchor.endMs)
-            insightNotice = "Saved to Insights"
-            Task {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                insightNotice = nil
-            }
-        } catch {
-            insightNotice = "Could not save insight"
-        }
     }
 
     private func refreshAudio() async {
@@ -200,11 +161,8 @@ private enum AudioRefreshState: Equatable {
 
 private struct StudyWorkspace: View {
     let episode: EpisodeDTO?
-    let chapters: [ChapterDTO]
-    let sentences: [SentenceDTO]
     let visible: [SentenceDTO]
     let current: SentenceDTO?
-    let selected: SentenceDTO?
     @Binding var query: String
     let audioRefreshState: AudioRefreshState
     let following: Bool
@@ -215,8 +173,6 @@ private struct StudyWorkspace: View {
     let onRefreshAudio: () -> Void
     let onTalk: () -> Void
     let discussionSession: LiveClassSession?
-    let onStartDiscussion: (SentenceDTO?) -> Void
-    let onSaveInsight: (String, SentenceDTO) -> Void
     let onEndDiscussion: () -> Void
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -238,24 +194,22 @@ private struct StudyWorkspace: View {
         .background(NXColor.background(scheme))
     }
 
+    // The join affordance and the discussion dock both float OVER the transcript
+    // rather than pushing it: the transcript keeps one fixed bottom inset, so
+    // joining never reflows what the learner is reading.
     private var studySurface: some View {
         ZStack(alignment: .bottomLeading) {
             transcriptScrollArea(
                 horizontalPadding: compact ? NXSpacing.x4 : NXSpacing.x8,
                 contentMaxWidth: compact ? .infinity : 1_080,
-                bottomInset: discussionSession == nil ? 88 : 128
+                bottomInset: 96
             )
 
-            if let discussionSession, let anchor = selected ?? current {
-                DiscussionMiniDock(
-                    session: discussionSession,
-                    anchor: anchor,
-                    cursorMs: player.currentMs,
-                    onEnd: onEndDiscussion
-                )
-                .padding(.horizontal, compact ? NXSpacing.x3 : NXSpacing.x6)
-                .padding(.bottom, compact ? NXSpacing.x3 : NXSpacing.x4)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            if let discussionSession {
+                DiscussionDock(session: discussionSession, player: player, onEnd: onEndDiscussion)
+                    .padding(.horizontal, compact ? NXSpacing.x3 : NXSpacing.x6)
+                    .padding(.bottom, compact ? NXSpacing.x3 : NXSpacing.x4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             } else {
                 FloatingDiscussionButton(onJoin: onTalk)
                     .padding(.leading, compact ? NXSpacing.x3 : NXSpacing.x6)
@@ -530,29 +484,29 @@ private struct FloatingDiscussionButton: View {
     }
 }
 
-private struct DiscussionMiniDock: View {
+private struct DiscussionDock: View {
     @ObservedObject var session: LiveClassSession
-    let anchor: SentenceDTO
-    let cursorMs: Int
+    @ObservedObject var player: LocalAudioPlayback
     let onEnd: () -> Void
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Group {
             if let controller = session.controller {
-                DiscussionMiniContent(
+                DiscussionDockContent(
                     controller: controller,
                     notice: session.notice,
                     connected: session.connected,
-                    cursorMs: cursorMs,
+                    livePositionMs: player.currentMs,
                     onEnd: endSession
                 )
             } else {
-                DiscussionMiniLoading(error: session.error, onEnd: endSession)
+                DiscussionDockConnecting(error: session.error, onEnd: endSession)
             }
         }
         .frame(maxWidth: 520, alignment: .leading)
-        .task(id: session.id) { await session.start(at: anchor.startMs) }
+        // No anchor: the session starts at wherever playback currently is, and
+        // playback is NOT interrupted by joining.
+        .task(id: session.id) { await session.start() }
     }
 
     private func endSession() {
@@ -561,29 +515,37 @@ private struct DiscussionMiniDock: View {
     }
 }
 
-private struct DiscussionMiniContent: View {
+private struct DiscussionDockContent: View {
     @ObservedObject var controller: ClassroomController
     let notice: String
     let connected: Bool
-    let cursorMs: Int
+    let livePositionMs: Int
     let onEnd: () -> Void
     @Environment(\.colorScheme) private var scheme
 
+    // Frozen while the learner holds the floor, so the timestamp stops ticking
+    // at the line they interrupted instead of chasing live playback.
+    private var cursorMs: Int {
+        classroomCursorPosition(livePositionMs, controller.frozenPositionMs, 0)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: NXSpacing.x3) {
-            VoiceActivityIcon(state: controller.state, connected: connected)
+            VoiceActivityIcon(phase: controller.state.phase, connected: connected)
 
             VStack(alignment: .leading, spacing: NXSpacing.x1) {
                 HStack(spacing: NXSpacing.x2) {
-                    Text(compactStateText)
-                        .font(NXFont.label)
-                        .foregroundStyle(NXColor.textTertiary(scheme))
+                    if let speaker = speakerLabel {
+                        Text(speaker)
+                            .font(NXFont.label)
+                            .foregroundStyle(NXColor.primary)
+                    }
                     Text(formatTime(cursorMs))
                         .font(NXFont.label)
                         .foregroundStyle(NXColor.textTertiary(scheme))
                         .monospacedDigit()
                 }
-                Text(primaryText)
+                Text(line)
                     .font(NXFont.control)
                     .foregroundStyle(NXColor.text(scheme))
                     .lineLimit(2)
@@ -602,69 +564,53 @@ private struct DiscussionMiniContent: View {
             .buttonStyle(.plain)
             .accessibilityLabel("End discussion")
         }
-        .padding(.leading, NXSpacing.x3)
-        .padding(.trailing, NXSpacing.x2)
-        .padding(.vertical, NXSpacing.x2)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
-        .shadow(color: Color.black.opacity(scheme == .dark ? 0.22 : 0.10), radius: 16, y: 8)
+        .modifier(DiscussionDockChrome())
     }
 
-    private var compactStateText: String {
-        switch controller.state.phase {
-        case .userSpeaking:
-            return "You"
-        case .teacherSpeaking, .discussing:
-            return "AI"
-        case .podcastPlaying, .resuming:
-            return "Listening"
-        case .connecting:
-            return "Connecting"
-        default:
-            return connected ? "Discussion" : "Offline"
+    private var trimmedNotice: String {
+        notice.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var latestTurn: TutorTurn? {
+        controller.transcript.last.flatMap {
+            $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
         }
     }
 
-    private var primaryText: String {
-        if let latest = latestTurnText {
-            return latest
-        }
-        if !notice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return notice
-        }
-        switch controller.state.phase {
-        case .podcastPlaying:
-            return "Listening. Speak when you want to discuss."
-        case .userSpeaking:
-            return "Capturing your point..."
-        case .discussing:
-            return "Thinking..."
-        case .teacherSpeaking:
-            return "Responding..."
-        case .resuming:
-            return "Resuming playback..."
-        default:
-            return "Ready to discuss."
-        }
+    // One line, three tiers: a playback action just taken wins (it is transient
+    // and self-clearing), then the latest thing either party said, then the
+    // state message that tells the learner what the classroom is waiting for.
+    private var line: String {
+        if !trimmedNotice.isEmpty { return trimmedNotice }
+        if let latestTurn { return latestTurn.text }
+        return classroomStatusMessage(controller.state, cursorMs)
     }
 
-    private var latestTurnText: String? {
-        controller.transcript.last?.text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    // Only labelled when the line is somebody's words; an action or a status
+    // message belongs to the classroom, not to a speaker.
+    private var speakerLabel: String? {
+        guard trimmedNotice.isEmpty, let latestTurn else { return nil }
+        switch latestTurn.role {
+        case .user: return "You"
+        case .assistant: return "AI"
+        case .system: return nil
+        }
     }
 }
 
-private struct DiscussionMiniLoading: View {
+private struct DiscussionDockConnecting: View {
     let error: String?
     let onEnd: () -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         HStack(spacing: NXSpacing.x3) {
-            VoiceActivityIcon(state: ClassroomState(phase: error == nil ? .connecting : .ended, pausedAtMs: nil), connected: false)
-            Text(error ?? "Connecting...")
+            VoiceActivityIcon(phase: error == nil ? .connecting : .ended, connected: false)
+            Text(error ?? classroomStatusMessage(ClassroomState(phase: .connecting, pausedAtMs: nil), 0))
                 .font(NXFont.control)
                 .foregroundStyle(error == nil ? NXColor.text(scheme) : NXColor.error)
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: NXSpacing.x2)
             Button(action: onEnd) {
                 Image(systemName: "xmark")
@@ -676,26 +622,52 @@ private struct DiscussionMiniLoading: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Close discussion")
         }
-        .padding(.leading, NXSpacing.x3)
-        .padding(.trailing, NXSpacing.x2)
-        .padding(.vertical, NXSpacing.x2)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
-        .shadow(color: Color.black.opacity(scheme == .dark ? 0.22 : 0.10), radius: 16, y: 8)
+        .modifier(DiscussionDockChrome())
     }
 }
 
-private struct VoiceActivityIcon: View {
-    let state: ClassroomState
-    let connected: Bool
-    @State private var active = false
+// The dock floats over the transcript, so it needs an opaque surface and a
+// stronger edge than an inline panel would.
+private struct DiscussionDockChrome: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
 
-    private var speaking: Bool {
-        switch state.phase {
-        case .userSpeaking, .teacherSpeaking, .discussing, .connecting:
-            return true
+    func body(content: Content) -> some View {
+        content
+            .padding(.leading, NXSpacing.x3)
+            .padding(.trailing, NXSpacing.x2)
+            .padding(.vertical, NXSpacing.x2)
+            .frame(minHeight: 52)
+            .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
+            .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
+            .shadow(color: Color.black.opacity(scheme == .dark ? 0.32 : 0.12), radius: 18, y: 8)
+    }
+}
+
+// Three bars whose rhythm says who holds the floor. Driven by the classroom
+// phase rather than real audio levels: the phase already carries that fact, and
+// the realtime transport stays a pure event pipe.
+private struct VoiceActivityIcon: View {
+    let phase: ClassroomPhase
+    let connected: Bool
+    @State private var pulsing = false
+
+    private struct Rhythm {
+        let period: Double
+        let rest: CGFloat
+        let peaks: [CGFloat]
+    }
+
+    private var rhythm: Rhythm? {
+        switch phase {
+        case .userSpeaking:
+            return Rhythm(period: 0.28, rest: 7, peaks: [17, 11, 19])
+        case .discussing, .teacherSpeaking:
+            return Rhythm(period: 0.5, rest: 8, peaks: [14, 18, 12])
+        case .connecting, .resuming:
+            return Rhythm(period: 0.8, rest: 6, peaks: [12, 12, 12])
         default:
-            return false
+            // Listening to the source, or ended: at rest, waiting to be interrupted.
+            return nil
         }
     }
 
@@ -704,190 +676,32 @@ private struct VoiceActivityIcon: View {
             ForEach(0..<3, id: \.self) { index in
                 Capsule()
                     .fill(barColor)
-                    .frame(width: 3, height: barHeight(index))
-                    .animation(.easeOut(duration: 0.18), value: active)
-                    .animation(.easeOut(duration: 0.18), value: state.phase)
+                    .frame(width: 3, height: height(index))
+                    .animation(animation(index), value: pulsing)
+                    .animation(.easeOut(duration: 0.2), value: phase)
             }
         }
         .frame(width: 28, height: 28)
-        .background(NXColor.primary.opacity(speaking ? 0.14 : 0.08), in: RoundedRectangle(cornerRadius: NXRadius.small))
-        .onAppear { active = true }
-        .onDisappear { active = false }
+        .background(NXColor.primary.opacity(rhythm == nil ? 0.08 : 0.14), in: RoundedRectangle(cornerRadius: NXRadius.small))
+        .onAppear { pulsing = true }
         .accessibilityHidden(true)
     }
 
     private var barColor: Color {
-        connected || speaking ? NXColor.primary : NXColor.textTertiary(.dark).opacity(0.55)
+        guard connected || rhythm != nil else { return NXColor.textTertiary(.dark).opacity(0.55) }
+        return NXColor.primary.opacity(rhythm == nil ? 0.55 : 1)
     }
 
-    private func barHeight(_ index: Int) -> CGFloat {
-        guard speaking else { return 8 }
-        let high: [CGFloat] = [16, 10, 18]
-        let low: [CGFloat] = [9, 18, 11]
-        return active ? high[index] : low[index]
-    }
-}
-
-private struct AudioPlayerBar: View {
-    @ObservedObject var player: LocalAudioPlayback
-    let durationMs: Int?
-    let audioRefreshState: AudioRefreshState
-    let following: Bool
-    let onSync: () -> Void
-    let onRefreshAudio: () -> Void
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var scrubValue: Double = 0
-    @State private var isScrubbing = false
-
-    private var compact: Bool { horizontalSizeClass == .compact }
-    private var playing: Bool { player.playbackState == .playing }
-    private var progress: Double {
-        guard let durationMs, durationMs > 0 else { return 0 }
-        return min(1, max(0, Double(player.currentMs) / Double(durationMs)))
-    }
-    private var displayedMs: Int {
-        guard let durationMs, durationMs > 0, isScrubbing else { return player.currentMs }
-        return Int(scrubValue * Double(durationMs))
+    private func height(_ index: Int) -> CGFloat {
+        guard let rhythm else { return 8 }
+        return pulsing ? rhythm.peaks[index] : rhythm.rest
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x3) {
-            if shouldShowAudioStatus {
-                audioStatus
-            }
-
-            HStack(spacing: compact ? NXSpacing.x2 : NXSpacing.x3) {
-                controlButton(systemName: "gobackward.15", label: "Back 15 seconds") {
-                    player.seek(max(0, player.currentMs - 15_000))
-                }
-
-                Button {
-                    playing ? player.pause() : player.play()
-                } label: {
-                    Image(systemName: playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.white)
-                        .frame(width: 40, height: 40)
-                        .background(NXColor.primary, in: RoundedRectangle(cornerRadius: NXRadius.control))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(playing ? "Pause" : "Play")
-
-                controlButton(systemName: "goforward.15", label: "Forward 15 seconds") {
-                    guard let durationMs else { return }
-                    player.seek(min(durationMs, player.currentMs + 15_000))
-                }
-
-                VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    HStack {
-                        Text(formatTime(displayedMs))
-                            .font(NXFont.auxiliary)
-                            .foregroundStyle(NXColor.textSecondary(scheme))
-                            .monospacedDigit()
-                        Spacer()
-                        Text(durationMs.map(formatTime) ?? "--:--")
-                            .font(NXFont.auxiliary)
-                            .foregroundStyle(NXColor.textTertiary(scheme))
-                            .monospacedDigit()
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { isScrubbing ? scrubValue : progress },
-                            set: { scrubValue = $0; isScrubbing = true }
-                        ),
-                        in: 0...1,
-                        onEditingChanged: { editing in
-                            isScrubbing = editing
-                            if !editing, let durationMs {
-                                player.seek(Int(scrubValue * Double(durationMs)))
-                            }
-                        }
-                    )
-                    .tint(NXColor.primary)
-                    .disabled((durationMs ?? 0) <= 0)
-                }
-
-                if !following {
-                    NXSecondaryButton(title: compact ? "Current" : "Back to current", systemName: "scope", action: onSync)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-            }
-        }
-        .onChange(of: player.currentMs) { _, _ in
-            if !isScrubbing { scrubValue = progress }
-        }
-        .padding(compact ? NXSpacing.x3 : NXSpacing.x4)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.border(scheme), lineWidth: 1))
-    }
-
-    private var shouldShowAudioStatus: Bool {
-        switch audioRefreshState {
-        case .idle:
-            return player.errorMessage != nil || !player.hasLocalFile
-        case .ready:
-            return false
-        case .refreshing, .processing, .waiting, .failed:
-            return true
-        }
-    }
-
-    @ViewBuilder
-    private var audioStatus: some View {
-        switch audioRefreshState {
-        case .refreshing:
-            StudyStatusLine(systemName: "arrow.triangle.2.circlepath", tint: NXColor.primary, title: "Checking audio", detail: "Looking for a prepared audio file on the backend.")
-        case .processing(let stage, let progress):
-            StudyStatusLine(systemName: "waveform.badge.magnifyingglass", tint: NXColor.primary, title: "Preparing audio", detail: "\(stageDisplayName(stage)) · \(progress)%")
-        case .waiting(let message):
-            AudioActionStatusLine(systemName: "clock", tint: NXColor.insight, title: "Audio is still preparing", detail: message, actionTitle: "Refresh audio", busy: false, action: onRefreshAudio)
-        case .ready:
-            StudyStatusLine(systemName: "checkmark.circle", tint: NXColor.success, title: "Audio ready", detail: "Playback is using the local audio file on this device.")
-        case .failed(let message):
-            AudioActionStatusLine(systemName: "exclamationmark.triangle", tint: NXColor.error, title: "Audio refresh failed", detail: message, actionTitle: "Try again", busy: false, action: onRefreshAudio)
-        case .idle:
-            if let message = player.errorMessage {
-                AudioActionStatusLine(systemName: "exclamationmark.triangle", tint: NXColor.error, title: "Playback unavailable", detail: message, actionTitle: "Refresh audio", busy: false, action: onRefreshAudio)
-            } else if player.hasLocalFile {
-                StudyStatusLine(systemName: "waveform", tint: NXColor.success, title: "Audio ready", detail: "Use the player while the transcript stays synced to your position.")
-            } else {
-                AudioActionStatusLine(systemName: "clock", tint: NXColor.insight, title: "Audio not on this device", detail: "The transcript is available, but the local audio file has not been downloaded yet.", actionTitle: "Refresh audio", busy: false, action: onRefreshAudio)
-            }
-        }
-    }
-
-    private func controlButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(NXColor.textSecondary(scheme))
-                .frame(width: compact ? 34 : 36, height: compact ? 34 : 36)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
-}
-
-private struct AudioActionStatusLine: View {
-    let systemName: String
-    let tint: Color
-    let title: String
-    let detail: String
-    let actionTitle: String
-    let busy: Bool
-    let action: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(alignment: .top, spacing: NXSpacing.x3) {
-            StudyStatusLine(systemName: systemName, tint: tint, title: title, detail: detail)
-            Spacer(minLength: NXSpacing.x3)
-            NXSecondaryButton(title: actionTitle, systemName: "arrow.clockwise", action: action)
-                .disabled(busy)
-                .fixedSize(horizontal: true, vertical: false)
-        }
+    private func animation(_ index: Int) -> Animation? {
+        guard let rhythm else { return nil }
+        return .easeInOut(duration: rhythm.period)
+            .repeatForever(autoreverses: true)
+            .delay(Double(index) * rhythm.period / 3)
     }
 }
 
@@ -1004,191 +818,6 @@ private struct TranscriptRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-private struct StudyContextPanel: View {
-    let episode: EpisodeDTO?
-    let chapters: [ChapterDTO]
-    let current: SentenceDTO?
-    let sentenceCount: Int
-    let following: Bool
-    let onSync: () -> Void
-    let onTalk: () -> Void
-    let onSeek: (Int) -> Void
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    private var compact: Bool { horizontalSizeClass == .compact }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x6) {
-            if !compact {
-                Text("Context")
-                    .font(NXFont.subsectionTitle)
-                    .foregroundStyle(NXColor.text(scheme))
-            }
-
-            StudyPanelSection(title: "Source") {
-                VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    Text(episode?.channel ?? "Saved source")
-                        .font(NXFont.bodyMedium)
-                        .foregroundStyle(NXColor.text(scheme))
-                    Text("\(sentenceCount) transcript lines")
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(NXColor.textSecondary(scheme))
-                    if !following {
-                        NXSecondaryButton(title: "Back to current", systemName: "scope", action: onSync)
-                    }
-                }
-            }
-
-            if !chapters.isEmpty {
-                StudyPanelSection(title: "Chapters") {
-                    VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                        ForEach(chapters.prefix(compact ? 4 : 8)) { chapter in
-                            ChapterItem(
-                                chapter: chapter,
-                                active: current.map { chapter.startMs <= $0.startMs && $0.startMs < chapter.endMs } ?? false,
-                                onTap: { onSeek(chapter.startMs) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            StudyPanelSection(title: "Ask next") {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    SuggestedPrompt(text: "What is the core argument?", action: onTalk)
-                    SuggestedPrompt(text: "Challenge this claim.", action: onTalk)
-                    SuggestedPrompt(text: "Save this as an insight.", action: onTalk)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(compact ? 0 : NXSpacing.x4)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(compact ? Color.clear : NXColor.surface1(scheme))
-    }
-}
-
-private struct StudyPanelSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x3) {
-            Text(title)
-                .font(NXFont.label)
-                .foregroundStyle(NXColor.textTertiary(scheme))
-            content
-        }
-    }
-}
-
-private struct QuoteBlock: View {
-    let sentence: SentenceDTO
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            Text(formatTime(sentence.startMs))
-                .font(NXFont.label)
-                .foregroundStyle(NXColor.primary)
-                .monospacedDigit()
-            Text(sentence.sourceText)
-                .font(NXFont.body)
-                .foregroundStyle(NXColor.text(scheme))
-                .lineSpacing(2)
-            if !sentence.chinese.isEmpty {
-                Text(sentence.chinese)
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .lineSpacing(2)
-            }
-        }
-        .padding(.leading, NXSpacing.x3)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(NXColor.primary.opacity(0.72))
-                .frame(width: 2)
-        }
-    }
-}
-
-private struct ChapterItem: View {
-    let chapter: ChapterDTO
-    let active: Bool
-    let onTap: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: NXSpacing.x2) {
-                Text(formatTime(chapter.startMs))
-                    .font(NXFont.label)
-                    .foregroundStyle(active ? NXColor.primary : NXColor.textTertiary(scheme))
-                    .monospacedDigit()
-                Text(chapter.title)
-                    .font(NXFont.control)
-                    .foregroundStyle(active ? NXColor.text(scheme) : NXColor.textSecondary(scheme))
-                    .lineLimit(2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct SuggestedPrompt: View {
-    let text: String
-    let action: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: NXSpacing.x2) {
-                Image(systemName: "arrow.turn.down.right")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-                    .padding(.top, 2)
-                Text(text)
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct StudyStatusLine: View {
-    let systemName: String
-    let tint: Color
-    let title: String
-    let detail: String
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(alignment: .top, spacing: NXSpacing.x3) {
-            Image(systemName: systemName)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(tint)
-                .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                Text(title)
-                    .font(NXFont.bodyMedium)
-                    .foregroundStyle(NXColor.text(scheme))
-                Text(detail)
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
     }
 }
 

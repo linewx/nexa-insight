@@ -11,4 +11,12 @@ protocol Playback: AnyObject {
     func pause()
     func play()
     func speed(_ rate: Double)
+    // The live classroom needs the mic while the source keeps playing, which
+    // only a voice-mode audio session allows. Implementations without a real
+    // audio session ignore it.
+    func configureAudioSession(voiceMode: Bool)
+}
+
+extension Playback {
+    func configureAudioSession(voiceMode: Bool) {}
 }

@@ -95,8 +95,30 @@ final class LocalAudioPlayback: ObservableObject, Playback {
     }
 
     private func activateAudioSession() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.allowAirPlay])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        configureAudioSession(voiceMode: false)
+    }
+
+    // Voice mode is required whenever the realtime classroom holds the mic:
+    // `.playback` forbids recording outright, and without `.voiceChat`'s echo
+    // cancellation the podcast leaking from the speaker into the mic keeps
+    // tripping the model's VAD — the source would pause at random instead of
+    // when the learner speaks. It costs some fidelity (voice-tuned processing),
+    // so the session switches back to `.playback` when the class ends.
+    func configureAudioSession(voiceMode: Bool) {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            if voiceMode {
+                // `.voiceChat` already implies Bluetooth HFP routing, so there is
+                // no need for an explicitly deprecated option to get headsets.
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+            } else {
+                try session.setCategory(.playback, mode: .default, options: [.allowAirPlay])
+            }
+            try session.setActive(true)
+        } catch {
+            // A failed switch leaves the previous category in place; playback
+            // keeps working, so this is not worth surfacing to the learner.
+        }
     }
 
     private func prepareCurrentItem(initialPositionMs: Int) async {
