@@ -57,4 +57,19 @@ final class ClassroomLogicTests: XCTestCase {
         XCTAssertEqual(playbackNotice(.pause_playback, 65_000), "Paused at 1:05")
         XCTAssertEqual(playbackNotice(.next_sentence, 0), "Next sentence · paused")
     }
+
+    // The one bit that flips between modes is create_response: continuous lets
+    // the model's VAD auto-respond; push-to-talk defers the response to release.
+    // The VAD tuning is identical in both and matches the ported reference.
+    func testTurnDetectionConfigFlipsCreateResponse() {
+        let continuous = turnDetectionConfig(.continuous)
+        let ptt = turnDetectionConfig(.pushToTalk)
+        XCTAssertEqual(continuous["create_response"] as? Bool, true)
+        XCTAssertEqual(ptt["create_response"] as? Bool, false)
+        for cfg in [continuous, ptt] {
+            XCTAssertEqual(cfg["type"] as? String, "semantic_vad")
+            XCTAssertEqual(cfg["threshold"] as? Double, 0.5)
+            XCTAssertEqual(cfg["silence_duration_ms"] as? Int, 800)
+        }
+    }
 }

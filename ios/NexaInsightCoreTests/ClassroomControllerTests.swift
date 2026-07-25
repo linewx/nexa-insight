@@ -22,12 +22,18 @@ final class FakeTransport: ClassroomTransport {
     private(set) var injectedTexts: [String] = []
     private(set) var spoken: [String] = []
     private(set) var responseRequests = 0
+    private(set) var turnModes: [TurnMode] = []
+    private(set) var beganListening = 0
+    private(set) var endedTurns = 0
     func stopSpeaking() { stoppedSpeaking += 1 }
     func sendToolResult(callId: String?, ok: Bool) { toolResults.append((callId, ok)) }
     func updateContext(_ context: String) { contextUpdates.append(context) }
     func injectUserText(_ text: String) { injectedTexts.append(text) }
     func speak(_ text: String) { spoken.append(text) }
     func requestResponse() { responseRequests += 1 }
+    func setTurnMode(_ mode: TurnMode) { turnModes.append(mode) }
+    func beginListening() { beganListening += 1 }
+    func endTurnAndRespond() { endedTurns += 1 }
 }
 
 private func s(_ id: Int, _ start: Int) -> SentenceDTO {

@@ -8,6 +8,16 @@ protocol ClassroomTransport: AnyObject {
     func injectUserText(_ text: String)
     func speak(_ text: String)
     func requestResponse()
+
+    // Turn control. Continuous mode is the model-driven VAD flow; push-to-talk
+    // hands turn boundaries to the caller (press/release). See TurnMode.
+    func setTurnMode(_ mode: TurnMode)
+    // Open the mic for a push-to-talk turn (enable the local track; clear any
+    // stale input buffer so the turn starts clean).
+    func beginListening()
+    // End a push-to-talk turn: commit the captured audio and request exactly
+    // one response, then close the mic.
+    func endTurnAndRespond()
 }
 
 enum FreezeReason { case paused, speechStarted }

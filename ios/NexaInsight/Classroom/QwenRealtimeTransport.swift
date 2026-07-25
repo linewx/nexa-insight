@@ -15,6 +15,8 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     private var channel: RTCDataChannel?
     private var instructions = ""
     private var onEvent: ((RealtimeEvent) -> Void)?
+    private var micTrack: RTCAudioTrack?
+    private var turnMode: TurnMode = .continuous
     // nonisolated: the remote track arrives on RTCPeerConnectionDelegate
     // callbacks, which are not main-actor. An immutable stream needs no
     // isolation, and the consumer awaits it from wherever it likes.
@@ -39,10 +41,12 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         }
         self.peer = peer
 
-        // Local mic track.
+        // Local mic track. Held so push-to-talk can gate it; starts enabled for
+        // continuous mode and is disabled by setTurnMode(.pushToTalk) below.
         let audioSource = factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
         let audioTrack = factory.audioTrack(with: audioSource, trackId: "mic0")
         peer.add(audioTrack, streamIds: ["local0"])
+        self.micTrack = audioTrack
 
         // Data channel for realtime events.
         let dcConfig = RTCDataChannelConfiguration()
@@ -80,7 +84,7 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
             "instructions": "\(instructions)\n\n\(omniDirectInstructions)",
             "input_audio_transcription": ["model": "qwen3-asr-flash-realtime"],
             "tools": realtimePlaybackTools,
-            "turn_detection": ["type": "semantic_vad", "threshold": 0.5, "silence_duration_ms": 800, "create_response": true],
+            "turn_detection": turnDetectionConfig(turnMode),
         ]
         send(["type": "session.update", "session": session])
     }
@@ -124,6 +128,27 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     }
 
     func requestResponse() { send(["type": "response.create"]) }
+
+    func setTurnMode(_ mode: TurnMode) {
+        turnMode = mode
+        // In PTT the mic stays closed between turns; in continuous it is always
+        // open so the VAD can hear the learner at any time.
+        micTrack?.isEnabled = (mode == .continuous)
+        send(["type": "session.update", "session": ["turn_detection": turnDetectionConfig(mode)]])
+    }
+
+    func beginListening() {
+        // Drop anything the buffer captured before this turn (e.g. room noise
+        // while the mic was nominally closed) so the turn starts clean.
+        send(["type": "input_audio_buffer.clear"])
+        micTrack?.isEnabled = true
+    }
+
+    func endTurnAndRespond() {
+        micTrack?.isEnabled = false
+        send(["type": "input_audio_buffer.commit"])
+        requestResponse()
+    }
 }
 
 extension QwenRealtimeTransport: RTCPeerConnectionDelegate {
@@ -160,12 +185,11 @@ extension QwenRealtimeTransport: RTCDataChannelDelegate {
 
 #else
 
-// STUB TRANSPORT — active when the WebRTC package is NOT present (e.g. this
-// build environment, where GitHub release assets are unreachable). Keeps the app
-// compiling and running; the live class surfaces a clear "not available" error.
-// Conforms to the same ClassroomTransport protocol, so flipping to the real
-// implementation above requires only adding the WebRTC package dependency — no
-// changes to ClassroomController, LiveClassSession, or any view.
+// STUB TRANSPORT — active only when the WebRTC package is absent (canImport
+// fails). The package is now a dependency, so normal builds use the real
+// transport above; this remains as a graceful fallback that surfaces a clear
+// "not available" error instead of failing to compile. Conforms to the same
+// ClassroomTransport protocol — no view/controller changes needed either way.
 @MainActor
 final class QwenRealtimeTransport: ClassroomTransport {
     struct NotIntegrated: LocalizedError {
@@ -185,6 +209,9 @@ final class QwenRealtimeTransport: ClassroomTransport {
     func injectUserText(_ text: String) {}
     func speak(_ text: String) {}
     func requestResponse() {}
+    func setTurnMode(_ mode: TurnMode) {}
+    func beginListening() {}
+    func endTurnAndRespond() {}
 }
 
 #endif

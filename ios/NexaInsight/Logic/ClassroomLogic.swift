@@ -10,6 +10,26 @@ enum ClassroomPhase { case idle, connecting, podcastPlaying, userSpeaking, discu
 
 struct ClassroomState: Equatable { var phase: ClassroomPhase; var pausedAtMs: Int? }
 
+// How turn boundaries are detected.
+// - continuous: the model's VAD decides when the learner stopped and auto-responds.
+//   This is the reference (english_learning) behaviour, used by locked live mode.
+// - pushToTalk: the finger decides. VAD still segments speech but must NOT
+//   auto-respond; the response is requested explicitly on release.
+enum TurnMode: Equatable { case continuous, pushToTalk }
+
+// The turn_detection object sent in session.update, per mode. Pure so the
+// mode→config mapping is unit-testable without a live transport. The VAD
+// tuning (semantic_vad, threshold 0.5, 800ms) matches the ported reference;
+// only create_response flips.
+func turnDetectionConfig(_ mode: TurnMode) -> [String: Any] {
+    [
+        "type": "semantic_vad",
+        "threshold": 0.5,
+        "silence_duration_ms": 800,
+        "create_response": mode == .continuous,
+    ]
+}
+
 enum ClassroomEvent {
     case speechStarted(atMs: Int), paused(atMs: Int), falseActivation
     case teacherStarted, teacherFinished, discussionStarted, resumed
