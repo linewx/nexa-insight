@@ -131,4 +131,24 @@ final class ClassroomController: ObservableObject {
         transport.injectUserText(trimmed)
         transport.requestResponse()
     }
+
+    // MARK: - Push-to-talk
+
+    // The finger, not the model's VAD, marks the turn boundary. Press mirrors
+    // the .speechStarted path — freeze at the interrupted position and refresh
+    // the model's context to there — and additionally opens the mic. The reducer
+    // is unchanged: this drives the same events VAD would.
+    func beginUserTurn() {
+        transport.beginListening()
+        freeze(cursor(), reason: .speechStarted)
+        onContextRefresh(frozenPositionMs ?? cursor())
+    }
+
+    // Release: close the mic, commit the captured audio, and request exactly one
+    // response. The learner's transcription and the answer still arrive as the
+    // usual .inputTranscriptionCompleted / .responseAudioTranscriptDone events.
+    func endUserTurn() {
+        state = classroomReducer(state, .discussionStarted)
+        transport.endTurnAndRespond()
+    }
 }

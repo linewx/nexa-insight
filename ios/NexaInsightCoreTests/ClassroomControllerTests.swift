@@ -65,6 +65,32 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertEqual(box.refreshes, [2100])
     }
 
+    // Push-to-talk press: opens the mic, freezes at the current position, and
+    // refreshes the model's context there — the same freeze/refresh the VAD
+    // .speechStarted path does, plus the mic.
+    func testBeginUserTurnFreezesRefreshesAndOpensMic() {
+        let (c, playback, transport, box) = make()
+        playback.currentMs = 2100
+        c.beginUserTurn()
+        XCTAssertEqual(transport.beganListening, 1)
+        XCTAssertEqual(c.frozenPositionMs, 2100)
+        XCTAssertTrue(playback.didPause)
+        XCTAssertEqual(c.state.phase, .userSpeaking)
+        XCTAssertEqual(box.refreshes, [2100])
+    }
+
+    // Release: commits the turn and requests one response; does not resume
+    // playback (the answer plays over paused audio, then a tool resumes it).
+    func testEndUserTurnCommitsAndRequestsResponse() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.beginUserTurn()
+        c.endUserTurn()
+        XCTAssertEqual(transport.endedTurns, 1)
+        XCTAssertEqual(c.state.phase, .discussing)
+        XCTAssertNotNil(c.frozenPositionMs, "playback stays frozen until the teacher resumes it")
+    }
+
     func testResumeToolPlaysAndClearsFrozen() {
         let (c, playback, transport, box) = make()
         c.freeze(2000, reason: .paused)
