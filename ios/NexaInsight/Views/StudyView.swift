@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 struct StudyView: View {
     let episodeId: Int
@@ -77,7 +78,11 @@ struct StudyView: View {
     // Joining does not interrupt the source: the session connects while the
     // podcast keeps playing, and the model is told where playback currently is.
     // The learner speaking is what pauses it (see ClassroomController).
+    //
+    // Because nothing audible changes at this moment, the tap needs a haptic to
+    // land — otherwise "the teacher is here now" is a claim only the dock makes.
     private func startDiscussion() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         liveSession = LiveClassSession(store: store, keychain: KeychainStore(), episodeId: episodeId, playback: player)
     }
 
@@ -202,7 +207,10 @@ private struct StudyWorkspace: View {
             transcriptScrollArea(
                 horizontalPadding: compact ? NXSpacing.x4 : NXSpacing.x8,
                 contentMaxWidth: compact ? .infinity : 1_080,
-                bottomInset: 96
+                // Clears the tallest floating element (the two-line dock) plus
+                // breathing room, so scrolling to the end never leaves text
+                // stranded underneath either the button or the dock.
+                bottomInset: 132
             )
 
             if let discussionSession {
@@ -468,19 +476,34 @@ private struct FloatingDiscussionButton: View {
     let onJoin: () -> Void
     @Environment(\.colorScheme) private var scheme
 
+    // A circle, not a rounded rect: it reads as a single-action affordance and
+    // stays formally distinct from the rounded dock it expands into. Solid fill
+    // is deliberate — a surface-coloured version was tried and vanished into the
+    // white transcript rows behind it.
     var body: some View {
         Button(action: onJoin) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 17, weight: .semibold))
+            Image(systemName: "waveform")
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(Color.white)
-                .frame(width: 46, height: 46)
-                .background(NXColor.primary, in: RoundedRectangle(cornerRadius: NXRadius.popover))
-                .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(Color.white.opacity(0.12), lineWidth: 1))
-                .shadow(color: Color.black.opacity(scheme == .dark ? 0.28 : 0.14), radius: 14, y: 6)
-                .contentShape(RoundedRectangle(cornerRadius: NXRadius.popover))
+                .frame(width: 52, height: 52)
+                .background(NXColor.primary, in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
+                .nxFloatingShadow(scheme)
+                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
         .accessibilityLabel("Join discussion")
+        .accessibilityHint("Brings in the voice teacher without interrupting playback")
+    }
+}
+
+// Touch needs to be acknowledged: a plain button gives no feedback at all, which
+// on a phone reads as "did that register?"
+private struct PressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -606,10 +629,11 @@ private struct DiscussionDockConnecting: View {
     var body: some View {
         HStack(spacing: NXSpacing.x3) {
             VoiceActivityIcon(phase: error == nil ? .connecting : .ended, connected: false)
+            // An error here is the first thing most learners will hit, so it gets
+            // the room to be read in full rather than being clipped to two lines.
             Text(error ?? classroomStatusMessage(ClassroomState(phase: .connecting, pausedAtMs: nil), 0))
                 .font(NXFont.control)
                 .foregroundStyle(error == nil ? NXColor.text(scheme) : NXColor.error)
-                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: NXSpacing.x2)
             Button(action: onEnd) {
@@ -639,7 +663,7 @@ private struct DiscussionDockChrome: ViewModifier {
             .frame(minHeight: 52)
             .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
             .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
-            .shadow(color: Color.black.opacity(scheme == .dark ? 0.32 : 0.12), radius: 18, y: 8)
+            .nxFloatingShadow(scheme)
     }
 }
 

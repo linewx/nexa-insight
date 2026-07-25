@@ -82,6 +82,14 @@ extension Color {
     }
 }
 
+// Shared elevation for anything floating above scrolling content, so a button
+// and the panel it becomes read as living on the same layer.
+extension View {
+    func nxFloatingShadow(_ scheme: ColorScheme) -> some View {
+        shadow(color: Color.black.opacity(scheme == .dark ? 0.32 : 0.12), radius: 18, y: 8)
+    }
+}
+
 struct NXFocusModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     let focused: Bool
