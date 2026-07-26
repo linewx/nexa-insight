@@ -586,16 +586,17 @@ private struct ConnectedBarContent: View {
         .padding(.horizontal, NXSpacing.x2)
     }
 
-    // One continuous capsule (ChatGPT / Doubao style): an icon-only Live segment
-    // on the left, a hairline seam, then the hold-to-talk area filling the rest.
-    // The two read as a single control, not two buttons sitting next to each other.
+    // One capsule with the hold-to-talk label centered on the WHOLE dock, and the
+    // Live icon floating at the left edge (ChatGPT style). Holding anywhere on the
+    // capsule talks; the Live glyph is a small tap target layered on top, so it
+    // stays independently tappable without pushing the label off-center.
     private var controlRow: some View {
-        HStack(spacing: 0) {
-            liveSegment
-            Rectangle()
-                .fill(seamColor)
-                .frame(width: 1, height: controlHeight - 20)
+        ZStack {
             talkSegment
+            HStack {
+                liveSegment
+                Spacer(minLength: 0)
+            }
         }
         .frame(height: controlHeight)
         .background(talkFill, in: Capsule())
@@ -612,32 +613,27 @@ private struct ConnectedBarContent: View {
             Image(systemName: live ? "stop.fill" : "waveform")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
-                .frame(width: 56, height: controlHeight)
+                .frame(width: 52, height: controlHeight)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel(live ? "退出 Live" : "进入 Live")
     }
 
-    // The hold-to-talk area — the primary action. In Live it turns passive (no
-    // hold gesture) and shows the floor message instead.
+    // The hold-to-talk area — the primary action, filling the whole capsule so its
+    // label sits dead-center. In Live it turns passive (no hold gesture) and shows
+    // the floor message instead.
     private var talkSegment: some View {
-        HStack(spacing: NXSpacing.x2) {
-            Text(talkLabel)
-                .font(NXFont.controlEmphasis)
-                .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: controlHeight)
-        .contentShape(Rectangle())
-        .gesture(live ? nil : holdToTalk)
-        .accessibilityLabel(live ? "Live 进行中" : "按住 说话")
-        .accessibilityHint(live ? "随时开口;点 Live 退出" : "按住说话,松开发送")
-    }
-
-    private var seamColor: Color {
-        live ? NXColor.border(scheme) : Color.white.opacity(0.22)
+        Text(talkLabel)
+            .font(NXFont.controlEmphasis)
+            .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            .frame(height: controlHeight)
+            .contentShape(Rectangle())
+            .gesture(live ? nil : holdToTalk)
+            .accessibilityLabel(live ? "Live 进行中" : "按住 说话")
+            .accessibilityHint(live ? "随时开口;点 Live 退出" : "按住说话,松开发送")
     }
 
     private var talkLabel: String {
