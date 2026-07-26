@@ -45,6 +45,10 @@ targets:
         PRODUCT_NAME: Nexa Insight
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.9"
+        # Device signing: automatic, against the one Apple Development team on
+        # this machine. Team ID read from the codesigning cert (OU=CCGQFW2P89).
+        DEVELOPMENT_TEAM: CCGQFW2P89
+        CODE_SIGN_STYLE: Automatic
 # Unit tests run via the SwiftPM package (NexaInsightCore-Package scheme),
 # which already builds+tests for both macOS and the iOS simulator. This
 # .xcodeproj provides the runnable/installable app bundle. Keeping the two
