@@ -605,8 +605,10 @@ private struct DiscussionDockContent: View {
         VoiceActivityIcon(phase: controller.state.phase, connected: connected)
             .frame(width: 40, height: 40)
             .contentShape(Rectangle())
-            .scaleEffect(talking ? 1.12 : 1)
-            .animation(.easeOut(duration: 0.14), value: talking)
+            // Emphasis follows the floor holder, not just the long-press: in Live
+            // the learner speaks with no touch, so .user must still enlarge it.
+            .scaleEffect(controller.floor == .user ? 1.12 : 1)
+            .animation(.easeOut(duration: 0.14), value: controller.floor)
             .gesture(live ? nil : quickAsk)
             .onTapGesture { enterLive() }
             .accessibilityLabel(live ? "Live discussion" : "Hold to talk, tap for live")
@@ -657,13 +659,25 @@ private struct DiscussionDockContent: View {
         }
     }
 
-    // One line, three tiers: a playback action just taken wins (it is transient
-    // and self-clearing), then the latest thing either party said, then the
-    // state message that tells the learner what the classroom is waiting for.
+    // One line, tiered: a playback action just taken wins (transient,
+    // self-clearing), then the latest thing either party said, then a status
+    // message. In Live the fallback names the floor holder so a glance tells the
+    // learner whose turn it is; outside Live it's the classroom state message.
     private var line: String {
         if !trimmedNotice.isEmpty { return trimmedNotice }
         if let latestTurn { return latestTurn.text }
+        if live { return floorMessage }
         return classroomStatusMessage(controller.state, cursorMs)
+    }
+
+    // The floor holder as one glanceable line (Live only).
+    private var floorMessage: String {
+        switch controller.floor {
+        case .user: return "Listening to you"
+        case .teacher: return "Teacher is speaking"
+        case .player: return "Podcast playing · say anything to interrupt"
+        case .idle: return "Live · speak, or say “play” to resume the podcast"
+        }
     }
 
     // Only labelled when the line is somebody's words; an action or a status
