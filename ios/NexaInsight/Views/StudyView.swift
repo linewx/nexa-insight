@@ -217,9 +217,9 @@ private struct StudyWorkspace: View {
             )
 
             if let discussionSession {
+                // Edge-to-edge, pinned to the bottom: the bar is part of the page
+                // chrome, not a card floating on top of it. No outer padding.
                 DiscussionBar(session: discussionSession, player: player)
-                    .padding(.horizontal, compact ? NXSpacing.x3 : NXSpacing.x6)
-                    .padding(.bottom, compact ? NXSpacing.x3 : NXSpacing.x4)
             }
         }
         .animation(.easeOut(duration: 0.18), value: discussionSession != nil)
@@ -500,10 +500,44 @@ private struct DiscussionBar: View {
                 ConnectingBar(error: session.error)
             }
         }
+        // Content stays readable-width and centered on wide screens, but the
+        // panel surface itself runs edge-to-edge (see bottomPanel).
         .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        .modifier(BottomPanelChrome())
         // No anchor: the session starts at wherever playback currently is, and
         // playback is NOT interrupted by connecting.
         .task(id: session.id) { await session.start() }
+    }
+}
+
+// The bottom bar reads as part of the page, not a card floating on it: a full-
+// width panel pinned to the bottom edge, rounded only on top, separated from the
+// transcript by the same hairline the transcript uses between rows plus a soft
+// upward shadow. Content padding respects the horizontal margin and the home
+// indicator safe area.
+private struct BottomPanelChrome: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, NXSpacing.x3)
+            .padding(.top, NXSpacing.x3)
+            .padding(.bottom, NXSpacing.x2)
+            .frame(maxWidth: .infinity)
+            // The surface extends under the home indicator so the panel reaches
+            // the screen edge, but the content above keeps its safe-area inset —
+            // the controls never touch the indicator. Only the background ignores
+            // the safe area, not the content.
+            .background(
+                NXColor.surface1(scheme)
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(NXColor.border(scheme)).frame(height: 1)
+                    }
+                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: NXRadius.surface, topTrailingRadius: NXRadius.surface))
+                    .shadow(color: Color.black.opacity(scheme == .dark ? 0.28 : 0.06), radius: 8, y: -2)
+                    .ignoresSafeArea(edges: .bottom)
+            )
     }
 }
 
@@ -523,14 +557,12 @@ private struct ConnectedBarContent: View {
     private let controlHeight: CGFloat = 58
 
     var body: some View {
+        // Surface, edge, and shadow now come from BottomPanelChrome; this is just
+        // the content.
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
             statusLine
             controlRow
         }
-        .padding(NXSpacing.x2)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
-        .nxFloatingShadow(scheme)
     }
 
     // One centered status line above the controls: whose turn it is right now.
@@ -596,14 +628,14 @@ private struct ConnectedBarContent: View {
     // only exit from Live (there is no close button — the bar is persistent).
     private var liveButton: some View {
         Button(action: toggleLive) {
-            VStack(spacing: 3) {
+            HStack(spacing: NXSpacing.x1) {
                 Image(systemName: live ? "stop.fill" : "waveform")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                 Text(live ? "退出" : "Live")
-                    .font(NXFont.label)
+                    .font(NXFont.control)
             }
             .foregroundStyle(live ? Color.white : NXColor.primary)
-            .frame(width: 64, height: controlHeight)
+            .frame(width: 84, height: controlHeight)
             .background(live ? NXColor.primary : NXColor.primary.opacity(0.12), in: Capsule())
         }
         .buttonStyle(PressableStyle())
@@ -705,6 +737,9 @@ private struct ConnectingBar: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        // Surface, edge, and shadow now come from BottomPanelChrome; this is just
+        // the content. Kept at the same height as the connected control row so the
+        // panel doesn't resize when the session finishes connecting.
         HStack(spacing: NXSpacing.x2) {
             VoiceActivityIcon(phase: error == nil ? .connecting : .ended, connected: false)
             Text(error ?? "正在接通语音老师…")
@@ -715,27 +750,7 @@ private struct ConnectingBar: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 58)
-        .padding(.horizontal, NXSpacing.x3)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
-        .nxFloatingShadow(scheme)
-    }
-}
-
-// The dock floats over the transcript, so it needs an opaque surface and a
-// stronger edge than an inline panel would.
-private struct DiscussionDockChrome: ViewModifier {
-    @Environment(\.colorScheme) private var scheme
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.leading, NXSpacing.x3)
-            .padding(.trailing, NXSpacing.x2)
-            .padding(.vertical, NXSpacing.x2)
-            .frame(minHeight: 52)
-            .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
-            .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
-            .nxFloatingShadow(scheme)
+        .padding(.horizontal, NXSpacing.x2)
     }
 }
 
