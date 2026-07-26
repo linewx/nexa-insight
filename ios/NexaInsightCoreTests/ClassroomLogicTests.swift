@@ -72,4 +72,23 @@ final class ClassroomLogicTests: XCTestCase {
             XCTAssertEqual(cfg["silence_duration_ms"] as? Int, 800)
         }
     }
+
+    func testFloorReducerTransitions() {
+        XCTAssertEqual(floorReducer(.player, .userTookFloor), .user)
+        XCTAssertEqual(floorReducer(.user, .userYielded), .teacher)
+        XCTAssertEqual(floorReducer(.teacher, .teacherFinished(resumePlayback: true)), .player)
+        XCTAssertEqual(floorReducer(.teacher, .teacherFinished(resumePlayback: false)), .idle)
+        XCTAssertEqual(floorReducer(.idle, .playbackRequested), .player)
+        XCTAssertEqual(floorReducer(.player, .playbackHeld), .idle)
+        XCTAssertEqual(floorReducer(.user, .sessionEnded), .idle)
+    }
+
+    func testSilencedRuleIsSingleVoice() {
+        XCTAssertEqual(silenced(by: .player).pausePlayer, false)
+        XCTAssertEqual(silenced(by: .player).stopTeacher, true)
+        XCTAssertEqual(silenced(by: .user).pausePlayer, true)
+        XCTAssertEqual(silenced(by: .user).stopTeacher, true)
+        XCTAssertEqual(silenced(by: .teacher).pausePlayer, true)
+        XCTAssertEqual(silenced(by: .teacher).stopTeacher, false)
+    }
 }

@@ -185,3 +185,41 @@ func playbackTargetPosition(_ name: PlaybackTool, _ args: [String: Double], _ cu
     default: return currentMs
     }
 }
+
+// MARK: - Floor token (single-voice arbitration)
+
+// Who currently holds the floor. The single hard rule of the classroom: only
+// the holder makes sound; the other two are silent. idle = nobody speaks (Live
+// waiting on the learner, or the gap between quick-ask turns).
+enum FloorHolder: Equatable { case player, user, teacher, idle }
+
+enum FloorEvent {
+    case userTookFloor                          // long-press down, or Live VAD hears the learner
+    case userYielded                            // long-press release, or Live pause detected
+    case teacherFinished(resumePlayback: Bool)  // teacher done; quick-ask resumes, Live stays idle
+    case playbackRequested                       // learner asked to play (voice tool)
+    case playbackHeld                            // learner asked to pause (voice tool)
+    case sessionEnded
+}
+
+func floorReducer(_ holder: FloorHolder, _ event: FloorEvent) -> FloorHolder {
+    switch event {
+    case .userTookFloor: return .user
+    case .userYielded: return .teacher
+    case let .teacherFinished(resume): return resume ? .player : .idle
+    case .playbackRequested: return .player
+    case .playbackHeld: return .idle
+    case .sessionEnded: return .idle
+    }
+}
+
+// Granting the floor to `holder` means silencing the other two. Returns what to
+// mute so the caller performs exactly one handoff, never leaving two sources on.
+func silenced(by holder: FloorHolder) -> (pausePlayer: Bool, stopTeacher: Bool) {
+    switch holder {
+    case .player: return (false, true)   // podcast speaks; teacher quiet
+    case .user: return (true, true)      // learner speaks; both quiet
+    case .teacher: return (true, false)  // teacher speaks; podcast paused
+    case .idle: return (true, true)      // nobody speaks
+    }
+}
