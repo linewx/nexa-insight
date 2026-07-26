@@ -546,14 +546,11 @@ private struct DiscussionDockContent: View {
     let onEnd: () -> Void
     @Environment(\.colorScheme) private var scheme
 
-    // Once the learner slides to lock, the icon is a live indicator, not a
-    // hold-to-talk target: turns are handed to the model's VAD (continuous).
-    @State private var locked = false
+    // Two independent entries. `live` = in continuous Live mode (tap to enter,
+    // close to exit); the mic then becomes a passive indicator. `talking` = a
+    // quick-ask long-press is in progress.
+    @State private var live = false
     @State private var talking = false
-    @State private var willLock = false
-
-    // How far up the finger must travel mid-hold to arm the lock (iMessage-ish).
-    private let lockThreshold: CGFloat = 64
 
     // Frozen while the learner holds the floor, so the timestamp stops ticking
     // at the line they interrupted instead of chasing live playback.
@@ -586,7 +583,7 @@ private struct DiscussionDockContent: View {
 
             Spacer(minLength: NXSpacing.x2)
 
-            Button(action: onEnd) {
+            Button(action: closeAction) {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(NXColor.textTertiary(scheme))
@@ -594,15 +591,15 @@ private struct DiscussionDockContent: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("End discussion")
+            .accessibilityLabel(live ? "Leave live" : "End discussion")
         }
         .modifier(DiscussionDockChrome())
-        .overlay(alignment: .topLeading) {
-            if willLock { lockHint }
-        }
     }
 
     // The mic: a hold-to-talk target until locked, then a passive indicator.
+    // Two independent entries on one icon: a long-press is a quick ask (hold and
+    // speak, release to send); a tap enters Live. In Live the icon is a passive
+    // indicator — the hold gesture is off and turns are handed to the model's VAD.
     // A larger contentShape than the icon so the hold is easy to land one-handed.
     private var micControl: some View {
         VoiceActivityIcon(phase: controller.state.phase, connected: connected)
@@ -610,51 +607,44 @@ private struct DiscussionDockContent: View {
             .contentShape(Rectangle())
             .scaleEffect(talking ? 1.12 : 1)
             .animation(.easeOut(duration: 0.14), value: talking)
-            .gesture(locked ? nil : holdToTalk)
-            .accessibilityLabel(locked ? "Live discussion" : "Hold to talk")
-            .accessibilityHint(locked ? "Tap the close button to end" : "Hold and speak; slide up to stay connected")
+            .gesture(live ? nil : quickAsk)
+            .onTapGesture { enterLive() }
+            .accessibilityLabel(live ? "Live discussion" : "Hold to talk, tap for live")
+            .accessibilityHint(live ? "Speak any time; tap the close button to leave" : "Hold and speak, release to send; tap to start live")
     }
 
-    private var lockHint: some View {
-        Label("Slide to stay connected", systemImage: "lock.fill")
-            .font(NXFont.label)
-            .foregroundStyle(NXColor.primary)
-            .padding(.horizontal, NXSpacing.x2)
-            .padding(.vertical, NXSpacing.x1)
-            .background(NXColor.surface2(scheme), in: Capsule())
-            .offset(y: -34)
-            .transition(.opacity)
-    }
-
-    // A real hold (0.18s) before a turn starts, so a stray tap sends nothing.
-    // Once holding, vertical travel arms the lock; release either locks (keep
-    // listening, continuous) or ends the turn and asks for one answer.
-    private var holdToTalk: some Gesture {
+    // A real hold (0.18s) before a turn starts, so a stray tap enters Live
+    // instead of sending an empty turn. Release sends and asks for one answer.
+    private var quickAsk: some Gesture {
         LongPressGesture(minimumDuration: 0.18)
             .sequenced(before: DragGesture(minimumDistance: 0))
             .onChanged { value in
-                guard case let .second(true, drag) = value else { return }
-                if !talking {
-                    talking = true
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    controller.beginUserTurn()
-                }
-                withAnimation(.easeOut(duration: 0.12)) {
-                    willLock = (drag?.translation.height ?? 0) < -lockThreshold
-                }
+                guard case .second(true, _) = value, !talking else { return }
+                talking = true
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                controller.pressQuickAsk()
             }
             .onEnded { _ in
                 guard talking else { return }
                 talking = false
-                if willLock {
-                    willLock = false
-                    locked = true
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                    controller.switchToContinuous()
-                } else {
-                    controller.endUserTurn()
-                }
+                controller.releaseQuickAsk()
             }
+    }
+
+    private func enterLive() {
+        guard !live else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        controller.enterLive()
+        live = true
+    }
+
+    private func closeAction() {
+        if live {
+            controller.exitLive()
+            live = false
+        } else {
+            onEnd()
+        }
     }
 
     private var trimmedNotice: String {
