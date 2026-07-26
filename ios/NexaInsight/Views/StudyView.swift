@@ -203,27 +203,18 @@ private struct StudyWorkspace: View {
     // rather than pushing it: the transcript keeps one fixed bottom inset, so
     // joining never reflows what the learner is reading.
     private var studySurface: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack(alignment: .bottom) {
             transcriptScrollArea(
                 horizontalPadding: compact ? NXSpacing.x4 : NXSpacing.x8,
                 contentMaxWidth: compact ? .infinity : 1_080,
-                // Clears the tallest floating element (the two-line dock) plus
-                // breathing room, so scrolling to the end never leaves text
-                // stranded underneath either the button or the dock.
-                bottomInset: 132
+                // Clears the persistent bottom bar plus breathing room, so
+                // scrolling to the end never strands text beneath it.
+                bottomInset: 140
             )
 
-            if let discussionSession {
-                DiscussionDock(session: discussionSession, player: player, onEnd: onEndDiscussion)
-                    .padding(.horizontal, compact ? NXSpacing.x3 : NXSpacing.x6)
-                    .padding(.bottom, compact ? NXSpacing.x3 : NXSpacing.x4)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else {
-                FloatingDiscussionButton(onJoin: onTalk)
-                    .padding(.leading, compact ? NXSpacing.x3 : NXSpacing.x6)
-                    .padding(.bottom, compact ? NXSpacing.x3 : NXSpacing.x4)
-                    .transition(.scale(scale: 0.96).combined(with: .opacity))
-            }
+            DiscussionBar(session: discussionSession, player: player, onConnect: onTalk, onEnd: onEndDiscussion)
+                .padding(.horizontal, compact ? NXSpacing.x3 : NXSpacing.x6)
+                .padding(.bottom, compact ? NXSpacing.x3 : NXSpacing.x4)
         }
         .animation(.easeOut(duration: 0.18), value: discussionSession != nil)
     }
@@ -472,31 +463,6 @@ private struct CompactAudioStatus: View {
     }
 }
 
-private struct FloatingDiscussionButton: View {
-    let onJoin: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    // A circle, not a rounded rect: it reads as a single-action affordance and
-    // stays formally distinct from the rounded dock it expands into. Solid fill
-    // is deliberate — a surface-coloured version was tried and vanished into the
-    // white transcript rows behind it.
-    var body: some View {
-        Button(action: onJoin) {
-            Image(systemName: "waveform")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Color.white)
-                .frame(width: 52, height: 52)
-                .background(NXColor.primary, in: Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
-                .nxFloatingShadow(scheme)
-                .contentShape(Circle())
-        }
-        .buttonStyle(PressableStyle())
-        .accessibilityLabel("Start discussion")
-        .accessibilityHint("Connects the voice teacher; then hold the mic to talk. Playback keeps going.")
-    }
-}
-
 // Touch needs to be acknowledged: a plain button gives no feedback at all, which
 // on a phone reads as "did that register?"
 private struct PressableStyle: ButtonStyle {
@@ -507,7 +473,57 @@ private struct PressableStyle: ButtonStyle {
     }
 }
 
-private struct DiscussionDock: View {
+// The persistent bottom bar (Doubao-style). Always present over the transcript.
+// Four states: not connected (a Connect button), connecting, connected (a large
+// hold-to-talk button + a Live entry), and error. The session connects first,
+// then the learner holds to speak — no racing a half-open connection.
+private struct DiscussionBar: View {
+    let session: LiveClassSession?
+    @ObservedObject var player: LocalAudioPlayback
+    let onConnect: () -> Void
+    let onEnd: () -> Void
+
+    var body: some View {
+        Group {
+            if let session {
+                ConnectedBar(session: session, player: player, onEnd: onEnd)
+            } else {
+                ConnectPrompt(onConnect: onConnect)
+            }
+        }
+        .frame(maxWidth: 560)
+    }
+}
+
+// The resting state: no session yet. One clear affordance to bring the teacher in.
+private struct ConnectPrompt: View {
+    let onConnect: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Button(action: onConnect) {
+            HStack(spacing: NXSpacing.x2) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 17, weight: .semibold))
+                Text("接通语音老师")
+                    .font(NXFont.controlEmphasis)
+            }
+            .foregroundStyle(Color.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(NXColor.primary, in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+            .nxFloatingShadow(scheme)
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel("接通语音老师")
+        .accessibilityHint("连接后按住说话,或点 Live 进入持续对话")
+    }
+}
+
+// A session exists: connecting, connected (hand off to ConnectedBarContent), or
+// error. Starts the connection when it appears.
+private struct ConnectedBar: View {
     @ObservedObject var session: LiveClassSession
     @ObservedObject var player: LocalAudioPlayback
     let onEnd: () -> Void
@@ -515,7 +531,7 @@ private struct DiscussionDock: View {
     var body: some View {
         Group {
             if let controller = session.controller {
-                DiscussionDockContent(
+                ConnectedBarContent(
                     controller: controller,
                     notice: session.notice,
                     connected: session.connected,
@@ -526,9 +542,8 @@ private struct DiscussionDock: View {
                 DiscussionDockConnecting(error: session.error, onEnd: endSession)
             }
         }
-        .frame(maxWidth: 520, alignment: .leading)
         // No anchor: the session starts at wherever playback currently is, and
-        // playback is NOT interrupted by joining.
+        // playback is NOT interrupted by connecting.
         .task(id: session.id) { await session.start() }
     }
 
@@ -538,7 +553,7 @@ private struct DiscussionDock: View {
     }
 }
 
-private struct DiscussionDockContent: View {
+private struct ConnectedBarContent: View {
     @ObservedObject var controller: ClassroomController
     let notice: String
     let connected: Bool
@@ -546,9 +561,9 @@ private struct DiscussionDockContent: View {
     let onEnd: () -> Void
     @Environment(\.colorScheme) private var scheme
 
-    // Two independent entries. `live` = in continuous Live mode (tap to enter,
-    // close to exit); the mic then becomes a passive indicator. `talking` = a
-    // quick-ask long-press is in progress.
+    // `live` = in continuous Live mode (tap Live to enter, close to exit); the
+    // big button then becomes a passive indicator. `talking` = a hold-to-talk
+    // press is in progress.
     @State private var live = false
     @State private var talking = false
 
@@ -559,65 +574,113 @@ private struct DiscussionDockContent: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: NXSpacing.x3) {
-            micControl
-
-            VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                HStack(spacing: NXSpacing.x2) {
-                    if let speaker = speakerLabel {
-                        Text(speaker)
-                            .font(NXFont.label)
-                            .foregroundStyle(NXColor.primary)
-                    }
-                    Text(formatTime(cursorMs))
-                        .font(NXFont.label)
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                        .monospacedDigit()
-                }
-                Text(line)
-                    .font(NXFont.control)
-                    .foregroundStyle(NXColor.text(scheme))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: NXSpacing.x2)
-
-            Button(action: closeAction) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(live ? "Leave live" : "End discussion")
+        VStack(spacing: NXSpacing.x2) {
+            statusLine
+            controlRow
         }
-        .modifier(DiscussionDockChrome())
+        .padding(.horizontal, NXSpacing.x3)
+        .padding(.vertical, NXSpacing.x3)
+        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.popover))
+        .overlay(RoundedRectangle(cornerRadius: NXRadius.popover).stroke(NXColor.borderStrong(scheme), lineWidth: 1))
+        .nxFloatingShadow(scheme)
     }
 
-    // The mic: a hold-to-talk target until locked, then a passive indicator.
-    // Two independent entries on one icon: a long-press is a quick ask (hold and
-    // speak, release to send); a tap enters Live. In Live the icon is a passive
-    // indicator — the hold gesture is off and turns are handed to the model's VAD.
-    // A larger contentShape than the icon so the hold is easy to land one-handed.
-    private var micControl: some View {
-        VoiceActivityIcon(phase: controller.state.phase, connected: connected)
-            .frame(width: 40, height: 40)
-            .contentShape(Rectangle())
-            // Emphasis follows the floor holder, not just the long-press: in Live
-            // the learner speaks with no touch, so .user must still enlarge it.
-            .scaleEffect(controller.floor == .user ? 1.12 : 1)
-            .animation(.easeOut(duration: 0.14), value: controller.floor)
-            .gesture(live ? nil : quickAsk)
-            .onTapGesture { enterLive() }
-            .accessibilityLabel(live ? "Live discussion" : "Hold to talk, tap for live")
-            .accessibilityHint(live ? "Speak any time; tap the close button to leave" : "Hold and speak, release to send; tap to start live")
+    // What the classroom is saying right now — one line above the controls.
+    private var statusLine: some View {
+        HStack(spacing: NXSpacing.x2) {
+            if let speaker = speakerLabel {
+                Text(speaker)
+                    .font(NXFont.label)
+                    .foregroundStyle(NXColor.primary)
+            }
+            Text(line)
+                .font(NXFont.control)
+                .foregroundStyle(NXColor.text(scheme))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // A real hold (0.18s) before a turn starts, so a stray tap enters Live
-    // instead of sending an empty turn. Release sends and asks for one answer.
-    private var quickAsk: some Gesture {
+    // Live entry (left) · the big hold-to-talk button (center) · close (right).
+    private var controlRow: some View {
+        HStack(spacing: NXSpacing.x3) {
+            liveButton
+            talkButton
+            closeButton
+        }
+    }
+
+    // The big, obvious hold-to-talk target — the primary action, Doubao-style.
+    // In Live it turns into a passive activity indicator (no hold).
+    private var talkButton: some View {
+        ZStack {
+            Capsule()
+                .fill(talkFill)
+                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+            HStack(spacing: NXSpacing.x2) {
+                VoiceActivityIcon(phase: controller.state.phase, connected: connected)
+                Text(talkLabel)
+                    .font(NXFont.controlEmphasis)
+                    .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 56)
+        .scaleEffect(talking ? 1.03 : 1)
+        .animation(.easeOut(duration: 0.14), value: talking)
+        .animation(.easeOut(duration: 0.14), value: controller.floor)
+        .contentShape(Capsule())
+        .gesture(live ? nil : holdToTalk)
+        .accessibilityLabel(live ? "Live discussion active" : "Hold to talk")
+        .accessibilityHint(live ? "Speak any time; tap Leave to exit" : "Hold and speak, release to send")
+    }
+
+    private var talkLabel: String {
+        if live { return floorMessage }
+        return talking ? "松开 发送" : "按住 说话"
+    }
+
+    private var talkFill: Color {
+        if live { return NXColor.surface2(scheme) }
+        return talking ? NXColor.primary.opacity(0.85) : NXColor.primary
+    }
+
+    // Enter Live, or (once in Live) show it's active. Tap toggles into Live.
+    private var liveButton: some View {
+        Button(action: enterLive) {
+            VStack(spacing: 2) {
+                Image(systemName: live ? "dot.radiowaves.left.and.right" : "waveform.circle")
+                    .font(.system(size: 20, weight: .semibold))
+                Text("Live")
+                    .font(NXFont.label)
+            }
+            .foregroundStyle(live ? NXColor.primary : NXColor.textSecondary(scheme))
+            .frame(width: 52, height: 56)
+            .background(live ? NXColor.primary.opacity(0.12) : NXColor.surface2(scheme),
+                        in: RoundedRectangle(cornerRadius: NXRadius.small))
+        }
+        .buttonStyle(PressableStyle())
+        .disabled(live)
+        .accessibilityLabel(live ? "Live active" : "Enter live")
+    }
+
+    private var closeButton: some View {
+        Button(action: closeAction) {
+            Image(systemName: "xmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(NXColor.textSecondary(scheme))
+                .frame(width: 44, height: 56)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(live ? "Leave live" : "End discussion")
+    }
+
+    // A real hold (0.18s) before a turn starts, so a stray tap sends nothing.
+    // Release sends and asks for one answer.
+    private var holdToTalk: some Gesture {
         LongPressGesture(minimumDuration: 0.18)
             .sequenced(before: DragGesture(minimumDistance: 0))
             .onChanged { value in
@@ -670,13 +733,14 @@ private struct DiscussionDockContent: View {
         return classroomStatusMessage(controller.state, cursorMs)
     }
 
-    // The floor holder as one glanceable line (Live only).
+    // The floor holder as one short, glanceable line (Live only). Doubles as the
+    // big button's label in Live, so keep it terse.
     private var floorMessage: String {
         switch controller.floor {
-        case .user: return "Listening to you"
-        case .teacher: return "Teacher is speaking"
-        case .player: return "Podcast playing · say anything to interrupt"
-        case .idle: return "Live · speak, or say “play” to resume the podcast"
+        case .user: return "在听你说…"
+        case .teacher: return "老师在说…"
+        case .player: return "播客播放中 · 开口即可插话"
+        case .idle: return "Live 中 · 直接开口,或说“播放”"
         }
     }
 

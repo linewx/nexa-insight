@@ -68,6 +68,7 @@ enum NXFont {
     static let body = Font.system(size: 14, weight: .regular)
     static let bodyMedium = Font.system(size: 14, weight: .medium)
     static let control = Font.system(size: 13, weight: .medium)
+    static let controlEmphasis = Font.system(size: 16, weight: .semibold)
     static let auxiliary = Font.system(size: 12, weight: .regular)
     static let label = Font.system(size: 11, weight: .medium)
 }
