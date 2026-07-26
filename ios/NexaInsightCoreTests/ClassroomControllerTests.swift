@@ -143,6 +143,15 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertEqual(transport.toolResults.last?.1, true)
     }
 
+    // Same call_id arriving twice (dedicated event + echoed in response.done)
+    // must run the tool once. Guards against a seek/pause firing twice.
+    func testDuplicateToolCallIdRunsOnce() {
+        let (c, playback, _, _) = make()
+        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp, args: ["seconds": 3], callId: "dup"))
+        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp, args: ["seconds": 3], callId: "dup"))
+        XCTAssertEqual(playback.seeks.filter { $0 == 3000 }.count, 1)
+    }
+
     func testTextDirectCommandRunsToolNoDiscussion() {
         // "resume" is whitelisted by isActionableTranscript AND matches a direct
         // command, so it runs the tool with no spoken monologue.

@@ -36,6 +36,10 @@ final class ClassroomController: ObservableObject {
     @Published var transcript: [TutorTurn] = []
     @Published var frozenPositionMs: Int?
 
+    // Tool calls can arrive twice: once as response.function_call_arguments.done
+    // and again echoed in response.done's output. Run each call_id once.
+    private var handledToolCallIds: Set<String> = []
+
     private let sentences: [SentenceDTO]
     private let playback: Playback
     private let transport: ClassroomTransport
@@ -110,6 +114,13 @@ final class ClassroomController: ObservableObject {
         case .responseDone:
             state = classroomReducer(state, .teacherFinished)
         case let .toolCall(name, args, callId):
+            // Dedupe by call_id so a call echoed in both the dedicated event and
+            // response.done runs once. A nil call_id can't be tracked, so it runs
+            // (rare, and better than dropping a real command).
+            if let callId {
+                guard !handledToolCallIds.contains(callId) else { return }
+                handledToolCallIds.insert(callId)
+            }
             runPlaybackTool(name, args)
             transport.sendToolResult(callId: callId, ok: true)
         }

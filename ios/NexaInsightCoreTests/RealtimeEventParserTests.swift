@@ -33,6 +33,28 @@ final class RealtimeEventParserTests: XCTestCase {
         XCTAssertEqual(callId, "c1")
     }
 
+    // WebRTC's real path: the tool call arrives as its own event with name/
+    // call_id/arguments on the event itself. This is what was being dropped,
+    // so playback control never fired.
+    func testFunctionCallArgumentsDoneEventEmitsToolCall() {
+        let e = RealtimeEventParser.parse([
+            "type": "response.function_call_arguments.done",
+            "name": "seek_to_timestamp",
+            "arguments": "{\"seconds\": 42}",
+            "call_id": "fc1"])
+        guard case let .toolCall(name, args, callId) = e else { return XCTFail("expected toolCall") }
+        XCTAssertEqual(name, .seek_to_timestamp)
+        XCTAssertEqual(args["seconds"], 42)
+        XCTAssertEqual(callId, "fc1")
+    }
+
+    func testFunctionCallArgumentsDoneUnknownToolIsIgnored() {
+        let e = RealtimeEventParser.parse([
+            "type": "response.function_call_arguments.done",
+            "name": "delete_everything", "arguments": "{}", "call_id": "fc2"])
+        XCTAssertNil(e, "unknown tool on the dedicated event -> nil, not a bogus toolCall")
+    }
+
     func testResponseDoneWithoutToolCallIsResponseDone() {
         let e = RealtimeEventParser.parse(["type": "response.done", "response": ["output": []]])
         guard case .responseDone = e else { return XCTFail("expected responseDone") }
