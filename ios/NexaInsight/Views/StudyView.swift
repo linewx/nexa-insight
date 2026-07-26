@@ -671,17 +671,29 @@ private struct ConnectedBarContent: View {
     private var line: String {
         if !trimmedNotice.isEmpty { return trimmedNotice }
         if let latestTurn { return latestTurn.text }
-        return floorMessage
+        return statusMessage
     }
 
-    // The floor holder as one short, glanceable line. Doubles as the big button's
-    // label in Live, so keep it terse.
+    // Ambient status for the line above the controls — names whose turn it is
+    // WITHOUT repeating the button's own instruction (the button already says
+    // "按住 说话" / "Live"). In self-study it just reports the mode.
+    private var statusMessage: String {
+        switch controller.floor {
+        case .user: return "在听你说…"
+        case .teacher: return "老师在说…"
+        case .player: return live ? "播客播放中" : "自学中 · 播客播放中"
+        case .idle: return "Live · 等你开口"
+        }
+    }
+
+    // The big button's label while in Live (it turns passive there). Terse — it
+    // sits inside a capsule next to the waveform, so no room for a full sentence.
     private var floorMessage: String {
         switch controller.floor {
         case .user: return "在听你说…"
         case .teacher: return "老师在说…"
-        case .player: return live ? "播客播放中 · 开口即可插话" : "按住说话提问,或点 Live 持续对话"
-        case .idle: return "Live 中 · 直接开口,或说“播放”"
+        case .player: return "播放中 · 开口插话"
+        case .idle: return "直接开口说话"
         }
     }
 }
