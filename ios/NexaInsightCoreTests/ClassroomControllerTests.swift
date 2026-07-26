@@ -25,6 +25,7 @@ final class FakeTransport: ClassroomTransport {
     private(set) var turnModes: [TurnMode] = []
     private(set) var beganListening = 0
     private(set) var endedTurns = 0
+    private(set) var cancelledTurns = 0
     func stopSpeaking() { stoppedSpeaking += 1 }
     func sendToolResult(callId: String?, ok: Bool) { toolResults.append((callId, ok)) }
     func updateContext(_ context: String) { contextUpdates.append(context) }
@@ -34,6 +35,7 @@ final class FakeTransport: ClassroomTransport {
     func setTurnMode(_ mode: TurnMode) { turnModes.append(mode) }
     func beginListening() { beganListening += 1 }
     func endTurnAndRespond() { endedTurns += 1 }
+    func cancelTurn() { cancelledTurns += 1 }
 }
 
 private func s(_ id: Int, _ start: Int) -> SentenceDTO {
@@ -82,6 +84,20 @@ final class ClassroomControllerTests: XCTestCase {
         c.releaseQuickAsk()
         XCTAssertEqual(c.floor, .teacher)
         XCTAssertEqual(transport.endedTurns, 1)
+    }
+
+    func testCancelQuickAskDropsTurnAndResumesPodcast() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.cancelQuickAsk()
+        // Floor returns to the podcast, resuming from where it was frozen — no
+        // teacher turn, no commit/response.
+        XCTAssertEqual(c.floor, .player)
+        XCTAssertEqual(transport.cancelledTurns, 1)
+        XCTAssertEqual(transport.endedTurns, 0)
+        XCTAssertTrue(playback.didPlay)
+        XCTAssertEqual(playback.seeks.last, 2100)
     }
 
     func testEnterLivePausesAndGoesIdleContinuous() {

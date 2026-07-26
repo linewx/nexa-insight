@@ -161,6 +161,13 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         send(["type": "input_audio_buffer.commit"])
         requestResponse()
     }
+
+    func cancelTurn() {
+        // Slide-up cancel: close the mic and drop the captured audio WITHOUT
+        // committing or asking for a response, so the turn leaves no trace.
+        micTrack?.isEnabled = false
+        send(["type": "input_audio_buffer.clear"])
+    }
 }
 
 extension QwenRealtimeTransport: RTCPeerConnectionDelegate {
@@ -230,6 +237,7 @@ final class QwenRealtimeTransport: ClassroomTransport {
     func setTurnMode(_ mode: TurnMode) {}
     func beginListening() {}
     func endTurnAndRespond() {}
+    func cancelTurn() {}
 }
 
 #endif

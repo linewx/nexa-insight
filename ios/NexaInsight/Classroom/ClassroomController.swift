@@ -18,6 +18,9 @@ protocol ClassroomTransport: AnyObject {
     // End a push-to-talk turn: commit the captured audio and request exactly
     // one response, then close the mic.
     func endTurnAndRespond()
+    // Abandon a push-to-talk turn: close the mic and drop the captured audio
+    // without committing or requesting a response (slide-up-to-cancel).
+    func cancelTurn()
 }
 
 enum FreezeReason { case paused, speechStarted }
@@ -187,6 +190,15 @@ final class ClassroomController: ObservableObject {
         state = classroomReducer(state, .discussionStarted)
         transport.endTurnAndRespond()
         grantFloor(to: .teacher, resumeAtMs: nil)
+    }
+
+    // Slide-up cancel: drop the captured audio without a response and hand the
+    // floor back to the podcast, resuming from where it was interrupted — as if
+    // the learner never pressed. No teacher turn, no transcript entry.
+    func cancelQuickAsk() {
+        let resumeAt = frozenPositionMs
+        transport.cancelTurn()
+        grantFloor(to: .player, resumeAtMs: resumeAt)
     }
 
     // MARK: - Live (tap)

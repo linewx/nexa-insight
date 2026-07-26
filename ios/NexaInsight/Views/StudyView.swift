@@ -553,8 +553,13 @@ private struct ConnectedBarContent: View {
     // hold-to-talk press is in progress.
     @State private var live = false
     @State private var talking = false
+    // Slide-up-to-cancel: armed once the press drags up past the threshold.
+    // Releasing while armed drops the turn instead of sending it.
+    @State private var cancelArmed = false
 
-    private let controlHeight: CGFloat = 58
+    // Slender: the copy is small throughout, so a shorter capsule reads as one
+    // long, calm control rather than a chunky button.
+    private let controlHeight: CGFloat = 50
 
     var body: some View {
         // Surface, edge, and shadow now come from BottomPanelChrome; this is just
@@ -581,21 +586,43 @@ private struct ConnectedBarContent: View {
         .padding(.horizontal, NXSpacing.x2)
     }
 
-    // Live pill (left, fixed) + the big hold-to-talk button (fills the rest).
-    // Same height, vertically centered — the alignment the old layout lacked.
+    // One continuous capsule (ChatGPT / Doubao style): an icon-only Live segment
+    // on the left, a hairline seam, then the hold-to-talk area filling the rest.
+    // The two read as a single control, not two buttons sitting next to each other.
     private var controlRow: some View {
-        HStack(spacing: NXSpacing.x2) {
-            liveButton
-            talkButton
+        HStack(spacing: 0) {
+            liveSegment
+            Rectangle()
+                .fill(seamColor)
+                .frame(width: 1, height: controlHeight - 20)
+            talkSegment
         }
+        .frame(height: controlHeight)
+        .background(talkFill, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(live ? 0 : 0.18), lineWidth: 1))
+        .scaleEffect(talking ? 1.01 : 1)
+        .animation(.easeOut(duration: 0.14), value: talking)
+        .animation(.easeOut(duration: 0.14), value: controller.floor)
     }
 
-    // The big, obvious hold-to-talk target — the primary action, Doubao-style.
-    // In Live it turns into a passive activity indicator (no hold).
-    private var talkButton: some View {
+    // Icon-only, no label — the waveform/stop glyph carries the meaning, matching
+    // the reference apps. Tapping it toggles Live.
+    private var liveSegment: some View {
+        Button(action: toggleLive) {
+            Image(systemName: live ? "stop.fill" : "waveform")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
+                .frame(width: 56, height: controlHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel(live ? "退出 Live" : "进入 Live")
+    }
+
+    // The hold-to-talk area — the primary action. In Live it turns passive (no
+    // hold gesture) and shows the floor message instead.
+    private var talkSegment: some View {
         HStack(spacing: NXSpacing.x2) {
-            VoiceActivityIcon(phase: controller.state.phase, connected: connected,
-                              showsChip: false, tint: live ? NXColor.primary : .white)
             Text(talkLabel)
                 .font(NXFont.controlEmphasis)
                 .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
@@ -603,60 +630,62 @@ private struct ConnectedBarContent: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: controlHeight)
-        .background(talkFill, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(live ? 0 : 0.18), lineWidth: 1))
-        .scaleEffect(talking ? 1.02 : 1)
-        .animation(.easeOut(duration: 0.14), value: talking)
-        .animation(.easeOut(duration: 0.14), value: controller.floor)
-        .contentShape(Capsule())
+        .contentShape(Rectangle())
         .gesture(live ? nil : holdToTalk)
         .accessibilityLabel(live ? "Live 进行中" : "按住 说话")
         .accessibilityHint(live ? "随时开口;点 Live 退出" : "按住说话,松开发送")
     }
 
+    private var seamColor: Color {
+        live ? NXColor.border(scheme) : Color.white.opacity(0.22)
+    }
+
     private var talkLabel: String {
         if live { return floorMessage }
-        return talking ? "松开 发送" : "按住 说话"
+        if talking { return cancelArmed ? "松开 取消" : "上滑取消 · 松开发送" }
+        return "按住 说话"
     }
 
     private var talkFill: Color {
         if live { return NXColor.surface2(scheme) }
+        if cancelArmed { return NXColor.error }
         return talking ? NXColor.primary.opacity(0.85) : NXColor.primary
-    }
-
-    // Tap toggles Live: enter continuous mode, or leave it. This is also the
-    // only exit from Live (there is no close button — the bar is persistent).
-    private var liveButton: some View {
-        Button(action: toggleLive) {
-            HStack(spacing: NXSpacing.x1) {
-                Image(systemName: live ? "stop.fill" : "waveform")
-                    .font(.system(size: 15, weight: .semibold))
-                Text(live ? "退出" : "Live")
-                    .font(NXFont.control)
-            }
-            .foregroundStyle(live ? Color.white : NXColor.primary)
-            .frame(width: 84, height: controlHeight)
-            .background(live ? NXColor.primary : NXColor.primary.opacity(0.12), in: Capsule())
-        }
-        .buttonStyle(PressableStyle())
-        .accessibilityLabel(live ? "退出 Live" : "进入 Live")
     }
 
     // A real hold (0.18s) before a turn starts, so a stray tap sends nothing.
     // Release sends and asks for one answer.
+    // Drag up past this far (points) to arm cancel. Comfortably above finger
+    // jitter, reachable without lifting.
+    private let cancelThreshold: CGFloat = 60
+
     private var holdToTalk: some Gesture {
         LongPressGesture(minimumDuration: 0.18)
             .sequenced(before: DragGesture(minimumDistance: 0))
             .onChanged { value in
-                guard case .second(true, _) = value, !talking else { return }
-                talking = true
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                controller.pressQuickAsk()
+                guard case let .second(true, drag) = value else { return }
+                if !talking {
+                    talking = true
+                    cancelArmed = false
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    controller.pressQuickAsk()
+                }
+                // Negative height = dragging up. Toggle the armed state on
+                // threshold crossings, with a light tick each way as feedback.
+                let armed = (drag?.translation.height ?? 0) < -cancelThreshold
+                if armed != cancelArmed {
+                    cancelArmed = armed
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
             }
             .onEnded { _ in
                 guard talking else { return }
                 talking = false
-                controller.releaseQuickAsk()
+                if cancelArmed {
+                    controller.cancelQuickAsk()
+                } else {
+                    controller.releaseQuickAsk()
+                }
+                cancelArmed = false
             }
     }
 
