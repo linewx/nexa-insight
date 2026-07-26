@@ -40,6 +40,13 @@ final class ClassroomController: ObservableObject {
     // and again echoed in response.done's output. Run each call_id once.
     private var handledToolCallIds: Set<String> = []
 
+    // Who currently holds the floor. Drives visuals; every grant enforces the
+    // single-voice rule. Starts on the podcast (self-study, source playing).
+    @Published var floor: FloorHolder = .player
+    // Quick-ask (long-press) resumes playback when the teacher finishes; Live
+    // stays idle and waits for the learner. This distinguishes the two.
+    private var inLive = false
+
     private let sentences: [SentenceDTO]
     private let playback: Playback
     private let transport: ClassroomTransport
@@ -70,6 +77,7 @@ final class ClassroomController: ObservableObject {
         frozenPositionMs = nil
         transport.stopSpeaking()
         playback.play()
+        floor = .player
         state = classroomReducer(state, .resumed)
         onNotice("Podcast playing")
     }
@@ -87,6 +95,7 @@ final class ClassroomController: ObservableObject {
         case .pause_playback:
             playback.pause()
             freeze(target, reason: .paused)
+            floor = .idle
         case .set_playback_speed:
             playback.speed(args["rate"] ?? 1)
         case .exit_class:
@@ -143,29 +152,60 @@ final class ClassroomController: ObservableObject {
         transport.requestResponse()
     }
 
-    // MARK: - Push-to-talk
+    // MARK: - Floor handoff
 
-    // The finger, not the model's VAD, marks the turn boundary. Press mirrors
-    // the .speechStarted path — freeze at the interrupted position and refresh
-    // the model's context to there — and additionally opens the mic. The reducer
-    // is unchanged: this drives the same events VAD would.
-    func beginUserTurn() {
+    // The one place the single-voice rule is enforced. Granting the floor to a
+    // holder silences the other two per silenced(by:); when the podcast takes
+    // the floor it also (optionally seeks and) resumes.
+    private func grantFloor(to holder: FloorHolder, resumeAtMs: Int?) {
+        let rule = silenced(by: holder)
+        if rule.stopTeacher { transport.stopSpeaking() }
+        if rule.pausePlayer { playback.pause() }
+        if holder == .player {
+            if let resumeAtMs { playback.seek(resumeAtMs) }
+            frozenPositionMs = nil
+            playback.play()
+        }
+        floor = holder
+    }
+
+    // MARK: - Quick ask (long-press)
+
+    // Press: open the mic, freeze at the interrupted position, refresh context
+    // there, and take the floor (which pauses the podcast and quiets the teacher).
+    func pressQuickAsk() {
+        inLive = false
         transport.beginListening()
         freeze(cursor(), reason: .speechStarted)
         onContextRefresh(frozenPositionMs ?? cursor())
+        grantFloor(to: .user, resumeAtMs: nil)
     }
 
-    // Release: close the mic, commit the captured audio, and request exactly one
-    // response. The learner's transcription and the answer still arrive as the
-    // usual .inputTranscriptionCompleted / .responseAudioTranscriptDone events.
-    func endUserTurn() {
+    // Release: commit the turn, request one answer, and hand the floor to the
+    // teacher. When the teacher finishes, the podcast resumes (quick-ask scene).
+    func releaseQuickAsk() {
         state = classroomReducer(state, .discussionStarted)
         transport.endTurnAndRespond()
+        grantFloor(to: .teacher, resumeAtMs: nil)
     }
 
-    // Slide-to-lock: hand turn-taking to the model's VAD (continuous live mode).
-    // One-way — a locked session is exited by ending it, not by relocking.
-    func switchToContinuous() {
+    // MARK: - Live (tap)
+
+    // Enter: hand turns to the model's VAD (continuous), pause the podcast, and
+    // sit idle waiting for the learner to speak or ask for playback.
+    func enterLive() {
+        inLive = true
         transport.setTurnMode(.continuous)
+        freeze(cursor(), reason: .paused)
+        grantFloor(to: .idle, resumeAtMs: nil)
+    }
+
+    // Exit: back to self-study — resume the podcast from where it was held and
+    // return the transport to push-to-talk (the default outside Live).
+    func exitLive() {
+        let resumeAt = frozenPositionMs
+        inLive = false
+        transport.setTurnMode(.pushToTalk)
+        grantFloor(to: .player, resumeAtMs: resumeAt)
     }
 }
