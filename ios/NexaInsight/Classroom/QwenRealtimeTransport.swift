@@ -17,13 +17,25 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     private var onEvent: ((RealtimeEvent) -> Void)?
     private var micTrack: RTCAudioTrack?
     private var turnMode: TurnMode = .continuous
-    // nonisolated: the remote track arrives on RTCPeerConnectionDelegate
-    // callbacks, which are not main-actor. An immutable stream needs no
-    // isolation, and the consumer awaits it from wherever it likes.
-    nonisolated let remoteAudioTrack = AsyncStream<RTCAudioTrack>.makeStream()
+    // The teacher's voice. WebRTC's audio device module renders a remote track
+    // to the output automatically, but ONLY while the RTCAudioTrack object is
+    // retained and enabled — drop the reference and the render tears down and
+    // the teacher goes silent. So we hold it for the life of the session.
+    private var remoteAudioTrack: RTCAudioTrack?
 
     override init() {
         RTCInitializeSSL()
+        // WebRTC keeps its own AVAudioSession config and reapplies it around
+        // track changes; left at its default it routes to the earpiece, which
+        // over speaker-played podcast audio reads as "the teacher is silent."
+        // Match the app's classroom session (see LocalAudioPlayback): speaker
+        // out, voiceChat for echo cancellation so the podcast leaking into the
+        // mic does not trip the model's VAD.
+        let rtcConfig = RTCAudioSessionConfiguration.webRTC()
+        rtcConfig.category = AVAudioSession.Category.playAndRecord.rawValue
+        rtcConfig.mode = AVAudioSession.Mode.voiceChat.rawValue
+        rtcConfig.categoryOptions = [.defaultToSpeaker, .allowBluetooth]
+        RTCAudioSessionConfiguration.setWebRTC(rtcConfig)
         factory = RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(),
                                            decoderFactory: RTCDefaultVideoDecoderFactory())
         super.init()
@@ -153,7 +165,13 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
 
 extension QwenRealtimeTransport: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
-        if let track = rtpReceiver.track as? RTCAudioTrack { remoteAudioTrack.continuation.yield(track) }
+        guard let track = rtpReceiver.track as? RTCAudioTrack else { return }
+        // Retain on the main actor and enable it. WebRTC renders it to the
+        // configured output on its own; our only job is to keep it alive and on.
+        Task { @MainActor in
+            track.isEnabled = true
+            self.remoteAudioTrack = track
+        }
     }
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
         dataChannel.delegate = self
