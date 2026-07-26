@@ -492,8 +492,8 @@ private struct FloatingDiscussionButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(PressableStyle())
-        .accessibilityLabel("Join discussion")
-        .accessibilityHint("Brings in the voice teacher without interrupting playback")
+        .accessibilityLabel("Start discussion")
+        .accessibilityHint("Connects the voice teacher; then hold the mic to talk. Playback keeps going.")
     }
 }
 
@@ -546,6 +546,15 @@ private struct DiscussionDockContent: View {
     let onEnd: () -> Void
     @Environment(\.colorScheme) private var scheme
 
+    // Once the learner slides to lock, the icon is a live indicator, not a
+    // hold-to-talk target: turns are handed to the model's VAD (continuous).
+    @State private var locked = false
+    @State private var talking = false
+    @State private var willLock = false
+
+    // How far up the finger must travel mid-hold to arm the lock (iMessage-ish).
+    private let lockThreshold: CGFloat = 64
+
     // Frozen while the learner holds the floor, so the timestamp stops ticking
     // at the line they interrupted instead of chasing live playback.
     private var cursorMs: Int {
@@ -554,7 +563,7 @@ private struct DiscussionDockContent: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: NXSpacing.x3) {
-            VoiceActivityIcon(phase: controller.state.phase, connected: connected)
+            micControl
 
             VStack(alignment: .leading, spacing: NXSpacing.x1) {
                 HStack(spacing: NXSpacing.x2) {
@@ -588,6 +597,64 @@ private struct DiscussionDockContent: View {
             .accessibilityLabel("End discussion")
         }
         .modifier(DiscussionDockChrome())
+        .overlay(alignment: .topLeading) {
+            if willLock { lockHint }
+        }
+    }
+
+    // The mic: a hold-to-talk target until locked, then a passive indicator.
+    // A larger contentShape than the icon so the hold is easy to land one-handed.
+    private var micControl: some View {
+        VoiceActivityIcon(phase: controller.state.phase, connected: connected)
+            .frame(width: 40, height: 40)
+            .contentShape(Rectangle())
+            .scaleEffect(talking ? 1.12 : 1)
+            .animation(.easeOut(duration: 0.14), value: talking)
+            .gesture(locked ? nil : holdToTalk)
+            .accessibilityLabel(locked ? "Live discussion" : "Hold to talk")
+            .accessibilityHint(locked ? "Tap the close button to end" : "Hold and speak; slide up to stay connected")
+    }
+
+    private var lockHint: some View {
+        Label("Slide to stay connected", systemImage: "lock.fill")
+            .font(NXFont.label)
+            .foregroundStyle(NXColor.primary)
+            .padding(.horizontal, NXSpacing.x2)
+            .padding(.vertical, NXSpacing.x1)
+            .background(NXColor.surface2(scheme), in: Capsule())
+            .offset(y: -34)
+            .transition(.opacity)
+    }
+
+    // A real hold (0.18s) before a turn starts, so a stray tap sends nothing.
+    // Once holding, vertical travel arms the lock; release either locks (keep
+    // listening, continuous) or ends the turn and asks for one answer.
+    private var holdToTalk: some Gesture {
+        LongPressGesture(minimumDuration: 0.18)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                guard case let .second(true, drag) = value else { return }
+                if !talking {
+                    talking = true
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    controller.beginUserTurn()
+                }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    willLock = (drag?.translation.height ?? 0) < -lockThreshold
+                }
+            }
+            .onEnded { _ in
+                guard talking else { return }
+                talking = false
+                if willLock {
+                    willLock = false
+                    locked = true
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    controller.switchToContinuous()
+                } else {
+                    controller.endUserTurn()
+                }
+            }
     }
 
     private var trimmedNotice: String {

@@ -91,6 +91,12 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertNotNil(c.frozenPositionMs, "playback stays frozen until the teacher resumes it")
     }
 
+    func testSwitchToContinuousFlipsTransportMode() {
+        let (c, _, transport, _) = make()
+        c.switchToContinuous()
+        XCTAssertEqual(transport.turnModes, [.continuous])
+    }
+
     func testResumeToolPlaysAndClearsFrozen() {
         let (c, playback, transport, box) = make()
         c.freeze(2000, reason: .paused)

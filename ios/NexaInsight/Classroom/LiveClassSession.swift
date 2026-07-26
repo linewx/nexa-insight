@@ -106,6 +106,9 @@ final class LiveClassSession: ObservableObject, Identifiable {
                 Task { @MainActor in controller?.handleRealtimeEvent(event) }
             }
             connected = true
+            // Default to push-to-talk: a hold starts a turn, release ends it.
+            // Sliding to lock later flips this to continuous.
+            transport.setTurnMode(.pushToTalk)
         } catch {
             self.error = error.localizedDescription
             connected = false

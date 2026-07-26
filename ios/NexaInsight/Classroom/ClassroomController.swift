@@ -151,4 +151,10 @@ final class ClassroomController: ObservableObject {
         state = classroomReducer(state, .discussionStarted)
         transport.endTurnAndRespond()
     }
+
+    // Slide-to-lock: hand turn-taking to the model's VAD (continuous live mode).
+    // One-way — a locked session is exited by ending it, not by relocking.
+    func switchToContinuous() {
+        transport.setTurnMode(.continuous)
+    }
 }
