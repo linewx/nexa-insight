@@ -14,6 +14,12 @@ final class DiscoverViewModel: ObservableObject {
     @Published var failedChannelIds: [String] = []
     @Published var selectedChannelId: String?
     @Published var query = ""
+    @Published var searchResults: [ChannelSearchResult] = []
+    @Published var searching = false
+    // True only when the page could not be read at all — never for an empty
+    // result set, which is a legitimate answer.
+    @Published var searchUnavailable = false
+    @Published var searchedTerm: String?
 
     private let store: SubscriptionStore
     private let service: DiscoverFeedFetching
@@ -74,5 +80,44 @@ final class DiscoverViewModel: ObservableObject {
         entries.removeAll { $0.channelId == channelId }
         failedChannelIds.removeAll { $0 == channelId }
         if selectedChannelId == channelId { selectedChannelId = nil }
+    }
+
+    func runSearch(_ term: String) async {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        searching = true
+        searchUnavailable = false
+        defer { searching = false }
+
+        switch await service.searchChannels(query: trimmed) {
+        case .parsed(let results):
+            searchResults = results
+            searchedTerm = trimmed
+        case .structureMissing:
+            searchResults = []
+            searchedTerm = trimmed
+            searchUnavailable = true
+        }
+    }
+
+    func clearSearch() {
+        searchResults = []
+        searchedTerm = nil
+        searchUnavailable = false
+        query = ""
+    }
+
+    // Search results already carry channelId, so this skips resolveChannel's
+    // handle lookup — that extra request only exists for pasted URLs.
+    // searchResults is deliberately left untouched so the row can flip to
+    // "Following" in place.
+    func subscribe(to result: ChannelSearchResult) async {
+        store.add(Subscription(channelId: result.channelId, title: result.title, addedAt: Date()))
+        await refresh()
+    }
+
+    func isFollowing(_ result: ChannelSearchResult) -> Bool {
+        store.contains(channelId: result.channelId)
     }
 }

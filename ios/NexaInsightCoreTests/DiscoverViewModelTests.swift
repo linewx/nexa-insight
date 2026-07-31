@@ -5,14 +5,24 @@ private struct StubFeedService: DiscoverFeedFetching {
     var result = FeedFetchResult(entries: [], failedChannelIds: [], channelTitles: [:])
     var resolved: Subscription?
     var resolveError: Error?
+    var searchOutcome: ChannelSearchOutcome = .parsed([])
 
     func fetchFeeds(channelIds: [String]) async -> FeedFetchResult { result }
+
+    func searchChannels(query: String) async -> ChannelSearchOutcome { searchOutcome }
 
     func resolveChannel(fromURL url: String) async throws -> Subscription {
         if let resolveError { throw resolveError }
         guard let resolved else { throw DiscoverFeedError.unrecognizedChannelLink }
         return resolved
     }
+}
+
+private func searchResult(_ id: String, _ title: String) -> ChannelSearchResult {
+    ChannelSearchResult(
+        channelId: id, title: title, handle: "@\(title.lowercased())",
+        subscriberText: "100K subscribers", summary: "about \(title)",
+        thumbnailURL: nil)
 }
 
 private func entry(_ id: String, channel: String, title: String, at seconds: TimeInterval) -> DiscoverEntry {
@@ -169,5 +179,106 @@ final class DiscoverViewModelTests: XCTestCase {
         vm.selectedChannelId = "UCa"
         vm.removeSubscription(channelId: "UCa")
         XCTAssertNil(vm.selectedChannelId)
+    }
+
+    func testRunSearchPopulatesResults() async {
+        var service = StubFeedService()
+        service.searchOutcome = .parsed([searchResult("UCa", "Alpha"), searchResult("UCb", "Beta")])
+
+        let vm = DiscoverViewModel(store: makeStore(), service: service)
+        await vm.runSearch("philosophy")
+
+        XCTAssertEqual(vm.searchResults.map(\.channelId), ["UCa", "UCb"])
+        XCTAssertEqual(vm.searchedTerm, "philosophy")
+        XCTAssertFalse(vm.searching)
+        XCTAssertFalse(vm.searchUnavailable)
+    }
+
+    // Zero results is a real answer, not a malfunction: the UI shows "nothing
+    // found", not "search is broken".
+    func testZeroResultsIsNotUnavailable() async {
+        var service = StubFeedService()
+        service.searchOutcome = .parsed([])
+
+        let vm = DiscoverViewModel(store: makeStore(), service: service)
+        await vm.runSearch("zzqqxx")
+
+        XCTAssertTrue(vm.searchResults.isEmpty)
+        XCTAssertFalse(vm.searchUnavailable, "an empty result set is not a failure")
+        XCTAssertEqual(vm.searchedTerm, "zzqqxx")
+    }
+
+    // The other case: the page shape changed. This one DOES tell the user search
+    // is unavailable and to paste a link instead.
+    func testStructureMissingSetsUnavailable() async {
+        var service = StubFeedService()
+        service.searchOutcome = .structureMissing
+
+        let vm = DiscoverViewModel(store: makeStore(), service: service)
+        await vm.runSearch("philosophy")
+
+        XCTAssertTrue(vm.searchUnavailable)
+        XCTAssertTrue(vm.searchResults.isEmpty)
+    }
+
+    func testBlankSearchIsIgnored() async {
+        var service = StubFeedService()
+        service.searchOutcome = .parsed([searchResult("UCa", "Alpha")])
+
+        let vm = DiscoverViewModel(store: makeStore(), service: service)
+        await vm.runSearch("   ")
+
+        XCTAssertTrue(vm.searchResults.isEmpty)
+        XCTAssertNil(vm.searchedTerm)
+    }
+
+    func testClearSearchResetsState() async {
+        var service = StubFeedService()
+        service.searchOutcome = .parsed([searchResult("UCa", "Alpha")])
+
+        let vm = DiscoverViewModel(store: makeStore(), service: service)
+        await vm.runSearch("philosophy")
+        vm.clearSearch()
+
+        XCTAssertTrue(vm.searchResults.isEmpty)
+        XCTAssertNil(vm.searchedTerm)
+        XCTAssertFalse(vm.searchUnavailable)
+    }
+
+    func testSubscribeFromResultStoresAndRefreshes() async {
+        var service = StubFeedService()
+        service.searchOutcome = .parsed([searchResult("UCnew", "New Channel")])
+        service.result = FeedFetchResult(
+            entries: [entry("v1", channel: "UCnew", title: "First", at: 1000)],
+            failedChannelIds: [], channelTitles: [:])
+
+        let store = makeStore()
+        let vm = DiscoverViewModel(store: store, service: service)
+        await vm.runSearch("philosophy")
+        await vm.subscribe(to: vm.searchResults[0])
+
+        XCTAssertEqual(store.subscriptions.map(\.channelId), ["UCnew"])
+        XCTAssertEqual(store.subscriptions[0].title, "New Channel")
+        XCTAssertEqual(vm.entries.map(\.videoId), ["v1"])
+    }
+
+    func testIsFollowingReflectsStore() async {
+        let store = makeStore(["UCa"])
+        let vm = DiscoverViewModel(store: store, service: StubFeedService())
+        XCTAssertTrue(vm.isFollowing(searchResult("UCa", "Alpha")))
+        XCTAssertFalse(vm.isFollowing(searchResult("UCb", "Beta")))
+    }
+
+    func testSubscribingKeepsResultsVisibleSoFollowingStateShows() async {
+        var service = StubFeedService()
+        service.searchOutcome = .parsed([searchResult("UCa", "Alpha"), searchResult("UCb", "Beta")])
+
+        let vm = DiscoverViewModel(store: makeStore(), service: service)
+        await vm.runSearch("philosophy")
+        await vm.subscribe(to: vm.searchResults[0])
+
+        XCTAssertEqual(vm.searchResults.count, 2, "results stay so the row can flip to Following")
+        XCTAssertTrue(vm.isFollowing(vm.searchResults[0]))
+        XCTAssertFalse(vm.isFollowing(vm.searchResults[1]))
     }
 }
