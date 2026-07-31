@@ -7,6 +7,11 @@ final class RealtimeEventParserTests: XCTestCase {
         guard case .speechStarted = e else { return XCTFail("expected speechStarted") }
     }
 
+    func testResponseCreated() {
+        let e = RealtimeEventParser.parse(["type": "response.created"])
+        guard case .responseCreated = e else { return XCTFail("expected responseCreated") }
+    }
+
     func testInputTranscriptionCompleted() {
         let e = RealtimeEventParser.parse([
             "type": "conversation.item.input_audio_transcription.completed",
@@ -79,6 +84,6 @@ final class RealtimeEventParserTests: XCTestCase {
     }
 
     func testUnrelatedEventReturnsNil() {
-        XCTAssertNil(RealtimeEventParser.parse(["type": "response.created"]))
+        XCTAssertNil(RealtimeEventParser.parse(["type": "response.output_item.added"]))
     }
 }

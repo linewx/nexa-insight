@@ -21,12 +21,18 @@ enum TurnMode: Equatable { case continuous, pushToTalk }
 // mode→config mapping is unit-testable without a live transport. The VAD
 // tuning (semantic_vad, threshold 0.5, 800ms) matches the ported reference;
 // only create_response flips.
+// WebRTC transport only honors server-side VAD (Alibaba Model Studio realtime
+// docs: "WebRTC only supports server_vad / semantic_vad; manual mode is
+// WebSocket-only"). So the config is identical in both modes and always lets the
+// VAD create the response. Push-to-talk is implemented as a mic gate over this
+// same VAD, NOT by flipping create_response — doing that stopped the model from
+// ever responding on release.
 func turnDetectionConfig(_ mode: TurnMode) -> [String: Any] {
     [
         "type": "semantic_vad",
         "threshold": 0.5,
         "silence_duration_ms": 800,
-        "create_response": mode == .continuous,
+        "create_response": true,
     ]
 }
 
@@ -195,17 +201,30 @@ enum FloorHolder: Equatable { case player, user, teacher, idle }
 
 enum FloorEvent {
     case userTookFloor                          // long-press down, or Live VAD hears the learner
-    case userYielded                            // long-press release, or Live pause detected
+    case userReleased                           // long-press up; see note below
+    case turnCommitted                          // server accepted the turn -> a reply is coming
+    case nothingSaid                            // released without speech; nobody gets the floor
     case teacherFinished(resumePlayback: Bool)  // teacher done; quick-ask resumes, Live stays idle
-    case playbackRequested                       // learner asked to play (voice tool)
-    case playbackHeld                            // learner asked to pause (voice tool)
+    case playbackRequested                      // learner pressed play / asked to play
+    case playbackHeld                           // learner paused / asked to pause
     case sessionEnded
 }
 
+// The floor transitions, as one table instead of decisions scattered across the
+// controller. Pure, so the rules are testable without a transport.
+//
+// The subtle one is `.userReleased` keeping the floor on `.user`. It's tempting to
+// hand it to the teacher on release, but the server ends a turn by hearing
+// TRAILING SILENCE — on device, speech_stopped and committed both arrive after the
+// finger lifts. Since the mic gate derives from the floor (open on `.user`),
+// yielding at release would close the mic and the turn would never be committed:
+// no answer, ever. So release waits, and `.turnCommitted` is what hands over.
 func floorReducer(_ holder: FloorHolder, _ event: FloorEvent) -> FloorHolder {
     switch event {
     case .userTookFloor: return .user
-    case .userYielded: return .teacher
+    case .userReleased: return holder            // keep listening until committed
+    case .turnCommitted: return .teacher
+    case .nothingSaid: return .idle
     case let .teacherFinished(resume): return resume ? .player : .idle
     case .playbackRequested: return .player
     case .playbackHeld: return .idle

@@ -58,29 +58,38 @@ final class ClassroomLogicTests: XCTestCase {
         XCTAssertEqual(playbackNotice(.next_sentence, 0), "Next sentence · paused")
     }
 
-    // The one bit that flips between modes is create_response: continuous lets
-    // the model's VAD auto-respond; push-to-talk defers the response to release.
-    // The VAD tuning is identical in both and matches the ported reference.
-    func testTurnDetectionConfigFlipsCreateResponse() {
-        let continuous = turnDetectionConfig(.continuous)
-        let ptt = turnDetectionConfig(.pushToTalk)
-        XCTAssertEqual(continuous["create_response"] as? Bool, true)
-        XCTAssertEqual(ptt["create_response"] as? Bool, false)
-        for cfg in [continuous, ptt] {
+    // WebRTC transport ONLY supports server-side VAD — manual turn control
+    // (commit + response.create) is not honored over WebRTC. So both modes use
+    // identical VAD config with create_response: true; the model's VAD always
+    // drives the response. Push-to-talk is a mic gate on top of this, not a
+    // different turn_detection. (Alibaba Model Studio realtime docs.)
+    func testTurnDetectionConfigIsServerVADInBothModes() {
+        for cfg in [turnDetectionConfig(.continuous), turnDetectionConfig(.pushToTalk)] {
             XCTAssertEqual(cfg["type"] as? String, "semantic_vad")
             XCTAssertEqual(cfg["threshold"] as? Double, 0.5)
             XCTAssertEqual(cfg["silence_duration_ms"] as? Int, 800)
+            XCTAssertEqual(cfg["create_response"] as? Bool, true)
         }
     }
 
     func testFloorReducerTransitions() {
         XCTAssertEqual(floorReducer(.player, .userTookFloor), .user)
-        XCTAssertEqual(floorReducer(.user, .userYielded), .teacher)
+        XCTAssertEqual(floorReducer(.user, .turnCommitted), .teacher)
+        XCTAssertEqual(floorReducer(.user, .nothingSaid), .idle)
         XCTAssertEqual(floorReducer(.teacher, .teacherFinished(resumePlayback: true)), .player)
         XCTAssertEqual(floorReducer(.teacher, .teacherFinished(resumePlayback: false)), .idle)
         XCTAssertEqual(floorReducer(.idle, .playbackRequested), .player)
         XCTAssertEqual(floorReducer(.player, .playbackHeld), .idle)
         XCTAssertEqual(floorReducer(.user, .sessionEnded), .idle)
+    }
+
+    // Releasing the button must NOT yield the floor: the mic gate derives from the
+    // floor, and the server only ends a turn after hearing trailing silence, which
+    // arrives after the finger lifts. Yielding here would close the mic and the
+    // turn would never be committed.
+    func testReleaseKeepsTheFloorUntilCommitted() {
+        XCTAssertEqual(floorReducer(.user, .userReleased), .user)
+        XCTAssertEqual(floorReducer(.idle, .userReleased), .idle)
     }
 
     func testSilencedRuleIsSingleVoice() {

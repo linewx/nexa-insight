@@ -1,5 +1,23 @@
 import Foundation
 
+// Debug channel for device runs. Writes to stderr (unbuffered) so
+// `devicectl process launch --console` captures it live.
+//
+// DEBUG-only: the voice floor is timing-dependent and effectively only
+// diagnosable from device logs (every bug so far — phantom turns, the
+// self-triggering loop, the commit-after-release ordering — was found this way),
+// so the calls stay in the source. But realtime frames carry transcripts of what
+// the learner said, which must not stream to stderr in a shipped build. In
+// Release the whole thing compiles to nothing: the @autoclosure means the
+// interpolated strings are never even built.
+enum NexaLog {
+    static func log(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        FileHandle.standardError.write(Data(("[Nexa] " + message() + "\n").utf8))
+        #endif
+    }
+}
+
 @MainActor
 protocol ClassroomTransport: AnyObject {
     func stopSpeaking()
@@ -15,6 +33,11 @@ protocol ClassroomTransport: AnyObject {
     // Open the mic for a push-to-talk turn (enable the local track; clear any
     // stale input buffer so the turn starts clean).
     func beginListening()
+    // Close the mic (disable the local track). Called whenever the podcast takes
+    // the floor: a live mic + playing podcast means the podcast bleeds into the
+    // mic and the server VAD self-triggers a phantom turn. Pressing to talk
+    // (beginListening) reopens it.
+    func stopListening()
     // End a push-to-talk turn: commit the captured audio and request exactly
     // one response, then close the mic.
     func endTurnAndRespond()
@@ -27,6 +50,8 @@ enum FreezeReason { case paused, speechStarted }
 
 enum RealtimeEvent {
     case speechStarted
+    case inputAudioCommitted
+    case responseCreated
     case inputTranscriptionCompleted(String)
     case responseAudioTranscriptDone(String)
     case responseDone
@@ -49,6 +74,20 @@ final class ClassroomController: ObservableObject {
     // Quick-ask (long-press) resumes playback when the teacher finishes; Live
     // stays idle and waits for the learner. This distinguishes the two.
     private var inLive = false
+    // Whether the server VAD actually heard speech during the current push-to-talk
+    // hold. A press with nothing said must not hand the floor to the teacher —
+    // there will be no response, so the floor would stick on .teacher forever.
+    private var heardSpeechThisTurn = false
+    // True while the finger is down in quick-ask. The server can commit a turn
+    // mid-hold (it commits on trailing silence, e.g. a pause while thinking); that
+    // must NOT hand the floor over and close the mic, or the rest of the sentence
+    // is lost. The handoff waits for the finger to lift.
+    private var holdingQuickAsk = false
+    // Whether the server already committed a turn during this hold. If it did, the
+    // release must hand the floor over itself — no further commit is coming, so
+    // waiting for one would leave the floor on .user with the mic open, which is
+    // exactly the self-triggering state.
+    private var committedThisTurn = false
 
     private let sentences: [SentenceDTO]
     private let playback: Playback
@@ -76,13 +115,34 @@ final class ClassroomController: ObservableObject {
         state = classroomReducer(state, reason == .speechStarted ? .speechStarted(atMs: frozen) : .paused(atMs: frozen))
     }
 
+    // Routed through grantFloor so the single-voice rule and the mic gate are
+    // applied in ONE place. It used to hand-roll the same three steps (quiet the
+    // teacher, close the mic, play) and set `floor` directly, which meant the mic
+    // was closed even in Live — where it must stay open for barge-in.
     func resume() {
-        frozenPositionMs = nil
-        transport.stopSpeaking()
-        playback.play()
-        floor = .player
+        applyFloorEvent(.playbackRequested)
         state = classroomReducer(state, .resumed)
+        NexaLog.log("RESUME floor=\(self.floor) playing=\(self.playback.playbackState == .playing) at=\(self.playback.currentMs)ms")
         onNotice("Podcast playing")
+    }
+
+    // The transport controls (play/pause button, scrubber, tapping a subtitle) go
+    // through here so they obey the single-voice rule. They used to call
+    // playback.play() straight, which is why starting playback while the teacher
+    // was answering left BOTH talking — the floor never moved, so nothing silenced
+    // the teacher. Pressing play means "I want the podcast now", which is exactly
+    // grantFloor(to: .player).
+    func userStartedPlayback(seekTo positionMs: Int? = nil) {
+        applyFloorEvent(.playbackRequested, resumeAtMs: positionMs)
+        state = classroomReducer(state, .resumed)
+    }
+
+    // Pausing hands the floor to nobody: the podcast stops, the teacher stays
+    // quiet, and the mic follows the mode's gate (closed in quick-ask). Freezing
+    // here keeps the discussion anchored at the spot the learner stopped on.
+    func userPausedPlayback() {
+        freeze(cursor(), reason: .paused)
+        applyFloorEvent(.playbackHeld)
     }
 
     func runPlaybackTool(_ name: PlaybackTool, _ args: [String: Double]) {
@@ -96,9 +156,12 @@ final class ClassroomController: ObservableObject {
         case .resume_playback, .finish_discussion:
             resume()
         case .pause_playback:
-            playback.pause()
+            // Through grantFloor, not a direct assignment: silenced(by: .idle) says
+            // the teacher must be stopped too, and setting `floor` by hand skipped
+            // that. It only looked correct because runPlaybackTool happens to call
+            // stopSpeaking() up top — move that call and the bug appears.
             freeze(target, reason: .paused)
-            floor = .idle
+            applyFloorEvent(.playbackHeld)
         case .set_playback_speed:
             playback.speed(args["rate"] ?? 1)
         case .exit_class:
@@ -108,23 +171,94 @@ final class ClassroomController: ObservableObject {
             resume()
         }
         onNotice(playbackNotice(name, target))
-        if Self.movers.contains(name) { onContextRefresh(target) }
+        if Self.movers.contains(name) {
+            let subtitleAt = activeSentence(sentences, target)
+            NexaLog.log("SYNC target=\(target)ms playerNow=\(playback.currentMs)ms subtitle#\(subtitleAt?.position ?? -1)@\(subtitleAt?.startMs ?? -1)ms ctxPos=\(target)ms")
+            onContextRefresh(target)
+        }
     }
 
     func handleRealtimeEvent(_ event: RealtimeEvent) {
         switch event {
         case .speechStarted:
-            freeze(cursor(), reason: .speechStarted)
+            // Real speech was detected, so a response is coming — release may hand
+            // the floor to the teacher.
+            heardSpeechThisTurn = true
+            freeze(frozenPositionMs ?? cursor(), reason: .speechStarted)
             onContextRefresh(frozenPositionMs ?? cursor())
+            // In Live nothing else claims the floor when the learner starts
+            // talking, so it would stay .idle and the UI would still read "just
+            // start speaking" while they already are. Quick-ask already took the
+            // floor on press, so only Live needs this.
+            if inLive { grantFloor(to: .user, resumeAtMs: nil) }
+        case .inputAudioCommitted:
+            // The server has taken this turn, so the mic has done its job. In
+            // quick-ask close it now — the finger is already up, and leaving it
+            // open is what let the teacher's own voice trip the VAD and chain
+            // another response. Live keeps it open by design (barge-in).
+            //
+            // Also reconcile the no-speech guess: the server may commit a turn even
+            // when our local VAD never reported speech_started (seen on device), in
+            // which case a response IS coming and the floor must be the teacher's,
+            // not held at .idle.
+            guard !inLive else { break }
+            // Still holding: the server committed on a mid-sentence pause. Keep the
+            // mic open and the floor with the learner — the rest of what they say
+            // becomes another turn. Handing off here would cut them off.
+            guard !holdingQuickAsk else {
+                heardSpeechThisTurn = true
+                // Record that the server already has a turn for this hold, so the
+                // release knows not to wait for a commit that won't come again.
+                committedThisTurn = true
+                break
+            }
+            // Finger is up and the server has the audio, so a response is coming:
+            // hand the floor to the teacher, which closes the mic via the gate in
+            // grantFloor. Covers both the normal release (which defers the handoff
+            // to here) and the case where the server committed a turn our local VAD
+            // never reported, so the floor was being held at .idle.
+            if floor == .user || floor == .idle {
+                heardSpeechThisTurn = true
+                applyFloorEvent(.turnCommitted)
+            } else {
+                // The floor is already where it belongs (.player or .teacher), so
+                // only the mic needs attention: quick-ask must shut it now that the
+                // server has the audio. Deliberately NOT re-granting the same floor
+                // to get there — grantFloor(.player) also re-seeks, calls play() and
+                // clears frozenPositionMs, which would restart playback here.
+                applyMicGate()
+            }
         case let .inputTranscriptionCompleted(text) where !text.trimmingCharacters(in: .whitespaces).isEmpty:
             transcript.append(TutorTurn(role: .user, text: text))
         case .inputTranscriptionCompleted:
             break
+        case .responseCreated:
+            // The teacher is starting to answer, so the floor is theirs. Going
+            // through grantFloor applies the mic gate for the current mode: shut in
+            // quick-ask (one turn at a time; an open mic would let the teacher's own
+            // voice trip the VAD and chain another response), open in Live where
+            // barge-in is the point — so taking .teacher here does NOT cost Live its
+            // open mic.
+            //
+            // Live used to skip this entirely, which left the floor on .user for the
+            // whole answer. That made `guard floor == .teacher` in .responseDone
+            // always break, so a Live turn had no close-out at all: the floor never
+            // returned to .idle and playback state after an answer was undefined.
+            applyFloorEvent(.turnCommitted)
         case let .responseAudioTranscriptDone(text):
             transcript.append(TutorTurn(role: .assistant, text: text))
             state = classroomReducer(state, .teacherStarted)
         case .responseDone:
             state = classroomReducer(state, .teacherFinished)
+            // Teacher finished. Hand the floor on automatically — the earlier bug
+            // was that nothing did, so the floor stayed on .teacher and the
+            // podcast never came back. A tool call during the answer may already
+            // have taken the floor (e.g. a seek resumed playback); if so, leave it.
+            guard floor == .teacher else { break }
+            // Live waits for the learner again; quick-ask resumes the podcast from
+            // where it was frozen. That branch IS the reducer's resumePlayback flag.
+            applyFloorEvent(.teacherFinished(resumePlayback: !inLive),
+                            resumeAtMs: inLive ? nil : frozenPositionMs)
         case let .toolCall(name, args, callId):
             // Dedupe by call_id so a call echoed in both the dedicated event and
             // response.done runs once. A nil call_id can't be tracked, so it runs
@@ -133,6 +267,7 @@ final class ClassroomController: ObservableObject {
                 guard !handledToolCallIds.contains(callId) else { return }
                 handledToolCallIds.insert(callId)
             }
+            NexaLog.log("TOOL \(name.rawValue) args=\(args) floor=\(self.floor) inLive=\(self.inLive)")
             runPlaybackTool(name, args)
             transport.sendToolResult(callId: callId, ok: true)
         }
@@ -164,52 +299,142 @@ final class ClassroomController: ObservableObject {
         let rule = silenced(by: holder)
         if rule.stopTeacher { transport.stopSpeaking() }
         if rule.pausePlayer { playback.pause() }
+        // The mic is a FUNCTION of (mode, floor), not a state anyone maintains by
+        // hand. The two modes have OPPOSITE needs, so they can't share one rule:
+        //
+        //  - Live: mic open throughout, in every floor state. Open-mouth barge-in
+        //    while the teacher talks is the entire point of Live; closing it on
+        //    .teacher is exactly what broke interjecting.
+        //  - Quick-ask: mic open ONLY while the learner holds the floor (finger
+        //    down). It must be shut once the turn is released, or the teacher's own
+        //    voice / room noise trips the server VAD, which commits a turn and
+        //    generates the next response — the self-triggering loop seen on device.
+        //
+        // Deriving it here means no path can leave the mic in a state its mode
+        // doesn't allow, which is what every phantom-turn bug so far came down to.
+        floor = holder
+        applyMicGate()
         if holder == .player {
             if let resumeAtMs { playback.seek(resumeAtMs) }
             frozenPositionMs = nil
             playback.play()
         }
-        floor = holder
+    }
+
+    // The mic is a FUNCTION of (mode, floor) — never a state maintained by hand.
+    // Kept as its own method so the one path that needs the gate WITHOUT the rest of
+    // grantFloor's side effects (see .inputAudioCommitted) can reuse the same rule
+    // instead of poking the transport directly.
+    private func applyMicGate() {
+        if inLive || floor == .user {
+            transport.beginListening()
+        } else {
+            transport.stopListening()
+        }
+    }
+
+    // Event-driven entry: the reducer decides WHO gets the floor, grantFloor applies
+    // what that means (silence the others, gate the mic, resume playback). Callers
+    // say what happened, not what state to move to — so the transition table lives
+    // in one testable place (floorReducer) instead of being re-derived at each call
+    // site, which is how the floor and the mic drifted apart before.
+    private func applyFloorEvent(_ event: FloorEvent, resumeAtMs: Int? = nil) {
+        let next = floorReducer(floor, event)
+        // `.userReleased` deliberately keeps the floor, and re-granting the same
+        // holder would pointlessly reopen the mic. Skip only THAT case: other
+        // events carry an action (seek + play) that must still run when the holder
+        // happens to be unchanged — e.g. tapping a line while already playing.
+        if case .userReleased = event, next == floor { return }
+        grantFloor(to: next, resumeAtMs: resumeAtMs)
     }
 
     // MARK: - Quick ask (long-press)
 
-    // Press: open the mic, freeze at the interrupted position, refresh context
-    // there, and take the floor (which pauses the podcast and quiets the teacher).
+    // Press: freeze at the interrupted position, refresh context there, and take
+    // the floor — which pauses the podcast, quiets the teacher, and opens the mic
+    // (all three derived in grantFloor).
+    // Pressing to talk IS the interrupt: grantFloor(to: .user) silences both the
+    // podcast and the teacher (see silenced(by:)), so a press mid-answer cuts the
+    // teacher off and starts listening. There is no separate interrupt button.
     func pressQuickAsk() {
+        NexaLog.log("pressQuickAsk cursor=\(self.cursor())")
         inLive = false
-        transport.beginListening()
-        freeze(cursor(), reason: .speechStarted)
+        heardSpeechThisTurn = false
+        committedThisTurn = false
+        holdingQuickAsk = true
+        // Freeze at the position the podcast was at. When the press interrupts the
+        // teacher, the podcast is already paused and frozenPositionMs already holds
+        // the spot it was interrupted at — keep that one rather than re-reading a
+        // stopped player, so resuming later lands where the learner left off.
+        freeze(frozenPositionMs ?? cursor(), reason: .speechStarted)
         onContextRefresh(frozenPositionMs ?? cursor())
-        grantFloor(to: .user, resumeAtMs: nil)
+        applyFloorEvent(.userTookFloor)
     }
 
-    // Release: commit the turn, request one answer, and hand the floor to the
-    // teacher. When the teacher finishes, the podcast resumes (quick-ask scene).
+    // Release: end the turn and let the server take it. The floor moves to the
+    // teacher once the server confirms (.inputAudioCommitted), not here.
     func releaseQuickAsk() {
+        let alreadyCommitted = committedThisTurn
+        holdingQuickAsk = false
+        // Nothing was said during the hold: there will be no response, so handing
+        // the floor to the teacher would strand it there (the .responseDone that
+        // normally hands it back never arrives). Just stop where we are — podcast
+        // stays paused at the frozen spot, waiting for the learner.
+        guard heardSpeechThisTurn else {
+            NexaLog.log("releaseQuickAsk with no speech -> holding at \(self.frozenPositionMs ?? -1)ms")
+            transport.cancelTurn()
+            applyFloorEvent(.nothingSaid)
+            return
+        }
         state = classroomReducer(state, .discussionStarted)
         transport.endTurnAndRespond()
-        grantFloor(to: .teacher, resumeAtMs: nil)
+        // Normally the mic must stay OPEN past this point: the server ends a turn by
+        // hearing trailing silence, and on device speech_stopped/committed both
+        // arrive AFTER the finger lifts. Closing here would lose the turn, so the
+        // handoff waits for .inputAudioCommitted.
+        //
+        // But if the commit already landed mid-hold, no further one is coming for
+        // this turn — hand off now or the floor would sit on .user with the mic open,
+        // which is the self-triggering state.
+        if alreadyCommitted {
+            NexaLog.log("releaseQuickAsk after commit -> floor to teacher now")
+            applyFloorEvent(.turnCommitted)
+        } else {
+            NexaLog.log("releaseQuickAsk -> waiting for server commit, mic still open")
+            applyFloorEvent(.userReleased)   // no-op by design; keeps the mic open
+        }
     }
+
+    // NOTE: there is no interruptTeacher(). Interrupting is not its own action —
+    // pressing to talk is the interrupt, because grantFloor(to: .user) silences
+    // the teacher per silenced(by:). See pressQuickAsk.
 
     // Slide-up cancel: drop the captured audio without a response and hand the
     // floor back to the podcast, resuming from where it was interrupted — as if
     // the learner never pressed. No teacher turn, no transcript entry.
     func cancelQuickAsk() {
+        holdingQuickAsk = false
+        heardSpeechThisTurn = false
+        committedThisTurn = false
         let resumeAt = frozenPositionMs
         transport.cancelTurn()
-        grantFloor(to: .player, resumeAtMs: resumeAt)
+        applyFloorEvent(.playbackRequested, resumeAtMs: resumeAt)
     }
 
     // MARK: - Live (tap)
 
     // Enter: hand turns to the model's VAD (continuous), pause the podcast, and
-    // sit idle waiting for the learner to speak or ask for playback.
+    // sit idle waiting for the learner to speak or ask for playback. Live is the
+    // always-on-mic scene, so open the mic explicitly — it's disabled by default
+    // (self-study keeps it closed so the podcast can't self-trigger the VAD).
     func enterLive() {
         inLive = true
         transport.setTurnMode(.continuous)
         freeze(cursor(), reason: .paused)
-        grantFloor(to: .idle, resumeAtMs: nil)
+        // inLive is already true, so grantFloor opens the mic for us — Live keeps
+        // it open in every floor state. Entering Live holds playback: nobody has
+        // the floor until the learner speaks.
+        applyFloorEvent(.playbackHeld)
     }
 
     // Exit: back to self-study — resume the podcast from where it was held and
@@ -218,6 +443,6 @@ final class ClassroomController: ObservableObject {
         let resumeAt = frozenPositionMs
         inLive = false
         transport.setTurnMode(.pushToTalk)
-        grantFloor(to: .player, resumeAtMs: resumeAt)
+        applyFloorEvent(.playbackRequested, resumeAtMs: resumeAt)
     }
 }

@@ -6,6 +6,15 @@ enum RealtimeEventParser {
         switch type {
         case "input_audio_buffer.speech_started":
             return .speechStarted
+        // The server has taken the captured audio as a turn. This is the earliest
+        // point the mic can safely close in quick-ask: the server decides a turn
+        // ended by hearing trailing silence, which needs the mic open PAST the
+        // finger lifting (on device, speech_stopped/committed both arrive after
+        // release). Closing on release instead would drop the turn.
+        case "input_audio_buffer.committed":
+            return .inputAudioCommitted
+        case "response.created":
+            return .responseCreated
         case "conversation.item.input_audio_transcription.completed":
             let text = (json["transcript"] as? String) ?? ""
             return text.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .inputTranscriptionCompleted(text)

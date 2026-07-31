@@ -17,6 +17,19 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     private var onEvent: ((RealtimeEvent) -> Void)?
     private var micTrack: RTCAudioTrack?
     private var turnMode: TurnMode = .continuous
+    // Tracks whether a teacher response is in flight. response.cancel is only
+    // valid while one is; sending it otherwise draws a "Conversation has none
+    // active response" error. Set on response.created, cleared on response.done.
+    private var hasActiveResponse = false
+    // Turn-boundary events worth logging. Everything else (transcript deltas above
+    // all) is per-token noise that hides these.
+    private static let loggedEventTypes: Set<String> = [
+        "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed", "input_audio_buffer.cleared",
+        "response.created", "response.done", "session.updated",
+        "response.function_call_arguments.done",
+    ]
+
     // The teacher's voice. WebRTC's audio device module renders a remote track
     // to the output automatically, but ONLY while the RTCAudioTrack object is
     // retained and enabled — drop the reference and the render tears down and
@@ -28,17 +41,60 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         // WebRTC keeps its own AVAudioSession config and reapplies it around
         // track changes; left at its default it routes to the earpiece, which
         // over speaker-played podcast audio reads as "the teacher is silent."
-        // Match the app's classroom session (see LocalAudioPlayback): speaker
-        // out, voiceChat for echo cancellation so the podcast leaking into the
-        // mic does not trip the model's VAD.
-        let rtcConfig = RTCAudioSessionConfiguration.webRTC()
-        rtcConfig.category = AVAudioSession.Category.playAndRecord.rawValue
-        rtcConfig.mode = AVAudioSession.Mode.voiceChat.rawValue
-        rtcConfig.categoryOptions = [.defaultToSpeaker, .allowBluetooth]
-        RTCAudioSessionConfiguration.setWebRTC(rtcConfig)
+        // Match the app's classroom session (see LocalAudioPlayback): voiceChat
+        // for echo cancellation so the podcast leaking into the mic does not trip
+        // the model's VAD.
+        //
+        // WebRTC owns the MIC, and this config wins over anything the app set on
+        // AVAudioSession — so the .defaultToSpeaker decision has to be made here
+        // too, not just in LocalAudioPlayback. Setting it unconditionally forced
+        // BOTH output and input to the built-in hardware even with a headset
+        // attached, which is why audio came from the phone mic while wearing
+        // headphones. Apply it only when nothing is plugged in.
+        Self.applyAudioSessionConfig()
         factory = RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(),
                                            decoderFactory: RTCDefaultVideoDecoderFactory())
         super.init()
+        // A headset can come and go mid-session, and the config above is a snapshot.
+        // Recompute it on every route change so unplugging doesn't leave the mic
+        // pinned to a device that's gone (and plugging in actually switches to it).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(audioRouteChanged),
+            name: AVAudioSession.routeChangeNotification, object: nil)
+    }
+
+    @objc private func audioRouteChanged() {
+        Self.applyAudioSessionConfig()
+    }
+
+    // `.defaultToSpeaker` forces BOTH output and input onto the built-in hardware,
+    // overriding an attached headset — so it may only be set when there is nothing
+    // attached. `.allowBluetooth` is what permits the HFP mic on AirPods, so it
+    // stays on always. Static because it runs from init, before self exists.
+    private static func applyAudioSessionConfig() {
+        let session = AVAudioSession.sharedInstance()
+        let headphonePorts: Set<AVAudioSession.Port> = [
+            .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .usbAudio, .carAudio,
+        ]
+        let headsetInputs: Set<AVAudioSession.Port> = [.headsetMic, .bluetoothHFP, .usbAudio]
+        let attached = session.currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+            || (session.availableInputs ?? []).contains { headsetInputs.contains($0.portType) }
+
+        let rtcConfig = RTCAudioSessionConfiguration.webRTC()
+        rtcConfig.category = AVAudioSession.Category.playAndRecord.rawValue
+        rtcConfig.mode = AVAudioSession.Mode.voiceChat.rawValue
+        rtcConfig.categoryOptions = attached ? [.allowBluetooth] : [.defaultToSpeaker, .allowBluetooth]
+        RTCAudioSessionConfiguration.setWebRTC(rtcConfig)
+        NexaLog.log("RTC audio config: headset=\(attached) options=\(attached ? "[allowBluetooth]" : "[defaultToSpeaker, allowBluetooth]")")
+
+        // The config above only takes effect the next time WebRTC configures the
+        // session. Apply it to the LIVE session too, or an in-progress class keeps
+        // using the stale route until the next track change.
+        let rtcSession = RTCAudioSession.sharedInstance()
+        rtcSession.lockForConfiguration()
+        do { try rtcSession.setConfiguration(rtcConfig, active: true) }
+        catch { NexaLog.log("RTC setConfiguration failed: \(error.localizedDescription)") }
+        rtcSession.unlockForConfiguration()
     }
 
     func connect(instructions: String, apiKey: String, workspaceId: String, region: String, model: String,
@@ -53,10 +109,14 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         }
         self.peer = peer
 
-        // Local mic track. Held so push-to-talk can gate it; starts enabled for
-        // continuous mode and is disabled by setTurnMode(.pushToTalk) below.
+        // Local mic track, held so we can gate it. It starts DISABLED: the default
+        // scene is self-study with the podcast playing, and a live mic there lets
+        // the podcast bleed in and self-trigger the server VAD (a phantom turn the
+        // moment the session connects). beginListening() (push-to-talk) and
+        // enterLive() open it; it closes again whenever the podcast takes the floor.
         let audioSource = factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
         let audioTrack = factory.audioTrack(with: audioSource, trackId: "mic0")
+        audioTrack.isEnabled = false
         peer.add(audioTrack, streamIds: ["local0"])
         self.micTrack = audioTrack
 
@@ -102,14 +162,35 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     }
 
     private func send(_ payload: [String: Any]) {
-        guard let channel, channel.readyState == .open,
-              let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        let type = payload["type"] as? String ?? "?"
+        guard let channel else { NexaLog.log("SEND \(type) DROPPED: no channel"); return }
+        guard channel.readyState == .open else {
+            NexaLog.log("SEND \(type) DROPPED: channel state=\(channel.readyState.rawValue)"); return
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            NexaLog.log("SEND \(type) DROPPED: not serializable"); return
+        }
+        NexaLog.log("SEND \(type)")
         channel.sendData(RTCDataBuffer(data: data, isBinary: false))
     }
 
     func stopSpeaking() {
+        // Silence the teacher LOCALLY first. response.cancel alone does not stop
+        // the voice: audio already sent over the RTP stream keeps rendering (and
+        // manual turn control is unreliable on this server's WebRTC path — see
+        // setTurnMode), so tapping "interrupt" left the teacher talking. Muting
+        // the remote track cuts the voice instantly and does not depend on the
+        // server obeying. Keep the reference — dropping it tears down the render.
+        remoteAudioTrack?.isEnabled = false
+        // response.cancel stops the in-flight response (so it doesn't keep
+        // generating), but is only valid while one is actually in flight —
+        // otherwise the server answers "Conversation has none active response".
+        // stopSpeaking is called defensively on every floor grab, so guard it. Do
+        // NOT send output_audio_buffer.clear — that's an OpenAI-only WebRTC event
+        // this server rejects with invalid_value.
+        guard hasActiveResponse else { return }
+        hasActiveResponse = false
         send(["type": "response.cancel"])
-        send(["type": "output_audio_buffer.clear"])
     }
 
     func sendToolResult(callId: String?, ok: Bool) {
@@ -142,30 +223,47 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     func requestResponse() { send(["type": "response.create"]) }
 
     func setTurnMode(_ mode: TurnMode) {
+        // NOTE: turn_detection is fixed at session creation (see sendSessionUpdate)
+        // and NOT changed here. Over WebRTC only server-side VAD is honored, and
+        // the config can only be set before the first audio frame — so both quick-
+        // ask and Live ride the same always-on VAD. Mode only affects how the
+        // controller treats the floor/playback, not the transport's turn control.
         turnMode = mode
-        // In PTT the mic stays closed between turns; in continuous it is always
-        // open so the VAD can hear the learner at any time.
-        micTrack?.isEnabled = (mode == .continuous)
-        send(["type": "session.update", "session": ["turn_detection": turnDetectionConfig(mode)]])
     }
 
     func beginListening() {
-        // Drop anything the buffer captured before this turn (e.g. room noise
-        // while the mic was nominally closed) so the turn starts clean.
-        send(["type": "input_audio_buffer.clear"])
+        // The learner is taking the floor. Enable the mic (it's gated off while
+        // the podcast plays) and clear any buffered audio so the turn starts from
+        // the moment they pressed, not from podcast bleed before it.
         micTrack?.isEnabled = true
+        send(["type": "input_audio_buffer.clear"])
+    }
+
+    func stopListening() {
+        // Gate the mic off. Called when the podcast takes the floor: a live mic
+        // while the podcast plays lets it bleed into the input, and the server
+        // VAD then self-triggers a phantom turn. Clear the buffer too so any
+        // already-captured bleed can't be committed as a turn.
+        micTrack?.isEnabled = false
+        send(["type": "input_audio_buffer.clear"])
     }
 
     func endTurnAndRespond() {
-        micTrack?.isEnabled = false
-        send(["type": "input_audio_buffer.commit"])
-        requestResponse()
+        // Do NOT manually commit or response.create — WebRTC ignores manual turn
+        // control. The server VAD detects the trailing silence after the learner
+        // stops speaking and generates the response on its own. Releasing just
+        // means "I'm done"; the mic stays live so the VAD can hear that silence
+        // and so the learner can barge in on the teacher.
     }
 
     func cancelTurn() {
-        // Slide-up cancel: close the mic and drop the captured audio WITHOUT
-        // committing or asking for a response, so the turn leaves no trace.
+        // Slide-up cancel: close the mic, stop any response the VAD may have
+        // already started, and drop the captured audio so the turn leaves no
+        // trace. Routed through stopSpeaking so the teacher is muted locally and
+        // response.cancel stays guarded by hasActiveResponse (sending it with no
+        // response in flight draws "Conversation has none active response").
         micTrack?.isEnabled = false
+        stopSpeaking()
         send(["type": "input_audio_buffer.clear"])
     }
 }
@@ -181,13 +279,20 @@ extension QwenRealtimeTransport: RTCPeerConnectionDelegate {
         }
     }
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
+        // The SERVER opened its own data channel. If events arrive here (not on the
+        // channel we created), we must listen on THIS one — otherwise we SEND on
+        // ours and RECV nothing.
+        NexaLog.log("peer didOpen server dataChannel label=\(dataChannel.label) — switching to it")
         dataChannel.delegate = self
+        Task { @MainActor in self.channel = dataChannel }
     }
     nonisolated func peerConnectionShouldNegotiate(_ pc: RTCPeerConnection) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceConnectionState) {}
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
+        NexaLog.log("ICE state=\(newState.rawValue)")
+    }
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
@@ -195,14 +300,47 @@ extension QwenRealtimeTransport: RTCPeerConnectionDelegate {
 
 extension QwenRealtimeTransport: RTCDataChannelDelegate {
     nonisolated func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
+        let state = dataChannel.readyState.rawValue
+        NexaLog.log("dataChannel state=\(state)")
         if dataChannel.readyState == .open {
             Task { @MainActor in self.sendSessionUpdate() }
         }
     }
     nonisolated func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        guard !buffer.isBinary,
-              let json = try? JSONSerialization.jsonObject(with: buffer.data) as? [String: Any] else { return }
+        // Log EVERY inbound frame before any filtering — a silently-dropped binary
+        // or unparseable frame looks identical to "server sent nothing".
+        if buffer.isBinary {
+            NexaLog.log("RECV binary frame \(buffer.data.count)B — dropped")
+            return
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: buffer.data) as? [String: Any] else {
+            let raw = String(data: buffer.data, encoding: .utf8)?.prefix(200) ?? "<non-utf8>"
+            NexaLog.log("RECV unparseable text frame: \(raw)")
+            return
+        }
+        let type = json["type"] as? String ?? "?"
+        // Only failures and turn-boundary events are logged. Logging EVERY frame
+        // buried the interesting ones under transcript deltas, which arrive dozens of
+        // times per answer.
+        if type == "error" || type.hasSuffix(".failed") {
+            NexaLog.log("RECV \(type): \(String(describing: json))")
+        } else if Self.loggedEventTypes.contains(type) {
+            NexaLog.log("RECV \(type)")
+        }
         Task { @MainActor in
+            // Track response lifecycle so stopSpeaking() only cancels a real
+            // in-flight response (see hasActiveResponse).
+            switch type {
+            case "response.created":
+                self.hasActiveResponse = true
+                // Un-mute for the new answer. stopSpeaking() mutes the remote
+                // track to cut an interrupted teacher off mid-sentence; without
+                // restoring it here the teacher would stay silent for the rest
+                // of the session after the first interrupt.
+                self.remoteAudioTrack?.isEnabled = true
+            case "response.done": self.hasActiveResponse = false
+            default: break
+            }
             if let event = RealtimeEventParser.parse(json) { self.onEvent?(event) }
         }
     }
@@ -236,6 +374,7 @@ final class QwenRealtimeTransport: ClassroomTransport {
     func requestResponse() {}
     func setTurnMode(_ mode: TurnMode) {}
     func beginListening() {}
+    func stopListening() {}
     func endTurnAndRespond() {}
     func cancelTurn() {}
 }

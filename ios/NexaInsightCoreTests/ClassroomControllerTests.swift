@@ -8,9 +8,12 @@ final class FakePlayback: Playback {
     private(set) var seeks: [Int] = []
     private(set) var didPlay = false
     private(set) var didPause = false
+    // Counted, not just flagged: some assertions need "was NOT paused again after
+    // this point", which a latching Bool can't express.
+    private(set) var pauses = 0
     private(set) var rates: [Double] = []
     func seek(_ ms: Int) { seeks.append(ms); currentMs = ms }
-    func pause() { didPause = true; playbackState = .paused }
+    func pause() { didPause = true; pauses += 1; playbackState = .paused }
     func play() { didPlay = true; playbackState = .playing }
     func speed(_ rate: Double) { rates.append(rate) }
 }
@@ -24,6 +27,7 @@ final class FakeTransport: ClassroomTransport {
     private(set) var responseRequests = 0
     private(set) var turnModes: [TurnMode] = []
     private(set) var beganListening = 0
+    private(set) var stoppedListening = 0
     private(set) var endedTurns = 0
     private(set) var cancelledTurns = 0
     func stopSpeaking() { stoppedSpeaking += 1 }
@@ -34,6 +38,7 @@ final class FakeTransport: ClassroomTransport {
     func requestResponse() { responseRequests += 1 }
     func setTurnMode(_ mode: TurnMode) { turnModes.append(mode) }
     func beginListening() { beganListening += 1 }
+    func stopListening() { stoppedListening += 1 }
     func endTurnAndRespond() { endedTurns += 1 }
     func cancelTurn() { cancelledTurns += 1 }
 }
@@ -81,9 +86,233 @@ final class ClassroomControllerTests: XCTestCase {
     func testReleaseQuickAskGrantsTeacherFloorAndRequests() {
         let (c, _, transport, _) = make()
         c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)   // something was actually said
         c.releaseQuickAsk()
+        // The mic stays open until the server takes the turn — it ends turns by
+        // hearing trailing silence, which arrives after the finger lifts.
+        XCTAssertEqual(c.floor, .user)
+        c.handleRealtimeEvent(.inputAudioCommitted)
         XCTAssertEqual(c.floor, .teacher)
         XCTAssertEqual(transport.endedTurns, 1)
+    }
+
+    // The mic must not close on release, or the server never hears the trailing
+    // silence that ends the turn and no response is ever generated.
+    func testMicStaysOpenUntilServerCommitsTheTurn() {
+        let (c, _, transport, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        let closedBefore = transport.stoppedListening
+        c.releaseQuickAsk()
+        XCTAssertEqual(transport.stoppedListening, closedBefore)  // still listening
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertGreaterThan(transport.stoppedListening, closedBefore)  // now closed
+    }
+
+    // The server can commit mid-hold (a pause while thinking). That must not cut
+    // the learner off — the finger is still down, so keep listening.
+    func testCommitWhileStillHoldingKeepsTheFloorAndMic() {
+        let (c, _, transport, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        let closedBefore = transport.stoppedListening
+        c.handleRealtimeEvent(.inputAudioCommitted)   // finger still down
+        XCTAssertEqual(c.floor, .user)
+        XCTAssertEqual(transport.stoppedListening, closedBefore)
+        // Releasing after that commit hands off immediately: no second commit is
+        // coming, so waiting for one would strand the floor with the mic open.
+        c.releaseQuickAsk()
+        XCTAssertEqual(c.floor, .teacher)
+    }
+
+    // The teacher starting to answer must close the mic in quick-ask, so we stop
+    // accepting new speech mid-answer and the podcast/teacher audio can't bleed
+    // in and self-trigger a phantom turn. Regression guard for the bug where the
+    // podcast resumed with a live mic and VAD fired on its own.
+    func testResponseCreatedClosesMicInQuickAsk() {
+        let (c, _, transport, _) = make()
+        c.pressQuickAsk()
+        c.releaseQuickAsk()
+        let before = transport.stoppedListening
+        c.handleRealtimeEvent(.responseCreated)
+        XCTAssertEqual(transport.stoppedListening, before + 1)
+    }
+
+    // Live keeps the mic open on the teacher's answer — voice barge-in is the point.
+    func testResponseCreatedKeepsMicOpenInLive() {
+        let (c, _, transport, _) = make()
+        c.enterLive()
+        let before = transport.stoppedListening
+        c.handleRealtimeEvent(.responseCreated)
+        XCTAssertEqual(transport.stoppedListening, before)
+    }
+
+    // The core fix: when the teacher finishes, the floor hands off on its own.
+    // Quick-ask resumes the podcast from where it was frozen; nothing used to do
+    // this, so the floor stayed on .teacher and playback never came back.
+    func testResponseDoneResumesPodcastAfterQuickAsk() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)   // something was actually said
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)   // server takes the turn
+        XCTAssertEqual(c.floor, .teacher)
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertEqual(c.floor, .player)
+        XCTAssertTrue(playback.didPlay)
+        XCTAssertEqual(playback.seeks.last, 2100)
+    }
+
+    // Tap-to-interrupt: cut the teacher off and return to normal without starting
+    // a new turn. Quick-ask resumes the podcast.
+    // Pressing to talk IS the interrupt: it cuts the teacher off and starts
+    // listening, in one gesture. There is no separate interrupt action.
+    func testPressWhileTeacherAnsweringInterruptsAndListens() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)   // server takes the turn
+        XCTAssertEqual(c.floor, .teacher)
+        let before = transport.stoppedSpeaking
+        c.pressQuickAsk()                                  // press mid-answer
+        XCTAssertGreaterThan(transport.stoppedSpeaking, before)  // teacher silenced
+        XCTAssertEqual(c.floor, .user)                     // learner now holds the floor
+        XCTAssertEqual(transport.beganListening, 2)        // mic reopened for the new turn
+    }
+
+    // Pressing mid-answer must resume from where the podcast was interrupted, not
+    // from the stopped player's position.
+    func testPressMidAnswerKeepsFrozenPosition() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        playback.currentMs = 0            // player is paused; a live read would be wrong
+        c.pressQuickAsk()
+        XCTAssertEqual(c.frozenPositionMs, 2100)
+    }
+
+    // A press with nothing said gets no response, so handing the floor to the
+    // teacher would strand it there. Hold position instead.
+    func testReleaseWithoutSpeechHoldsInsteadOfWaitingForTeacher() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.releaseQuickAsk()               // released without any speechStarted
+        XCTAssertEqual(c.floor, .idle)
+        XCTAssertEqual(transport.endedTurns, 0)   // no turn committed
+        XCTAssertEqual(transport.cancelledTurns, 1)
+        XCTAssertEqual(c.frozenPositionMs, 2100)  // stays put
+        XCTAssertFalse(playback.didPlay)          // does not resume on its own
+    }
+
+    // The transport controls used to call playback.play() directly, so starting
+    // playback while the teacher was answering left BOTH talking — the floor never
+    // moved, so nothing silenced the teacher.
+    func testUserStartedPlaybackSilencesTheTeacher() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertEqual(c.floor, .teacher)
+        let before = transport.stoppedSpeaking
+        c.userStartedPlayback()
+        XCTAssertGreaterThan(transport.stoppedSpeaking, before)
+        XCTAssertEqual(c.floor, .player)
+        XCTAssertTrue(playback.didPlay)
+    }
+
+    // Tapping a subtitle line seeks there and plays, still via the floor.
+    func testUserStartedPlaybackSeeksWhenGivenAPosition() {
+        let (c, playback, _, _) = make()
+        c.userStartedPlayback(seekTo: 5000)
+        XCTAssertEqual(playback.seeks.last, 5000)
+        XCTAssertEqual(c.floor, .player)
+    }
+
+    // Pausing gives the floor to nobody: podcast stops, teacher stays quiet, and
+    // the position is frozen so the discussion stays anchored where they stopped.
+    func testUserPausedPlaybackHoldsTheFloorIdleAndFreezes() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 3300
+        let before = transport.stoppedSpeaking
+        c.userPausedPlayback()
+        XCTAssertEqual(c.floor, .idle)
+        XCTAssertTrue(playback.didPause)
+        XCTAssertEqual(c.frozenPositionMs, 3300)
+        XCTAssertGreaterThan(transport.stoppedSpeaking, before)
+    }
+
+    // A voice "pause" must silence the teacher too. This used to set `floor`
+    // directly, skipping the rule in silenced(by: .idle); it only looked correct
+    // because runPlaybackTool calls stopSpeaking() up top.
+    func testPausePlaybackToolSilencesTeacherAndGoesIdle() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 4200
+        c.runPlaybackTool(.pause_playback, [:])
+        XCTAssertEqual(c.floor, .idle)
+        XCTAssertTrue(playback.didPause)
+        XCTAssertEqual(c.frozenPositionMs, 4200)
+    }
+
+    // A Live answer must close out: the floor goes to the teacher while they talk
+    // and back to .idle when done. Live used to skip the .turnCommitted step, which
+    // left the floor on .user for the whole answer and made .responseDone's
+    // `guard floor == .teacher` always break — so playback state after an answer was
+    // undefined, and the podcast could stay paused when the learner asked to resume.
+    func testLiveAnswerTakesAndReleasesTheFloor() {
+        let (c, _, _, _) = make()
+        c.enterLive()
+        c.handleRealtimeEvent(.speechStarted)
+        XCTAssertEqual(c.floor, .user)
+        c.handleRealtimeEvent(.responseCreated)
+        XCTAssertEqual(c.floor, .teacher)
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertEqual(c.floor, .idle)   // Live waits for the learner, not the podcast
+    }
+
+    // Live keeps the mic open in EVERY floor state — barge-in is the whole point.
+    // Regression guard: gating the mic on `holder == .user` alone silenced Live
+    // while the teacher talked, which made interjecting impossible.
+    func testLiveKeepsMicOpenWhileTeacherTalks() {
+        let (c, _, transport, _) = make()
+        c.enterLive()
+        let closedBefore = transport.stoppedListening
+        c.handleRealtimeEvent(.speechStarted)
+        c.handleRealtimeEvent(.responseCreated)   // teacher now holds the floor
+        XCTAssertEqual(transport.stoppedListening, closedBefore)
+    }
+
+    // "Resume playback" during a Live answer must actually play. The tool call takes
+    // the floor for the podcast; the answer finishing must not then pause it again.
+    func testResumeToolDuringLiveAnswerKeepsPlaying() {
+        let (c, playback, _, _) = make()
+        c.enterLive()
+        c.handleRealtimeEvent(.speechStarted)
+        c.handleRealtimeEvent(.responseCreated)
+        c.runPlaybackTool(.resume_playback, [:])
+        XCTAssertEqual(c.floor, .player)
+        XCTAssertTrue(playback.didPlay)
+        let pausesBefore = playback.pauses
+        c.handleRealtimeEvent(.responseDone)      // answer ends after the tool ran
+        XCTAssertEqual(c.floor, .player)          // still the podcast's floor
+        XCTAssertEqual(playback.pauses, pausesBefore)  // and it was not re-paused
+    }
+
+    // In Live the VAD hearing speech is what takes the floor — nothing else does,
+    // so without this the UI would still say "just start speaking".
+    func testLiveSpeechTakesTheFloor() {
+        let (c, _, _, _) = make()
+        c.enterLive()
+        XCTAssertEqual(c.floor, .idle)
+        c.handleRealtimeEvent(.speechStarted)
+        XCTAssertEqual(c.floor, .user)
     }
 
     func testCancelQuickAskDropsTurnAndResumesPodcast() {
@@ -106,6 +335,9 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertEqual(c.floor, .idle)
         XCTAssertTrue(playback.didPause)
         XCTAssertEqual(transport.turnModes.last, .continuous)
+        // Live is always-on-mic: the mic starts disabled (self-study default), so
+        // entering Live must open it explicitly, or the model never hears anything.
+        XCTAssertEqual(transport.beganListening, 1)
     }
 
     func testLivePlaybackRequestGrantsPlayerFloorAndStopsTeacher() {
@@ -137,11 +369,15 @@ final class ClassroomControllerTests: XCTestCase {
     }
 
     func testSeekToolSeeksResumesAndRefreshesContext() {
-        let (c, playback, _, box) = make()
+        let (c, playback, transport, box) = make()
         c.runPlaybackTool(.seek_to_timestamp, ["seconds": 3])
         XCTAssertEqual(playback.seeks.last, 3000)
         XCTAssertTrue(playback.didPlay)
         XCTAssertEqual(box.refreshes.last, 3000)
+        // The mic must be gated off when the podcast resumes, or its audio bleeds
+        // into the live mic and the server VAD self-triggers a phantom turn
+        // (stops the podcast, teacher talks over nothing). Regression guard.
+        XCTAssertGreaterThan(transport.stoppedListening, 0)
     }
 
     func testNextSentenceUsesActiveIndex() {
