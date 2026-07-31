@@ -94,23 +94,36 @@ class YtDlpMediaAdapter:
         template = str(destination.with_suffix(".%(ext)s"))
         subprocess.run(["yt-dlp", "-x", "--audio-format", "mp3", "-o", template, url], check=True)
         generated = destination.with_suffix(".mp3")
-        generated.replace(destination)
+        # Re-encode to CONSTANT bitrate. yt-dlp yields a VBR MP3, and iOS AVPlayer
+        # estimates the current time from byte-offset ÷ average bitrate — which
+        # drifts mid-file on VBR (observed ~23s off near the end), desyncing audio
+        # from subtitles. CBR makes byte↔time linear so the clock stays accurate.
+        cbr = generated.with_name("source_cbr.mp3")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(generated), "-c:a", "libmp3lame",
+             "-b:a", "128k", "-vn", str(cbr)],
+            check=True, capture_output=True,
+        )
+        cbr.replace(destination)
+        generated.unlink(missing_ok=True)
         return destination
 
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]:
+        # Only the source-language track is fetched now. The zh-Hans auto-caption
+        # track is no longer used — Chinese comes from per-sentence AI translation
+        # (see Pipeline._translate), which stays 1:1 aligned with the source. The
+        # second tuple element is kept as None for the (source, chinese) contract.
         destination.mkdir(parents=True, exist_ok=True)
         template = str(destination / "captions.%(ext)s")
         command = [
             "yt-dlp", "--skip-download", "--write-subs", "--write-auto-subs",
-            "--sub-langs", "en-orig,en,zh-Hans", "--sub-format", "json3",
+            "--sub-langs", "en-orig,en", "--sub-format", "json3",
             "--js-runtimes", "node", "-o", template, url,
         ]
         subprocess.run(command, check=False, capture_output=True, text=True)
         source_caption_path = next(iter(destination.glob("captions.en-orig.json3")), None) or next(iter(destination.glob("captions.en.json3")), None)
-        chinese_path = next(iter(destination.glob("captions.zh-Hans.json3")), None)
         source_text = self._parse_json3(source_caption_path) if source_caption_path else []
-        chinese = self._parse_json3(chinese_path) if chinese_path else None
-        return source_text, chinese
+        return source_text, None
 
     @staticmethod
     def _parse_json3(path: Path) -> list[TranscriptSegment]:
@@ -222,7 +235,7 @@ class ImportPipeline:
                 self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
                 return
             self.repo.upsert_job(job_id, stage="transcription", progress=30)
-            source_captions, chinese_captions = self.media.captions(episode.source_url, root / "captions")
+            source_captions, _ = self.media.captions(episode.source_url, root / "captions")
             all_segments = source_captions
             if not all_segments:
                 parts = self.media.split_audio(audio, root / "chunks")
@@ -237,7 +250,14 @@ class ImportPipeline:
                         self.repo.save_chunk(job_id, index, index * self.CHUNK_MS, (index + 1) * self.CHUNK_MS, str(part), json.dumps([asdict(s) for s in segments]))
                     all_segments.extend(segments)
             self.repo.upsert_job(job_id, stage="translation", progress=70)
-            translations = self._align_chinese(all_segments, chinese_captions) if chinese_captions else self._translate(all_segments, root / "translations", job_id)
+            # Always translate each source sentence directly. Reusing YouTube's
+            # zh-Hans auto-caption track (the old _align_chinese path) time-aligned
+            # two INDEPENDENT caption timelines by interval overlap, which both
+            # duplicated Chinese (adjacent source sentences overlap, so one zh
+            # fragment landed in several) and drifted (the two tracks' offsets
+            # diverge over the episode). AI per-sentence translation is 1:1 by
+            # construction — no duplication, no drift.
+            translations = self._translate(all_segments, root / "translations", job_id)
             self.repo.upsert_job(job_id, stage="indexing", progress=90)
             chapters = self._chapters(all_segments)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
@@ -247,14 +267,6 @@ class ImportPipeline:
             self.repo.upsert_job(job_id, stage=self.repo.get_job(job_id).stage, progress=self.repo.get_job(job_id).progress, status="failed", error=str(exc))
             self.repo.fail_episode(episode.id, str(exc))
             raise
-
-    @staticmethod
-    def _align_chinese(source_text: list[TranscriptSegment], chinese: list[TranscriptSegment]) -> list[str]:
-        result: list[str] = []
-        for item in source_text:
-            matches = [part.text for part in chinese if part.start_ms < item.end_ms and part.end_ms > item.start_ms]
-            result.append(" ".join(matches))
-        return result
 
     def _translate(self, segments: list[TranscriptSegment], cache_dir: Path, job_id: int) -> list[str]:
         cache_dir.mkdir(parents=True, exist_ok=True)

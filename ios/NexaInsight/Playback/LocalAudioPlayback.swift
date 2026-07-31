@@ -110,7 +110,16 @@ final class LocalAudioPlayback: ObservableObject, Playback {
             if voiceMode {
                 // `.voiceChat` already implies Bluetooth HFP routing, so there is
                 // no need for an explicitly deprecated option to get headsets.
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+                //
+                // `.defaultToSpeaker` must NOT be set unconditionally: it forces
+                // output to the BUILT-IN SPEAKER even when headphones/AirPods are
+                // connected, so currentRoute() then reports .builtInSpeaker and the
+                // headphone gate blocks Live for a learner who is wearing them. It
+                // only exists to keep `.playAndRecord` off the earpiece when there
+                // is nothing plugged in, so apply it only in that case.
+                let onHeadphones = Self.headphonesAttached(session)
+                let options: AVAudioSession.CategoryOptions = onHeadphones ? [] : [.defaultToSpeaker]
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: options)
             } else {
                 try session.setCategory(.playback, mode: .default, options: [.allowAirPlay])
             }
@@ -118,6 +127,53 @@ final class LocalAudioPlayback: ObservableObject, Playback {
         } catch {
             // A failed switch leaves the previous category in place; playback
             // keeps working, so this is not worth surfacing to the learner.
+        }
+    }
+
+    // Which kind of output is active. Live is gated on headphones because on the
+    // speaker the teacher's voice reaches the mic and self-triggers the VAD — see
+    // AudioRouteLogic. AirPlay counts as a speaker: it's a room device, so the
+    // coupling is the same (or worse, with latency).
+    // Whether headphones are physically attached, independent of where audio is
+    // currently being ROUTED. This must not read currentRoute.outputs: while
+    // `.defaultToSpeaker` is in effect that reports the built-in speaker even with
+    // AirPods connected, which is the circular reasoning that blocked Live. The
+    // available inputs list still shows the headset, so ask that instead.
+    private static func headphonesAttached(_ session: AVAudioSession) -> Bool {
+        let headphonePorts: Set<AVAudioSession.Port> = [
+            .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .usbAudio, .carAudio,
+        ]
+        if session.currentRoute.outputs.contains(where: { headphonePorts.contains($0.portType) }) {
+            return true
+        }
+        // A wired headset / AirPods also expose a matching INPUT port, which stays
+        // visible regardless of the output override.
+        let headsetInputs: Set<AVAudioSession.Port> = [.headsetMic, .bluetoothHFP, .usbAudio]
+        return (session.availableInputs ?? []).contains { headsetInputs.contains($0.portType) }
+    }
+
+    func currentRoute() -> AudioRouteKind {
+        let session = AVAudioSession.sharedInstance()
+        // Ask about attachment, not the active output override — see
+        // headphonesAttached. Reading outputs alone made Live unavailable while
+        // wearing AirPods, because voice mode had forced output to the speaker.
+        if Self.headphonesAttached(session) {
+            NexaLog.log("ROUTE headphones attached -> .headphones (Live allowed)")
+            return .headphones
+        }
+        let outputs = session.currentRoute.outputs
+        guard let port = outputs.first?.portType else {
+            NexaLog.log("ROUTE none reported -> .unknown (Live blocked)")
+            return .unknown
+        }
+        switch port {
+        case .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE,
+             .usbAudio, .carAudio:
+            NexaLog.log("ROUTE \(port.rawValue) -> .headphones (Live allowed)")
+            return .headphones
+        default:
+            NexaLog.log("ROUTE \(port.rawValue) -> .speaker (Live blocked)")
+            return .speaker
         }
     }
 

@@ -15,8 +15,15 @@ protocol Playback: AnyObject {
     // only a voice-mode audio session allows. Implementations without a real
     // audio session ignore it.
     func configureAudioSession(voiceMode: Bool)
+    // Which output is active. Live is gated on headphones — on the speaker the
+    // teacher's voice self-triggers the VAD (see AudioRouteLogic).
+    func currentRoute() -> AudioRouteKind
 }
 
 extension Playback {
     func configureAudioSession(voiceMode: Bool) {}
+    // Implementations without a real audio session can't know the route. Report
+    // .unknown, which gates Live off — the safe default, since enabling it on a
+    // speaker is what causes the self-triggering loop.
+    func currentRoute() -> AudioRouteKind { .unknown }
 }
