@@ -610,28 +610,30 @@ private struct DiscoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x6) {
-            DiscoverHeader(query: $vm.query, importing: importing, onAddToNexa: onAddToNexa)
+            DiscoverHeader(
+                query: $vm.query,
+                importing: importing,
+                onAddToNexa: onAddToNexa,
+                onSubmitSearch: { term in Task { await vm.runSearch(term) } })
 
-            if !vm.hasSubscriptions {
+            DiscoverShortcutChips(
+                activeTerm: vm.searchedTerm,
+                onSelect: { term in
+                    vm.query = term
+                    Task { await vm.runSearch(term) }
+                })
+
+            if vm.searchedTerm != nil {
+                // Search results replace the feed while a search is active.
+                ChannelSearchResults(vm: vm)
+            } else if !vm.hasSubscriptions {
                 NXEmptyState(
                     title: "Follow a channel to fill Discover",
-                    message: "Paste a YouTube channel link — youtube.com/@handle or a /channel/UC... URL — and new videos from it show up here.",
-                    actionTitle: "Add a channel",
+                    message: "Tap a topic above, search for a channel, or paste a channel link.",
+                    actionTitle: "Paste a channel link",
                     action: { showAddChannel = true })
             } else {
-                DiscoverChannelFilters(
-                    subscriptions: vm.subscriptions,
-                    selectedChannelId: $vm.selectedChannelId,
-                    onAddChannel: { showAddChannel = true })
-
-                if let feedError = vm.feedError {
-                    NXErrorState(message: feedError, retry: { Task { await vm.refresh() } })
-                } else if vm.loading && vm.entries.isEmpty {
-                    ProgressView("Loading your channels")
-                        .font(NXFont.auxiliary)
-                } else {
-                    content
-                }
+                subscribedFeed
             }
         }
         .task { await vm.refresh() }
@@ -643,6 +645,23 @@ private struct DiscoverView: View {
             if let selectedEntry, !items.contains(selectedEntry) {
                 self.selectedEntry = compact ? nil : items.first
             }
+        }
+    }
+
+    @ViewBuilder
+    private var subscribedFeed: some View {
+        DiscoverChannelFilters(
+            subscriptions: vm.subscriptions,
+            selectedChannelId: $vm.selectedChannelId,
+            onAddChannel: { showAddChannel = true })
+
+        if let feedError = vm.feedError {
+            NXErrorState(message: feedError, retry: { Task { await vm.refresh() } })
+        } else if vm.loading && vm.entries.isEmpty {
+            ProgressView("Loading your channels")
+                .font(NXFont.auxiliary)
+        } else {
+            content
         }
     }
 
@@ -684,10 +703,140 @@ private struct DiscoverView: View {
     }
 }
 
+// Preset search terms. Tapping one runs a real search — these are strings, not
+// a category taxonomy, so nothing here can go stale.
+private struct DiscoverShortcutChips: View {
+    let activeTerm: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: NXSpacing.x2) {
+                ForEach(ChannelSearchTerms.all, id: \.self) { term in
+                    DiscoverFilterButton(
+                        title: term.capitalized,
+                        systemName: "magnifyingglass",
+                        selected: activeTerm == term,
+                        action: { onSelect(term) })
+                }
+            }
+        }
+    }
+}
+
+private struct ChannelSearchResults: View {
+    @ObservedObject var vm: DiscoverViewModel
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x4) {
+            HStack {
+                NXSectionHeader(title: "Channels")
+                Spacer()
+                NXTextButton(title: "Clear", systemName: "xmark", action: vm.clearSearch)
+            }
+
+            if vm.searchUnavailable {
+                // Distinct from "nothing found": the page could not be read, so
+                // point at the fallback that does not depend on page structure.
+                NXErrorState(
+                    message: "Channel search is unavailable right now. You can still add a channel by pasting its link.",
+                    retry: { Task { await vm.runSearch(vm.searchedTerm ?? "") } })
+            } else if vm.searching {
+                ProgressView("Searching")
+                    .font(NXFont.auxiliary)
+            } else if vm.searchResults.isEmpty {
+                Text("No channels found for \(vm.searchedTerm ?? "").")
+                    .font(NXFont.body)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(vm.searchResults) { result in
+                        ChannelSearchRow(
+                            result: result,
+                            following: vm.isFollowing(result),
+                            onFollow: { Task { await vm.subscribe(to: result) } })
+                        if result.id != vm.searchResults.last?.id {
+                            Divider().overlay(NXColor.border(scheme))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ChannelSearchRow: View {
+    let result: ChannelSearchResult
+    let following: Bool
+    let onFollow: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: NXSpacing.x3) {
+            thumbnail
+            VStack(alignment: .leading, spacing: NXSpacing.x1) {
+                Text(result.title)
+                    .font(NXFont.bodyMedium)
+                    .foregroundStyle(NXColor.text(scheme))
+                    .lineLimit(1)
+                Text(byline)
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .lineLimit(1)
+                if let summary = result.summary {
+                    Text(summary)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: NXSpacing.x2)
+            if following {
+                NXTag(text: "Following", tint: NXColor.success)
+            } else {
+                NXSecondaryButton(title: "Follow", systemName: "plus", action: onFollow)
+            }
+        }
+        .padding(.vertical, NXSpacing.x3)
+    }
+
+    // subscriberText comes from the response's `videoCountText` — see
+    // ChannelSearchParser for why that is not a mistake.
+    private var byline: String {
+        [result.subscriberText, result.handle]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let url = result.thumbnailURL {
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Circle().fill(NXColor.surface2(scheme))
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(NXColor.surface2(scheme))
+                .frame(width: 44, height: 44)
+                .overlay {
+                    Image(systemName: "play.rectangle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                }
+        }
+    }
+}
+
 private struct DiscoverHeader: View {
     @Binding var query: String
     let importing: Bool
     let onAddToNexa: (String) -> Void
+    let onSubmitSearch: (String) -> Void
     @FocusState private var focused: Bool
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -759,8 +908,12 @@ private struct DiscoverHeader: View {
 
     private func submitQuery() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard looksLikeSourceURL(trimmed) else { return }
-        onAddToNexa(trimmed)
+        guard !trimmed.isEmpty else { return }
+        if looksLikeSourceURL(trimmed) {
+            onAddToNexa(trimmed)
+        } else {
+            onSubmitSearch(trimmed)
+        }
     }
 }
 
