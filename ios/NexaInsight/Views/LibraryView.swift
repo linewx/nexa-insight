@@ -5,6 +5,7 @@ struct LibraryView: View {
     let store: EpisodeStore
     @ObservedObject var settings: AppSettings
     @StateObject private var vm: ImportViewModel
+    @StateObject private var discover: DiscoverViewModel
     @State private var selectedSection: AppSection = .home
     @State private var showImport = false
     @State private var showSettings = false
@@ -16,6 +17,9 @@ struct LibraryView: View {
         _vm = StateObject(wrappedValue: ImportViewModel(
             client: BackendClient(baseURL: URL(string: settings.backendBaseURL) ?? URL(string: "http://localhost:8000")!),
             store: store))
+        _discover = StateObject(wrappedValue: DiscoverViewModel(
+            store: SubscriptionStore(),
+            service: DiscoverFeedService()))
     }
 
     var body: some View {
@@ -26,6 +30,7 @@ struct LibraryView: View {
                 importError: vm.importError,
                 backendBaseURL: vm.backendBaseURL,
                 importing: vm.importing,
+                discover: discover,
                 selectedSection: $selectedSection,
                 urlDraft: $urlDraft,
                 showImport: $showImport,
@@ -90,6 +95,7 @@ private struct DashboardShell: View {
     let importError: String?
     let backendBaseURL: URL
     let importing: Bool
+    @ObservedObject var discover: DiscoverViewModel
     @Binding var selectedSection: AppSection
     @Binding var urlDraft: String
     @Binding var showImport: Bool
@@ -138,6 +144,7 @@ private struct DashboardShell: View {
     private var regularMainContent: some View {
         if selectedSection == .discover {
             DiscoverView(
+                vm: discover,
                 importing: importing,
                 onAddToNexa: onAddToNexa
             )
@@ -208,6 +215,7 @@ private struct DashboardShell: View {
                 MobileTopBar(selection: $selectedSection, onSettings: { showSettings = true })
                 if selectedSection == .discover {
                     DiscoverView(
+                        vm: discover,
                         importing: importing,
                         onAddToNexa: onAddToNexa
                     )
@@ -453,124 +461,6 @@ private struct FirstRunLoopRow: View {
     }
 }
 
-private enum DiscoverKind: String, CaseIterable {
-    case podcast = "Podcast"
-    case video = "Video"
-    case article = "Article"
-    case channel = "Channel"
-    case topic = "Topic"
-
-    var icon: String {
-        switch self {
-        case .podcast: return "waveform"
-        case .video: return "play.rectangle"
-        case .article: return "doc.text"
-        case .channel: return "person.2"
-        case .topic: return "number"
-        }
-    }
-}
-
-private struct DiscoverItem: Identifiable, Equatable {
-    let id: Int
-    let kind: DiscoverKind
-    let title: String
-    let source: String
-    let author: String
-    let published: String
-    let duration: String
-    let permission: String
-    let summary: String
-    let chapters: [String]
-    let transcriptState: String
-    let discussionDirections: [String]
-    let related: [String]
-    let url: String
-}
-
-private let featuredDiscoverItems: [DiscoverItem] = [
-    DiscoverItem(
-        id: 1,
-        kind: .video,
-        title: "Can the AI Industry Regulate Itself?",
-        source: "YouTube",
-        author: "All-In Podcast",
-        published: "Public video",
-        duration: "89 min",
-        permission: "Public link",
-        summary: "All-In discusses whether the AI industry can self-regulate, Stripe and PayPal, China catching up, and New York datacenter policy.",
-        chapters: ["AI self-regulation", "Payments and platforms", "China competition", "Datacenter policy"],
-        transcriptState: "Transcript available after add",
-        discussionDirections: ["What is the strongest argument about AI regulation?", "Where do the speakers disagree?", "Extract a practical takeaway for product teams."],
-        related: ["AI policy", "Counterargument", "More technical background"],
-        url: "https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s"
-    ),
-    DiscoverItem(
-        id: 2,
-        kind: .podcast,
-        title: "Organizational bottlenecks in the age of AI",
-        source: "Podcast",
-        author: "Acquired style feed",
-        published: "Featured",
-        duration: "52 min",
-        permission: "Public RSS",
-        summary: "A long-form conversation about how work changes when software can reason across context.",
-        chapters: ["Why coordination breaks", "Teams as systems", "AI as leverage"],
-        transcriptState: "Transcript on add",
-        discussionDirections: ["Compare this with agent workflows.", "Find the strongest disagreement.", "Extract one operating principle."],
-        related: ["Same speaker", "Deeper", "Different source"],
-        url: "https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s"
-    ),
-    DiscoverItem(
-        id: 3,
-        kind: .article,
-        title: "Why private knowledge work needs source-linked notes",
-        source: "Newsletter",
-        author: "Nexa editorial",
-        published: "Curated",
-        duration: "9 min read",
-        permission: "Readable preview",
-        summary: "A short essay on why AI conversations become more useful when every idea remains connected to evidence.",
-        chapters: ["Notes vs insights", "Context decay", "Returning to evidence"],
-        transcriptState: "Text already available",
-        discussionDirections: ["Summarize the claim.", "What would a skeptic say?", "Convert this into an insight template."],
-        related: ["More basic", "More advanced", "Related topic"],
-        url: "https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s"
-    ),
-    DiscoverItem(
-        id: 4,
-        kind: .topic,
-        title: "AI agents and coordination cost",
-        source: "Topic",
-        author: "Nexa recommendations",
-        published: "Updated today",
-        duration: "6 sources",
-        permission: "Mixed public sources",
-        summary: "A topic stream that collects podcasts, videos, and essays around one question.",
-        chapters: ["Foundation", "Current debate", "Applied takeaways"],
-        transcriptState: "Depends on source",
-        discussionDirections: ["Build a reading path.", "Find a counter-position.", "Connect this topic to team design."],
-        related: ["Follow topic", "Find speakers", "Deeper sources"],
-        url: "https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s"
-    ),
-    DiscoverItem(
-        id: 5,
-        kind: .channel,
-        title: "Channels tracking practical AI work",
-        source: "YouTube Channel",
-        author: "Curated channel set",
-        published: "Updated weekly",
-        duration: "12 recent videos",
-        permission: "Public channel",
-        summary: "A quiet feed of source-first discussions on agents, product work, and how teams adopt AI in practice.",
-        chapters: ["Recent uploads", "Recurring speakers", "Useful starting points"],
-        transcriptState: "Transcript depends on selected video",
-        discussionDirections: ["Find the best entry point.", "Follow this channel without adding every video.", "Compare with a deeper source."],
-        related: ["Follow channel", "Same topic", "More advanced"],
-        url: "https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s"
-    )
-]
-
 private struct AppSidebar: View {
     @Binding var selection: AppSection
     @Binding var showSettings: Bool
@@ -708,104 +598,89 @@ private struct MobileTopBar: View {
 }
 
 private struct DiscoverView: View {
+    @ObservedObject var vm: DiscoverViewModel
     let importing: Bool
     let onAddToNexa: (String) -> Void
-    @State private var query = ""
-    @State private var selectedKind: DiscoverKind? = nil
-    @State private var selectedItem: DiscoverItem? = nil
-    @State private var savedIds: Set<Int> = []
-    @State private var followedIds: Set<Int> = []
+    @State private var selectedEntry: DiscoverEntry?
+    @State private var showAddChannel = false
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var compact: Bool { horizontalSizeClass == .compact }
-    private var filteredItems: [DiscoverItem] {
-        featuredDiscoverItems.filter { item in
-            let matchesKind = selectedKind == nil || item.kind == selectedKind
-            let searchable = "\(item.title) \(item.source) \(item.author) \(item.summary) \(item.discussionDirections.joined(separator: " "))"
-            let matchesQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                searchable.localizedCaseInsensitiveContains(query)
-            return matchesKind && matchesQuery
-        }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x6) {
-            DiscoverHeader(query: $query, importing: importing, onAddToNexa: onAddToNexa)
-            DiscoverFilters(selectedKind: $selectedKind)
+            DiscoverHeader(query: $vm.query, importing: importing, onAddToNexa: onAddToNexa)
 
-            if compact {
-                VStack(alignment: .leading, spacing: NXSpacing.x6) {
-                    DiscoverList(
-                        items: filteredItems,
-                        selectedItem: $selectedItem,
-                        autoSelectFirst: false,
-                        onClear: clearSearch
-                    )
-                    if let selectedItem {
-                        DiscoverPreview(
-                            item: selectedItem,
-                            saved: savedIds.contains(selectedItem.id),
-                            followed: followedIds.contains(selectedItem.id),
-                            importing: importing,
-                            onSave: { toggleSave(selectedItem.id) },
-                            onFollow: { toggleFollow(selectedItem.id) },
-                            onAddToNexa: { onAddToNexa(selectedItem.url) }
-                        )
-                    }
-                }
+            if !vm.hasSubscriptions {
+                NXEmptyState(
+                    title: "Follow a channel to fill Discover",
+                    message: "Paste a YouTube channel link — youtube.com/@handle or a /channel/UC... URL — and new videos from it show up here.",
+                    actionTitle: "Add a channel",
+                    action: { showAddChannel = true })
             } else {
-                let previewItem = selectedItem ?? filteredItems.first
-                HStack(alignment: .top, spacing: NXSpacing.x8) {
-                    DiscoverList(
-                        items: filteredItems,
-                        selectedItem: $selectedItem,
-                        autoSelectFirst: true,
-                        onClear: clearSearch
-                    )
-                    .frame(minWidth: 360, maxWidth: 520)
+                DiscoverChannelFilters(
+                    subscriptions: vm.subscriptions,
+                    selectedChannelId: $vm.selectedChannelId,
+                    onAddChannel: { showAddChannel = true })
 
-                    if let previewItem {
-                        DiscoverPreview(
-                            item: previewItem,
-                            saved: savedIds.contains(previewItem.id),
-                            followed: followedIds.contains(previewItem.id),
-                            importing: importing,
-                            onSave: { toggleSave(previewItem.id) },
-                            onFollow: { toggleFollow(previewItem.id) },
-                            onAddToNexa: { onAddToNexa(previewItem.url) }
-                        )
-                        .frame(maxWidth: 420)
-                    }
+                if let feedError = vm.feedError {
+                    NXErrorState(message: feedError, retry: { Task { await vm.refresh() } })
+                } else if vm.loading && vm.entries.isEmpty {
+                    ProgressView("Loading your channels")
+                        .font(NXFont.auxiliary)
+                } else {
+                    content
                 }
             }
         }
-        .onChange(of: filteredItems) { _, items in
-            if let selectedItem, !items.contains(selectedItem) {
-                self.selectedItem = compact ? nil : items.first
+        .task { await vm.refresh() }
+        .refreshable { await vm.refresh() }
+        .sheet(isPresented: $showAddChannel) {
+            AddChannelSheet(vm: vm)
+        }
+        .onChange(of: vm.visibleEntries) { _, items in
+            if let selectedEntry, !items.contains(selectedEntry) {
+                self.selectedEntry = compact ? nil : items.first
             }
         }
     }
 
-    private func toggleSave(_ id: Int) {
-        if savedIds.contains(id) {
-            savedIds.remove(id)
+    @ViewBuilder
+    private var content: some View {
+        if compact {
+            VStack(alignment: .leading, spacing: NXSpacing.x6) {
+                DiscoverList(
+                    items: vm.visibleEntries,
+                    selectedEntry: $selectedEntry,
+                    autoSelectFirst: false,
+                    onClear: { vm.query = "" })
+                if let selectedEntry {
+                    DiscoverPreview(
+                        entry: selectedEntry,
+                        importing: importing,
+                        onAddToNexa: { onAddToNexa(selectedEntry.watchURL.absoluteString) })
+                }
+            }
         } else {
-            savedIds.insert(id)
-        }
-    }
+            let previewEntry = selectedEntry ?? vm.visibleEntries.first
+            HStack(alignment: .top, spacing: NXSpacing.x8) {
+                DiscoverList(
+                    items: vm.visibleEntries,
+                    selectedEntry: $selectedEntry,
+                    autoSelectFirst: true,
+                    onClear: { vm.query = "" })
+                .frame(minWidth: 360, maxWidth: 520)
 
-    private func toggleFollow(_ id: Int) {
-        if followedIds.contains(id) {
-            followedIds.remove(id)
-        } else {
-            followedIds.insert(id)
+                if let previewEntry {
+                    DiscoverPreview(
+                        entry: previewEntry,
+                        importing: importing,
+                        onAddToNexa: { onAddToNexa(previewEntry.watchURL.absoluteString) })
+                    .frame(maxWidth: 420)
+                }
+            }
         }
-    }
-
-    private func clearSearch() {
-        query = ""
-        selectedKind = nil
     }
 }
 
@@ -889,21 +764,27 @@ private struct DiscoverHeader: View {
     }
 }
 
-private struct DiscoverFilters: View {
-    @Binding var selectedKind: DiscoverKind?
-    @Environment(\.colorScheme) private var scheme
+private struct DiscoverChannelFilters: View {
+    let subscriptions: [Subscription]
+    @Binding var selectedChannelId: String?
+    let onAddChannel: () -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: NXSpacing.x2) {
-                DiscoverFilterButton(title: "All", systemName: "line.3.horizontal.decrease", selected: selectedKind == nil) {
-                    selectedKind = nil
+                DiscoverFilterButton(title: "All", systemName: "line.3.horizontal.decrease", selected: selectedChannelId == nil) {
+                    selectedChannelId = nil
                 }
-                ForEach(DiscoverKind.allCases, id: \.self) { kind in
-                    DiscoverFilterButton(title: kind.rawValue, systemName: kind.icon, selected: selectedKind == kind) {
-                        selectedKind = kind
+                ForEach(subscriptions) { subscription in
+                    DiscoverFilterButton(
+                        title: subscription.title,
+                        systemName: "play.rectangle",
+                        selected: selectedChannelId == subscription.channelId
+                    ) {
+                        selectedChannelId = subscription.channelId
                     }
                 }
+                DiscoverFilterButton(title: "Add channel", systemName: "plus", selected: false, action: onAddChannel)
             }
         }
     }
@@ -933,37 +814,81 @@ private struct DiscoverFilterButton: View {
     }
 }
 
+private struct AddChannelSheet: View {
+    @ObservedObject var vm: DiscoverViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+    @State private var working = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: NXSpacing.x4) {
+                Text("Paste a YouTube channel link.")
+                    .font(NXFont.body)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                TextField("youtube.com/@handle", text: $draft)
+                    .font(NXFont.body)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .onSubmit { submit() }
+                if let addError = vm.addError {
+                    Text(addError)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                NXPrimaryButton(
+                    title: working ? "Adding" : "Add channel",
+                    systemName: working ? "clock" : "plus",
+                    disabled: working || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    action: submit)
+                Spacer()
+            }
+            .padding(NXSpacing.x4)
+            .navigationTitle("Add channel")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func submit() {
+        working = true
+        Task {
+            await vm.addSubscription(url: ImportViewModel.normalizedYouTubeURL(draft))
+            working = false
+            if vm.addError == nil { dismiss() }
+        }
+    }
+}
+
 private struct DiscoverList: View {
-    let items: [DiscoverItem]
-    @Binding var selectedItem: DiscoverItem?
+    let items: [DiscoverEntry]
+    @Binding var selectedEntry: DiscoverEntry?
     let autoSelectFirst: Bool
     let onClear: () -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            NXSectionHeader(title: "Featured sources")
-            if selectedItem == nil && !autoSelectFirst {
-                Text("Tap a source to preview it. Library only changes after Add to Nexa.")
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            NXSectionHeader(title: "From your channels")
             if items.isEmpty {
                 NXEmptyState(
-                    title: "No matching sources",
-                    message: "Try a broader topic, source, person, or question.",
+                    title: "Nothing matches",
+                    message: "Try a broader search, or pick a different channel.",
                     actionTitle: "Clear search",
-                    action: onClear
-                )
+                    action: onClear)
             } else {
                 VStack(spacing: 0) {
                     ForEach(items) { item in
                         DiscoverListItem(
                             item: item,
-                            selected: item == selectedItem || (autoSelectFirst && selectedItem == nil && item == items.first),
-                            action: { selectedItem = item }
-                        )
+                            selected: item == selectedEntry || (autoSelectFirst && selectedEntry == nil && item == items.first),
+                            action: { selectedEntry = item })
                         if item.id != items.last?.id {
                             Divider().overlay(NXColor.border(scheme))
                         }
@@ -975,7 +900,7 @@ private struct DiscoverList: View {
 }
 
 private struct DiscoverListItem: View {
-    let item: DiscoverItem
+    let item: DiscoverEntry
     let selected: Bool
     let action: () -> Void
     @Environment(\.colorScheme) private var scheme
@@ -983,32 +908,26 @@ private struct DiscoverListItem: View {
     var body: some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: NXSpacing.x3) {
-                Image(systemName: item.kind.icon)
+                Image(systemName: "play.rectangle")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(selected ? NXColor.primary : NXColor.textTertiary(scheme))
                     .frame(width: 24, height: 24)
 
                 VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    HStack(spacing: NXSpacing.x2) {
-                        Text(item.kind.rawValue)
-                            .font(NXFont.label)
-                            .foregroundStyle(NXColor.textTertiary(scheme))
-                        Text(item.permission)
-                            .font(NXFont.label)
-                            .foregroundStyle(NXColor.success)
-                    }
                     Text(item.title)
                         .font(NXFont.bodyMedium)
                         .foregroundStyle(NXColor.text(scheme))
                         .lineLimit(2)
-                    Text("\(item.source) · \(item.author) · \(item.published) · \(item.duration)")
+                    Text(DiscoverFormat.byline(item))
                         .font(NXFont.auxiliary)
                         .foregroundStyle(NXColor.textSecondary(scheme))
-                        .lineLimit(2)
-                    Text(item.summary)
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                        .lineLimit(2)
+                        .lineLimit(1)
+                    if let summary = item.summary {
+                        Text(summary)
+                            .font(NXFont.auxiliary)
+                            .foregroundStyle(NXColor.textTertiary(scheme))
+                            .lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -1026,174 +945,75 @@ private struct DiscoverListItem: View {
 }
 
 private struct DiscoverPreview: View {
-    let item: DiscoverItem
-    let saved: Bool
-    let followed: Bool
+    let entry: DiscoverEntry
     let importing: Bool
-    let onSave: () -> Void
-    let onFollow: () -> Void
     let onAddToNexa: () -> Void
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var compact: Bool { horizontalSizeClass == .compact }
 
-    private var followTitle: String {
-        if followed { return "Following" }
-        switch item.kind {
-        case .podcast: return "Follow show"
-        case .video: return "Follow speaker"
-        case .article: return item.source.localizedCaseInsensitiveContains("newsletter") ? "Follow newsletter" : "Follow author"
-        case .channel: return "Follow channel"
-        case .topic: return "Follow topic"
-        }
-    }
-
-    private var compactFollowTitle: String {
-        followed ? "Following" : "Follow"
-    }
-
     var body: some View {
-        previewBody
-            .padding(compact ? 0 : NXSpacing.x4)
-            .background {
-                if !compact {
-                    RoundedRectangle(cornerRadius: NXRadius.surface)
-                        .fill(NXColor.surface1(scheme))
-                }
-            }
-            .overlay {
-                if !compact {
-                    RoundedRectangle(cornerRadius: NXRadius.surface)
-                        .stroke(NXColor.border(scheme), lineWidth: 1)
-                }
-            }
-            .overlay(alignment: .top) {
-                if compact {
-                    Divider().overlay(NXColor.border(scheme))
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if compact {
-                    Divider().overlay(NXColor.border(scheme))
-                }
-            }
-    }
-
-    private var previewBody: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x6) {
             VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                if compact {
-                    Text("Selected preview")
-                        .font(NXFont.label)
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                }
-                HStack(spacing: NXSpacing.x2) {
-                    NXTag(text: item.kind.rawValue, tint: NXColor.primary)
-                    NXTag(text: item.permission, tint: NXColor.success)
-                }
-                Text(item.title)
+                Text(entry.title)
                     .font(NXFont.sectionTitle)
                     .foregroundStyle(NXColor.text(scheme))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("\(item.source) · \(item.author) · \(item.published) · \(item.duration)")
+                Text(DiscoverFormat.byline(entry))
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textSecondary(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(item.summary)
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: NXSpacing.x3) {
-                    previewActions
-                }
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    previewActions
+                if let summary = entry.summary {
+                    Text(summary)
+                        .font(NXFont.body)
+                        .foregroundStyle(NXColor.textSecondary(scheme))
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            PreviewSection(title: "Available context") {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    StatusLine(systemName: "text.quote", tint: NXColor.success, title: "Transcript", detail: item.transcriptState)
-                    StatusLine(systemName: "list.bullet.rectangle", tint: NXColor.primary, title: "Chapters", detail: item.chapters.joined(separator: " · "))
-                }
-            }
+            NXPrimaryButton(
+                title: importing ? "Adding" : "Add to Nexa",
+                systemName: importing ? "clock" : "plus",
+                disabled: importing,
+                action: onAddToNexa)
 
-            PreviewSection(title: "Suggested discussion") {
-                VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    ForEach(item.discussionDirections, id: \.self) { question in
-                        SuggestedQuestion(text: question)
-                    }
-                }
-            }
-
-            PreviewSection(title: "Recommended next") {
-                HStack(spacing: NXSpacing.x2) {
-                    ForEach(item.related, id: \.self) { relation in
-                        NXTag(text: relation, tint: nil)
-                    }
-                }
+            Text("Transcript, chapters, and discussion become available after you add it.")
+                .font(NXFont.auxiliary)
+                .foregroundStyle(NXColor.textTertiary(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(compact ? 0 : NXSpacing.x4)
+        .background {
+            if !compact {
+                RoundedRectangle(cornerRadius: NXRadius.surface)
+                    .fill(NXColor.surface1(scheme))
             }
         }
-        .padding(.vertical, compact ? NXSpacing.x4 : 0)
-    }
-
-    @ViewBuilder
-    private var previewActions: some View {
-        if compact {
-            NXPrimaryButton(
-                title: importing ? "Adding" : "Add to Nexa",
-                systemName: importing ? "clock" : "plus",
-                disabled: importing,
-                action: onAddToNexa
-            )
-            NXTextButton(
-                title: saved ? "Saved" : "Save",
-                systemName: saved ? "bookmark.fill" : "bookmark",
-                action: onSave
-            )
-            NXTextButton(
-                title: compactFollowTitle,
-                systemName: followed ? "bell.fill" : "bell",
-                action: onFollow
-            )
-        } else {
-            NXPrimaryButton(
-                title: importing ? "Adding" : "Add to Nexa",
-                systemName: importing ? "clock" : "plus",
-                disabled: importing,
-                action: onAddToNexa
-            )
-            NXSecondaryButton(
-                title: saved ? "Saved" : "Save for later",
-                systemName: saved ? "bookmark.fill" : "bookmark",
-                action: onSave
-            )
-            NXTextButton(
-                title: followTitle,
-                systemName: followed ? "bell.fill" : "bell",
-                action: onFollow
-            )
+        .overlay {
+            if !compact {
+                RoundedRectangle(cornerRadius: NXRadius.surface)
+                    .stroke(NXColor.border(scheme), lineWidth: 1)
+            }
         }
     }
 }
 
-private struct PreviewSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x3) {
-            Text(title)
-                .font(NXFont.label)
-                .foregroundStyle(NXColor.textTertiary(scheme))
-            content
+// Byline for a feed entry. Duration is deliberately absent — the RSS feed has
+// no duration tag, so there is nothing truthful to show until after import.
+enum DiscoverFormat {
+    static func byline(_ entry: DiscoverEntry) -> String {
+        var parts = [entry.channelTitle, relativeDate(entry.published)]
+        if let views = entry.viewCount {
+            parts.append("\(views.formatted(.number.notation(.compactName))) views")
         }
+        return parts.joined(separator: " · ")
+    }
+
+    static func relativeDate(_ date: Date, now: Date = Date()) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 
@@ -1206,17 +1026,9 @@ private struct DiscoverRightRail: View {
             Text("Discover")
                 .font(NXFont.subsectionTitle)
                 .foregroundStyle(NXColor.text(scheme))
-            PanelSection(title: "Followable sources") {
+            PanelSection(title: "How this works") {
                 VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    StatusLine(systemName: "waveform", tint: NXColor.primary, title: "Podcasts", detail: "Follow shows without adding every episode.")
-                    StatusLine(systemName: "play.rectangle", tint: NXColor.primary, title: "YouTube channels", detail: "Keep new videos in Discover first.")
-                    StatusLine(systemName: "doc.text", tint: NXColor.primary, title: "Newsletters", detail: "Track writing without turning every article into a source.")
-                    StatusLine(systemName: "number", tint: NXColor.insight, title: "Topics and speakers", detail: "Track themes without polluting Library.")
-                }
-            }
-            PanelSection(title: "Library boundary") {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    Text("New public content stays in Discover until you choose Add to Nexa. Saved items are reminders, not processed sources.")
+                    Text("New videos from the channels you follow stay in Discover until you choose Add to Nexa.")
                         .font(NXFont.body)
                         .foregroundStyle(NXColor.textSecondary(scheme))
                         .fixedSize(horizontal: false, vertical: true)
