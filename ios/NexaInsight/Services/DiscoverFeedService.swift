@@ -34,6 +34,12 @@ protocol DiscoverFeedFetching {
 // with no headers, a custom UA, and a browser UA, all returning 200. So this
 // stays a plain URLSession GET with no backend in the middle.
 struct DiscoverFeedService: DiscoverFeedFetching {
+    // Sent on HTML page requests (search, channel-page resolution). The RSS feed
+    // itself needs no UA — verified working with none, a custom one, and this.
+    static let browserUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
     var session: URLSession = .shared
 
     init(session: URLSession = .shared) {
@@ -88,6 +94,12 @@ struct DiscoverFeedService: DiscoverFeedFetching {
 
         var request = URLRequest(url: url)
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        // A browser User-Agent is REQUIRED, not cosmetic. With URLSession's
+        // default UA, YouTube serves a consent interstitial instead: HTTP 200,
+        // ~475 KB, ytInitialData present but ZERO channelRenderer nodes — which
+        // the parser correctly reports as structureMissing. With a browser UA the
+        // same request returns ~845 KB and 21 renderers. Measured both ways.
+        request.setValue(Self.browserUserAgent, forHTTPHeaderField: "User-Agent")
 
         do {
             let (data, response) = try await session.data(for: request)
@@ -110,7 +122,13 @@ struct DiscoverFeedService: DiscoverFeedFetching {
             guard let pageURL = URL(string: trimmed), pageURL.scheme != nil else {
                 throw DiscoverFeedError.unrecognizedChannelLink
             }
-            let (data, _) = try await session.data(from: pageURL)
+            // Same browser-UA requirement as search: with URLSession's default UA
+            // the channel page comes back ~567 KB with NO canonical link, so
+            // handle resolution silently fails. With a browser UA it is ~1.3 MB
+            // and the canonical link is present. Measured both ways.
+            var pageRequest = URLRequest(url: pageURL)
+            pageRequest.setValue(Self.browserUserAgent, forHTTPHeaderField: "User-Agent")
+            let (data, _) = try await session.data(for: pageRequest)
             guard let html = String(data: data, encoding: .utf8),
                   let resolved = YouTubeChannelLogic.channelId(fromHTML: html)
             else { throw DiscoverFeedError.unrecognizedChannelLink }
