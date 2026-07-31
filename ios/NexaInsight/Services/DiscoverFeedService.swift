@@ -26,6 +26,8 @@ protocol DiscoverFeedFetching {
     func fetchFeeds(channelIds: [String]) async -> FeedFetchResult
     func resolveChannel(fromURL url: String) async throws -> Subscription
     func searchChannels(query: String) async -> ChannelSearchOutcome
+    func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome
+    func fetchChannelUploads(channelId: String) async -> [DiscoverEntry]
 }
 
 // Fetches subscribed channels' public RSS feeds.
@@ -110,6 +112,62 @@ struct DiscoverFeedService: DiscoverFeedFetching {
             // A transport failure is indistinguishable from a broken page as far
             // as the user's next action goes: fall back to pasting a link.
             return .structureMissing
+        }
+    }
+
+    // In-channel search. This is the surface that reaches the back catalog:
+    // results for one query included 3-year-old and 6-year-old uploads, where
+    // RSS caps at 15 recent entries.
+    //
+    // Needs the browser UA like every other YouTube HTML request — with
+    // URLSession's default UA, YouTube serves a consent page instead.
+    func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, YouTubeChannelLogic.isValidChannelId(channelId) else {
+            return .parsed([])
+        }
+
+        var components = URLComponents(string: "https://www.youtube.com/channel/\(channelId)/search")!
+        components.queryItems = [
+            URLQueryItem(name: "query", value: trimmed),
+            URLQueryItem(name: "hl", value: "en"),
+            URLQueryItem(name: "gl", value: "US"),
+        ]
+        guard let url = components.url else { return .structureMissing }
+
+        var request = URLRequest(url: url)
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue(Self.browserUserAgent, forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { return .structureMissing }
+            return ChannelVideoParser.parse(data)
+        } catch {
+            return .structureMissing
+        }
+    }
+
+    // The channel's recent uploads, from its RSS feed.
+    //
+    // RSS rather than the channel videos page: the videos page would need a
+    // second parser (it serves lockupViewModel where search serves
+    // videoRenderer) and it is the shape YouTube is actively migrating to. RSS
+    // is stable Atom XML and already parsed. Cost: 15 entries, no duration.
+    //
+    // Returns [] on any failure — a missing recency list is not worth an error
+    // state when search is the primary surface. No User-Agent needed here; the
+    // RSS feed was measured working with no headers at all.
+    func fetchChannelUploads(channelId: String) async -> [DiscoverEntry] {
+        guard let url = YouTubeChannelLogic.feedURL(channelId: channelId) else { return [] }
+        do {
+            let (data, response) = try await session.data(from: url)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { return [] }
+            return DiscoverFeedParser.parse(data)
+        } catch {
+            return []
         }
     }
 
