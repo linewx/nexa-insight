@@ -5,7 +5,7 @@ struct LibraryView: View {
     let store: EpisodeStore
     @ObservedObject var settings: AppSettings
     @StateObject private var vm: ImportViewModel
-    @State private var selectedSection: AppSection = .discover
+    @State private var selectedSection: AppSection = .home
     @State private var showImport = false
     @State private var showSettings = false
     @State private var urlDraft = ""
@@ -66,18 +66,12 @@ private enum AppSection: String, CaseIterable {
     case home
     case discover
     case library
-    case conversations
-    case insights
-    case saved
 
     var title: String {
         switch self {
         case .home: return "Home"
         case .discover: return "Discover"
         case .library: return "Library"
-        case .conversations: return "Conversations"
-        case .insights: return "Insights"
-        case .saved: return "Saved"
         }
     }
 
@@ -86,9 +80,6 @@ private enum AppSection: String, CaseIterable {
         case .home: return "house"
         case .discover: return "sparkle.magnifyingglass"
         case .library: return "rectangle.stack"
-        case .conversations: return "bubble.left.and.bubble.right"
-        case .insights: return "lightbulb"
-        case .saved: return "bookmark"
         }
     }
 }
@@ -697,21 +688,19 @@ private struct MobileTopBar: View {
                 NXIconButton(systemName: "gearshape", accessibilityLabel: "Settings", action: onSettings)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: NXSpacing.x2) {
-                    ForEach(AppSection.allCases, id: \.self) { item in
-                        Button {
-                            selection = item
-                        } label: {
-                            Text(item.title)
-                                .font(NXFont.control)
-                                .foregroundStyle(selection == item ? NXColor.text(scheme) : NXColor.textSecondary(scheme))
-                                .padding(.horizontal, NXSpacing.x2)
-                                .frame(height: 32)
-                                .background(selection == item ? NXColor.primary.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: NXRadius.control))
-                        }
-                        .buttonStyle(.plain)
+            HStack(spacing: NXSpacing.x2) {
+                ForEach(AppSection.allCases, id: \.self) { item in
+                    Button {
+                        selection = item
+                    } label: {
+                        Text(item.title)
+                            .font(NXFont.control)
+                            .foregroundStyle(selection == item ? NXColor.text(scheme) : NXColor.textSecondary(scheme))
+                            .padding(.horizontal, NXSpacing.x2)
+                            .frame(height: 32)
+                            .background(selection == item ? NXColor.primary.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: NXRadius.control))
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }
