@@ -6,10 +6,16 @@ private struct StubFeedService: DiscoverFeedFetching {
     var resolved: Subscription?
     var resolveError: Error?
     var searchOutcome: ChannelSearchOutcome = .parsed([])
+    var videoOutcome: ChannelVideoOutcome = .parsed([])
+    var uploads: [DiscoverEntry] = []
 
     func fetchFeeds(channelIds: [String]) async -> FeedFetchResult { result }
 
     func searchChannels(query: String) async -> ChannelSearchOutcome { searchOutcome }
+
+    func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome { videoOutcome }
+
+    func fetchChannelUploads(channelId: String) async -> [DiscoverEntry] { uploads }
 
     func resolveChannel(fromURL url: String) async throws -> Subscription {
         if let resolveError { throw resolveError }
