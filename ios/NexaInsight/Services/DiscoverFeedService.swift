@@ -25,6 +25,7 @@ enum DiscoverFeedError: LocalizedError {
 protocol DiscoverFeedFetching {
     func fetchFeeds(channelIds: [String]) async -> FeedFetchResult
     func resolveChannel(fromURL url: String) async throws -> Subscription
+    func searchChannels(query: String) async -> ChannelSearchOutcome
 }
 
 // Fetches subscribed channels' public RSS feeds.
@@ -60,6 +61,43 @@ struct DiscoverFeedService: DiscoverFeedFetching {
                 entries: DiscoverFeedParser.merge(groups),
                 failedChannelIds: failed,
                 channelTitles: titles)
+        }
+    }
+
+    // Searches channels via YouTube's public results page.
+    //
+    // All three query parameters are load-bearing and were measured:
+    //   sp=EgIQAg== restricts results to channels (with it: 20 channels, 0
+    //     videos; without it: 0 channels, 19 videos)
+    //   hl=en&gl=US pins the response language — AND the Accept-Language header
+    //     is also required. With neither, results came back Japanese
+    //     ("チャンネル登録者数 2.04万人"); only pinning both reliably produced
+    //     "1.67M subscribers".
+    func searchChannels(query: String) async -> ChannelSearchOutcome {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .parsed([]) }
+
+        var components = URLComponents(string: "https://www.youtube.com/results")!
+        components.queryItems = [
+            URLQueryItem(name: "search_query", value: trimmed),
+            URLQueryItem(name: "sp", value: "EgIQAg=="),
+            URLQueryItem(name: "hl", value: "en"),
+            URLQueryItem(name: "gl", value: "US"),
+        ]
+        guard let url = components.url else { return .structureMissing }
+
+        var request = URLRequest(url: url)
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { return .structureMissing }
+            return ChannelSearchParser.parse(data)
+        } catch {
+            // A transport failure is indistinguishable from a broken page as far
+            // as the user's next action goes: fall back to pasting a link.
+            return .structureMissing
         }
     }
 
