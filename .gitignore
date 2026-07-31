@@ -12,3 +12,6 @@ DerivedData/
 ios/.build/
 *.xcodeproj
 .swiftpm/
+
+# Brainstorming visual companion (local only)
+.superpowers/
