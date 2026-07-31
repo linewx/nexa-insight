@@ -1,4 +1,5 @@
 #if os(iOS)
+import AVFoundation
 import SwiftUI
 import UIKit
 
@@ -13,6 +14,9 @@ struct StudyView: View {
     @State private var query = ""
     @State private var shadowingSentence: SentenceDTO?
     @State private var liveSession: LiveClassSession?
+    // How far the screen is dragged during a back-swipe. Drives the follow-the-finger
+    // offset so the gesture has the visual feedback the system one would give.
+    @State private var backSwipeOffset: CGFloat = 0
     private let sentences: [SentenceDTO]
     private let episode: EpisodeDTO?
 
@@ -39,20 +43,28 @@ struct StudyView: View {
             audioRefreshState: audioRefreshState,
             following: vm.following,
             player: player,
-            onSentenceTap: { sentence in
-                player.seek(sentence.startMs)
-                player.play()
-            },
+            onSentenceTap: { sentence in playIntent(seekTo: sentence.startMs) },
             onShadow: { sentence in shadowingSentence = sentence },
             onSync: { vm.syncNow() },
             onRefreshAudio: { Task { await refreshAudio() } },
             onTalk: startDiscussion,
+            onSeekIntent: { ms in playIntent(seekTo: ms) },
             discussionSession: liveSession,
             onEndDiscussion: endDiscussion
         )
         .navigationBarTitleDisplayMode(.inline)
+        // Hidden, not merely transparent. Every attempt to keep the bar present for
+        // the sake of the system pop gesture cost more than it bought: transparent
+        // still reserved its height (an empty strip above the screen's own header),
+        // and reclaiming that height via .ignoresSafeArea pulled content under the
+        // notch instead. The bar is hidden and back-swipe is handled below.
         .toolbar(.hidden, for: .navigationBar)
         .task { startDiscussion() }
+        // Hiding the bar also disables interactivePopGestureRecognizer, so the
+        // back-swipe is re-implemented here. Interactive (tracks the finger, snaps
+        // back if released short) rather than the earlier .onEnded-only version,
+        // which gave no feedback and silently failed on any vertical drift.
+        .offset(x: backSwipeOffset)
         .simultaneousGesture(edgeSwipeBackGesture)
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
@@ -61,17 +73,30 @@ struct StudyView: View {
         }
     }
 
+    // Interactive edge-swipe back. Only the horizontal component is read, so a
+    // little vertical drift no longer cancels the gesture the way the original
+    // `staysMostlyHorizontal` check did. The finger is tracked live and the screen
+    // snaps back when released short, which is the feedback that tells the learner
+    // the gesture exists at all.
     private var edgeSwipeBackGesture: some Gesture {
-        DragGesture(minimumDistance: 18, coordinateSpace: .local)
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onChanged { value in
+                // Start only from the leading edge, and below the header so the
+                // scrubber keeps its own drag.
+                guard value.startLocation.x <= 32, value.startLocation.y > 96 else { return }
+                backSwipeOffset = max(0, value.translation.width)
+            }
             .onEnded { value in
-                let startsAtLeadingEdge = value.startLocation.x <= 24
-                let avoidsHeaderScrubber = value.startLocation.y > 96
-                let movesRight = value.translation.width > 72
-                let staysMostlyHorizontal = abs(value.translation.height) < 56
-                let hasBackIntent = value.predictedEndTranslation.width > 112
-
-                if startsAtLeadingEdge, avoidsHeaderScrubber, movesRight, staysMostlyHorizontal, hasBackIntent {
+                guard value.startLocation.x <= 32, value.startLocation.y > 96 else { return }
+                let committed = value.translation.width > 90
+                    || value.predictedEndTranslation.width > 160
+                if committed {
                     dismiss()
+                    backSwipeOffset = 0
+                } else {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        backSwipeOffset = 0
+                    }
                 }
             }
     }
@@ -89,6 +114,22 @@ struct StudyView: View {
         guard liveSession == nil else { return }
         liveSession = LiveClassSession(store: store, keychain: KeychainStore(), episodeId: episodeId, playback: player)
     }
+
+    // Playback driven by the learner (play button, scrubber, tapping a line).
+    // With a class connected this MUST go through the controller: taking the floor
+    // for the podcast is what silences the teacher. Calling player.play() directly
+    // left both playing at once, because the floor never moved.
+    private func playIntent(seekTo positionMs: Int?) {
+        guard let controller = liveSession?.controller else {
+            if let positionMs { player.seek(positionMs) }
+            player.play()
+            return
+        }
+        controller.userStartedPlayback(seekTo: positionMs)
+    }
+
+    // No pauseIntent here: pausing is only reachable from the dock, which has the
+    // controller and calls userPausedPlayback() directly.
 
     private func endDiscussion() {
         liveSession?.end()
@@ -181,6 +222,11 @@ private struct StudyWorkspace: View {
     let onSync: () -> Void
     let onRefreshAudio: () -> Void
     let onTalk: () -> Void
+    // Seeking is the only playback action routed from here (the scrubber in the top
+    // bar). Play/pause live in the dock, which talks to the controller directly.
+    // Still an intent rather than a raw player call so a connected class moves the
+    // floor (see ClassroomController.userStartedPlayback).
+    var onSeekIntent: (Int) -> Void = { _ in }
     let discussionSession: LiveClassSession?
     let onEndDiscussion: () -> Void
     @Environment(\.colorScheme) private var scheme
@@ -196,7 +242,8 @@ private struct StudyWorkspace: View {
                 player: player,
                 durationMs: episode?.durationMs,
                 audioRefreshState: audioRefreshState,
-                onRefreshAudio: onRefreshAudio
+                onRefreshAudio: onRefreshAudio,
+                onSeekIntent: onSeekIntent
             )
             studySurface
         }
@@ -266,6 +313,10 @@ private struct WorkspaceTopBar: View {
     let durationMs: Int?
     let audioRefreshState: AudioRefreshState
     let onRefreshAudio: () -> Void
+    // Only seeking lives up here now (the scrubber). Play/pause moved to the dock,
+    // so this bar no longer starts or stops playback. Seeks still go through an
+    // intent rather than the player so a connected class moves the floor.
+    var onSeekIntent: (Int) -> Void = { _ in }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -308,20 +359,11 @@ private struct WorkspaceTopBar: View {
                     }
                 }
 
+                // No play button up here: the dock at the bottom owns playback now
+                // (it's within thumb reach, and it routes through the classroom
+                // floor). The dock is always present — StudyView starts the class
+                // on appear — so playback is never left without a control.
                 Spacer(minLength: NXSpacing.x3)
-
-                Button {
-                    playing ? player.pause() : player.play()
-                } label: {
-                    Image(systemName: playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(NXColor.text(scheme))
-                        .frame(width: 28, height: 28)
-                        .background(NXColor.surface2(scheme), in: RoundedRectangle(cornerRadius: NXRadius.small))
-                        .overlay(RoundedRectangle(cornerRadius: NXRadius.small).stroke(NXColor.border(scheme), lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(playing ? "Pause" : "Play")
             }
 
             if shouldShowCompactStatus {
@@ -344,7 +386,7 @@ private struct WorkspaceTopBar: View {
                     scrubValue = next
                     isScrubbing = false
                     if let durationMs {
-                        player.seek(Int(next * Double(durationMs)))
+                        onSeekIntent(Int(next * Double(durationMs)))
                     }
                 }
             )
@@ -494,7 +536,20 @@ private struct DiscussionBar: View {
                     controller: controller,
                     notice: session.notice,
                     connected: session.connected,
-                    livePositionMs: player.currentMs
+                    livePositionMs: player.currentMs,
+                    // Live is gated on headphones; read the route at tap time
+                    // rather than caching it, since it changes when a cable or
+                    // AirPods come and go.
+                    liveAvailable: { liveModeAvailable(player.currentRoute()) },
+                    onLiveUnavailable: {
+                        session.showNotice(liveUnavailableMessage(player.currentRoute()))
+                    },
+                    playing: player.playbackState == .playing,
+                    // A class is connected here, so playback goes through the
+                    // controller: taking the floor for the podcast is what
+                    // silences the teacher.
+                    onPlayIntent: { controller.userStartedPlayback() },
+                    onPauseIntent: { controller.userPausedPlayback() }
                 )
             } else {
                 ConnectingBar(error: session.error)
@@ -546,6 +601,13 @@ private struct ConnectedBarContent: View {
     let notice: String
     let connected: Bool
     let livePositionMs: Int
+    // Evaluated at tap time: headphones can be plugged or unplugged at any point.
+    var liveAvailable: () -> Bool = { false }
+    var onLiveUnavailable: () -> Void = {}
+    // Playback state and intents for the in-dock play button.
+    var playing: Bool = false
+    var onPlayIntent: () -> Void = {}
+    var onPauseIntent: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     // `live` = in continuous Live mode; the big button becomes a passive
@@ -553,6 +615,11 @@ private struct ConnectedBarContent: View {
     // hold-to-talk press is in progress.
     @State private var live = false
     @State private var talking = false
+    // Unplugging headphones mid-Live would drop straight into the feedback loop
+    // (teacher's voice → mic → VAD → another answer), so leaving the headphone
+    // route exits Live automatically.
+    private let routeChanged = NotificationCenter.default.publisher(
+        for: AVAudioSession.routeChangeNotification)
     // Slide-up-to-cancel: armed once the press drags up past the threshold.
     // Releasing while armed drops the turn instead of sending it.
     @State private var cancelArmed = false
@@ -567,6 +634,15 @@ private struct ConnectedBarContent: View {
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
             statusLine
             controlRow
+        }
+        // Headphones gone (unplugged, AirPods out) while Live is running: exit
+        // immediately. Staying in Live on the speaker means the teacher's voice
+        // trips the mic into an endless self-answer loop.
+        .onReceive(routeChanged) { _ in
+            guard live, !liveAvailable() else { return }
+            controller.exitLive()
+            live = false
+            onLiveUnavailable()
         }
     }
 
@@ -590,13 +666,26 @@ private struct ConnectedBarContent: View {
     // Live icon floating at the left edge (ChatGPT style). Holding anywhere on the
     // capsule talks; the Live glyph is a small tap target layered on top, so it
     // stays independently tappable without pushing the label off-center.
+    // Playback on the LEFT, Live on the RIGHT, hold-to-talk filling the middle.
+    // The play button lives down here because the one in the top bar is a thumb
+    // stretch away on a tall phone.
+    //
+    // These are laid out side by side rather than layered over the talk area on
+    // purpose: a tap target inside a long-press target means a press held 0.2s too
+    // long starts a turn instead of toggling playback. Mis-firing playback just
+    // starts audio; mis-firing a turn interrupts the teacher, takes the floor and
+    // sends a stray turn to the server. So each gesture gets its own region.
     private var controlRow: some View {
-        ZStack {
+        HStack(spacing: 0) {
+            // Present in Live too. Voice can drive playback there ("continue",
+            // "pause", "go to 10:30"), but that's a slower path when the learner just
+            // wants to stop the audio — and it depends on the model actually calling
+            // the tool. The tap stays as the direct, always-works route.
+            playSegment
+            seam
             talkSegment
-            HStack {
-                liveSegment
-                Spacer(minLength: 0)
-            }
+            seam
+            liveSegment
         }
         .frame(height: controlHeight)
         .background(talkFill, in: Capsule())
@@ -604,6 +693,32 @@ private struct ConnectedBarContent: View {
         .scaleEffect(talking ? 1.01 : 1)
         .animation(.easeOut(duration: 0.14), value: talking)
         .animation(.easeOut(duration: 0.14), value: controller.floor)
+    }
+
+    // Hairline divider between regions, so the three targets read as separate
+    // controls inside one capsule rather than one wide button.
+    private var seam: some View {
+        Rectangle()
+            .fill(seamColor)
+            .frame(width: 1, height: controlHeight - 20)
+    }
+
+    // Play/pause, mirroring the top bar's button but within thumb reach. Goes
+    // through the intent closures, so with a class connected it moves the floor
+    // (starting playback silences the teacher) instead of poking the player.
+    private var playSegment: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            playing ? onPauseIntent() : onPlayIntent()
+        } label: {
+            Image(systemName: playing ? "pause.fill" : "play.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
+                .frame(width: 52, height: controlHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel(playing ? "暂停" : "播放")
     }
 
     // Icon-only, no label — the waveform/stop glyph carries the meaning, matching
@@ -620,32 +735,72 @@ private struct ConnectedBarContent: View {
         .accessibilityLabel(live ? "退出 Live" : "进入 Live")
     }
 
-    // The hold-to-talk area — the primary action, filling the whole capsule so its
-    // label sits dead-center. In Live it turns passive (no hold gesture) and shows
-    // the floor message instead.
+    // The middle action. It takes the space between the play and Live buttons and
+    // centers its label in THAT, not in the whole capsule — with a 52pt button on
+    // each end, centering on the capsule would read as off-center.
+    // Two mutually-exclusive modes:
+    //  - Live: passive indicator (no gesture), shows the floor message.
+    //  - otherwise (normal / talking): hold-to-talk, which also interrupts the
+    //    teacher (pressing to talk IS the interrupt).
     private var talkSegment: some View {
         Text(talkLabel)
             .font(NXFont.controlEmphasis)
+            // Only Live uses a surface fill; every other state (including while the
+            // teacher answers) is the primary fill, which needs white text.
             .foregroundStyle(live ? NXColor.text(scheme) : Color.white)
             .lineLimit(1)
             .frame(maxWidth: .infinity)
             .frame(height: controlHeight)
             .contentShape(Rectangle())
-            .gesture(live ? nil : holdToTalk)
-            .accessibilityLabel(live ? "Live 进行中" : "按住 说话")
-            .accessibilityHint(live ? "随时开口;点 Live 退出" : "按住说话,松开发送")
+            .gesture(centerGesture)
+            .accessibilityLabel(centerAccessibilityLabel)
+            .accessibilityHint(centerAccessibilityHint)
+    }
+
+    // Which gesture the center strip carries, by state. nil in Live (passive).
+    // Outside Live it is ALWAYS hold-to-talk — including while the teacher is
+    // answering, because pressing to talk is itself the interrupt (see
+    // pressQuickAsk). No separate interrupt button.
+    private var centerGesture: AnyGesture<Void>? {
+        if live { return nil }
+        return AnyGesture(holdToTalk.map { _ in () })
+    }
+
+    // True while the teacher holds the floor outside Live. Only affects wording —
+    // the gesture stays hold-to-talk, since a press cuts the teacher off.
+    private var teacherAnswering: Bool { !live && controller.floor == .teacher }
+
+    private var seamColor: Color {
+        live ? NXColor.border(scheme) : Color.white.opacity(0.22)
     }
 
     private var talkLabel: String {
         if live { return floorMessage }
         if talking { return cancelArmed ? "松开 取消" : "上滑取消 · 松开发送" }
+        // The teacher is talking, but the control is still hold-to-talk: pressing
+        // cuts them off and listens. Say so instead of offering a second button.
+        if teacherAnswering { return "老师在说 · 按住打断" }
         return "按住 说话"
     }
 
+    // Stays the primary (actionable) fill while the teacher answers — it IS
+    // pressable then, so greying it out would read as disabled.
     private var talkFill: Color {
         if live { return NXColor.surface2(scheme) }
         if cancelArmed { return NXColor.error }
         return talking ? NXColor.primary.opacity(0.85) : NXColor.primary
+    }
+
+    private var centerAccessibilityLabel: String {
+        if live { return "Live 进行中" }
+        if teacherAnswering { return "按住 打断老师并说话" }
+        return "按住 说话"
+    }
+
+    private var centerAccessibilityHint: String {
+        if live { return "随时开口;点 Live 退出" }
+        if teacherAnswering { return "按住会立刻停下老师并开始听你说,松开发送" }
+        return "按住说话,松开发送"
     }
 
     // A real hold (0.18s) before a turn starts, so a stray tap sends nothing.
@@ -685,15 +840,25 @@ private struct ConnectedBarContent: View {
             }
     }
 
+    // Live is only offered on headphones. On the speaker the teacher's own voice
+    // reaches the mic and self-triggers the VAD into an endless answer loop, and
+    // the mic can't be closed to stop it because an open mic is what Live is (see
+    // AudioRouteLogic). Refuse with the reason instead of entering a broken mode.
     private func toggleLive() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         if live {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             controller.exitLive()
             live = false
-        } else {
-            controller.enterLive()
-            live = true
+            return
         }
+        guard liveAvailable() else {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            onLiveUnavailable()
+            return
+        }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        controller.enterLive()
+        live = true
     }
 
     private var statusDotColor: Color {
@@ -979,4 +1144,5 @@ private func stageDisplayName(_ stage: String) -> String {
         return stage.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
+
 #endif

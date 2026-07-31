@@ -30,7 +30,8 @@ struct LibraryView: View {
                 urlDraft: $urlDraft,
                 showImport: $showImport,
                 showSettings: $showSettings,
-                onAddToNexa: addToNexa
+                onAddToNexa: addToNexa,
+                onResync: { id in Task { await vm.resyncContent(episodeId: id) } }
             )
             .navigationDestination(for: Int.self) { id in
                 StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL)
@@ -103,6 +104,7 @@ private struct DashboardShell: View {
     @Binding var showImport: Bool
     @Binding var showSettings: Bool
     let onAddToNexa: (String) -> Void
+    var onResync: (Int) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -182,7 +184,8 @@ private struct DashboardShell: View {
                 episodes: episodes,
                 importing: importing,
                 onImport: { selectedSection = .discover },
-                onImportDraft: { openImport(with: $0) }
+                onImportDraft: { openImport(with: $0) },
+                onResync: onResync
             )
             .frame(maxWidth: 920)
             .padding(.horizontal, NXSpacing.x8)
@@ -240,7 +243,8 @@ private struct DashboardShell: View {
                         episodes: episodes,
                         importing: importing,
                         onImport: { selectedSection = .discover },
-                        onImportDraft: { openImport(with: $0) }
+                        onImportDraft: { openImport(with: $0) },
+                        onResync: onResync
                     )
                     MobileSourceStatus(
                         progress: progress,
@@ -1372,6 +1376,7 @@ private struct DashboardMain: View {
     let importing: Bool
     let onImport: () -> Void
     var onImportDraft: (String) -> Void = { _ in }
+    var onResync: (Int) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -1398,6 +1403,7 @@ private struct DashboardMain: View {
 
             if let latestEpisode {
                 ContinueThinking(episode: latestEpisode)
+                    .contextMenu { resyncButton(latestEpisode.id) }
             } else {
                 DashboardEmptyState(onImport: onImport)
             }
@@ -1407,6 +1413,7 @@ private struct DashboardMain: View {
                     VStack(spacing: 0) {
                         ForEach(focusEpisodes) { episode in
                             ContentListItem(episode: episode)
+                                .contextMenu { resyncButton(episode.id) }
                             if episode.id != focusEpisodes.last?.id {
                                 Divider().overlay(NXColor.border(scheme))
                             }
@@ -1420,6 +1427,7 @@ private struct DashboardMain: View {
                     VStack(spacing: NXSpacing.x3) {
                         ForEach(recentEpisodes) { episode in
                             ConversationListItem(episode: episode)
+                                .contextMenu { resyncButton(episode.id) }
                         }
                     }
                 }
@@ -1439,6 +1447,7 @@ private struct DashboardMain: View {
                     VStack(spacing: 0) {
                         ForEach(episodes.prefix(5)) { episode in
                             SourceListItem(episode: episode)
+                                .contextMenu { resyncButton(episode.id) }
                             if episode.id != episodes.prefix(5).last?.id {
                                 Divider().overlay(NXColor.border(scheme))
                             }
@@ -1446,6 +1455,16 @@ private struct DashboardMain: View {
                     }
                 }
             }
+        }
+    }
+
+    // Long-press affordance to re-pull corrected content (subtitles/translation)
+    // and re-download the audio, without cluttering the study screen.
+    @ViewBuilder private func resyncButton(_ episodeId: Int) -> some View {
+        Button {
+            onResync(episodeId)
+        } label: {
+            Label("重新同步内容和音频", systemImage: "arrow.triangle.2.circlepath")
         }
     }
 

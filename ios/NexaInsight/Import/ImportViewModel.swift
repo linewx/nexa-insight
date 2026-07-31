@@ -92,4 +92,20 @@ final class ImportViewModel: ObservableObject {
             importError = error.localizedDescription
         }
     }
+
+    // Re-pull the bundle AND re-download the audio, overwriting the local copies.
+    // Use when the backend has reprocessed an episode: corrected translations
+    // (saveBundle replaces the cached rows) and/or a re-encoded audio file (the
+    // CBR fix — the old VBR file on disk drifts against subtitles). Progress is
+    // surfaced so the row can show it's working.
+    func resyncContent(episodeId: Int) async {
+        importError = nil
+        progress = ImportProgress(stage: "syncing", percent: 0)
+        defer { progress = nil }
+        do {
+            try await finishDownload(episodeId: episodeId)
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
 }
