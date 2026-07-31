@@ -41,6 +41,17 @@ struct LibraryView: View {
             .navigationDestination(for: Int.self) { id in
                 StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL)
             }
+            .navigationDestination(for: Subscription.self) { subscription in
+                ChannelDetailView(
+                    vm: ChannelDetailViewModel(
+                        subscription: subscription,
+                        service: DiscoverFeedService(),
+                        // The one place this round still reads youtubeId. When
+                        // that field becomes source_id, this moves with it.
+                        importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) }),
+                    importing: vm.importing,
+                    onImport: addToNexa)
+            }
             .sheet(isPresented: $showImport) {
                 ImportSheet(vm: vm, urlDraft: $urlDraft)
                     .presentationDetents([.large])
@@ -655,6 +666,10 @@ private struct DiscoverView: View {
             selectedChannelId: $vm.selectedChannelId,
             onAddChannel: { showAddChannel = true })
 
+        // Filtering the feed and opening a channel are different intents, so the
+        // chips above stay and this list is what reaches a channel's own search.
+        SubscribedChannelsList(subscriptions: vm.subscriptions)
+
         if let feedError = vm.feedError {
             NXErrorState(message: feedError, retry: { Task { await vm.refresh() } })
         } else if vm.loading && vm.entries.isEmpty {
@@ -697,6 +712,48 @@ private struct DiscoverView: View {
                         importing: importing,
                         onAddToNexa: { onAddToNexa(previewEntry.watchURL.absoluteString) })
                     .frame(maxWidth: 420)
+                }
+            }
+        }
+    }
+}
+
+// The channels the user follows, each opening that channel's own screen.
+//
+// This is the route to in-channel search, which is the only path that reaches a
+// channel's back catalog — the feed above only ever shows recent uploads.
+private struct SubscribedChannelsList: View {
+    let subscriptions: [Subscription]
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        if !subscriptions.isEmpty {
+            VStack(alignment: .leading, spacing: NXSpacing.x3) {
+                NXSectionHeader(title: "Your channels")
+                VStack(spacing: 0) {
+                    ForEach(subscriptions) { subscription in
+                        NavigationLink(value: subscription) {
+                            HStack(spacing: NXSpacing.x3) {
+                                Image(systemName: "play.rectangle")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(NXColor.textTertiary(scheme))
+                                Text(subscription.title)
+                                    .font(NXFont.bodyMedium)
+                                    .foregroundStyle(NXColor.text(scheme))
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(NXColor.textTertiary(scheme))
+                            }
+                            .padding(.vertical, NXSpacing.x3)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if subscription.id != subscriptions.last?.id {
+                            Divider().overlay(NXColor.border(scheme))
+                        }
+                    }
                 }
             }
         }
@@ -792,10 +849,27 @@ private struct ChannelSearchRow: View {
                 }
             }
             Spacer(minLength: NXSpacing.x2)
-            if following {
-                NXTag(text: "Following", tint: NXColor.success)
-            } else {
-                NXSecondaryButton(title: "Follow", systemName: "plus", action: onFollow)
+            VStack(alignment: .trailing, spacing: NXSpacing.x2) {
+                if following {
+                    NXTag(text: "Following", tint: NXColor.success)
+                } else {
+                    NXSecondaryButton(title: "Follow", systemName: "plus", action: onFollow)
+                }
+                // Lets a user inspect what a channel publishes BEFORE
+                // subscribing. The Subscription built here is only a navigation
+                // value — nothing is written to SubscriptionStore unless the
+                // user taps Follow.
+                NavigationLink(value: Subscription(channelId: result.channelId,
+                                                   title: result.title,
+                                                   addedAt: Date())) {
+                    HStack(spacing: NXSpacing.x1) {
+                        Text("Videos").font(NXFont.label)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(NXColor.primary)
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(.vertical, NXSpacing.x3)

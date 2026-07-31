@@ -23,7 +23,7 @@ struct DiscoverEntry: Identifiable, Equatable {
 
 // A channel the user follows. channelId is the RSS key, so it is also the
 // identity — subscribing twice to the same channel collapses to one entry.
-struct Subscription: Codable, Identifiable, Equatable {
+struct Subscription: Codable, Identifiable, Equatable, Hashable {
     let channelId: String
     var title: String
     let addedAt: Date
