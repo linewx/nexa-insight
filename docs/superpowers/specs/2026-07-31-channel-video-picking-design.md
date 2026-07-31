@@ -59,13 +59,23 @@ A structural surprise worth recording: channel search still returns the **older*
 different points in YouTube's own migration. That works in our favour, since
 `videoRenderer` is the same family the existing channel-search parser handles.
 
-### Recency list uses the videos page
+### Recency list reuses RSS
 
-With no query entered, the page shows the channel's latest uploads via the videos
-page (30 entries, with duration) rather than RSS (15, without). Since in-channel
-search already depends on `ytInitialData`, the recency list using it too lets both
-share one failure path and one degradation story. RSS stays where it already is —
-the cross-channel Discover feed, which needs no duration.
+With no query entered, the page shows the channel's latest uploads from that
+channel's RSS feed — the same `DiscoverFeedParser` and `feedURL(channelId:)`
+already built and tested for the cross-channel Discover feed.
+
+An earlier draft of this spec chose the channel videos page instead, for its 30
+entries and duration. That was revised during planning: the videos page returns
+`lockupViewModel`, a different shape from search's `videoRenderer`, so it would
+need a second parser — and it is the shape YouTube is actively migrating *to*,
+making it the most likely to churn. RSS costs zero new parsing code and is stable
+Atom XML.
+
+The trade-off accepted: the recency list shows 15 entries instead of 30 and no
+duration. Duration still appears on search results, which is the primary surface.
+This is acceptable because duration was already released as a design constraint —
+finding content on demand is the priority, and that is search's job.
 
 ### No pagination
 
