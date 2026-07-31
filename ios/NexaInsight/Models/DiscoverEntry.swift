@@ -27,6 +27,12 @@ struct Subscription: Codable, Identifiable, Equatable, Hashable {
     let channelId: String
     var title: String
     let addedAt: Date
+    // Captured when following, so the channel list renders avatars without one
+    // request per row. MUST stay optional: SubscriptionStore decodes the whole
+    // array under a single `try?`, so one undecodable element silently empties
+    // the follow list — a required field would wipe existing users' channels.
+    var avatarURL: URL?
+    var subscriberText: String?
 
     var id: String { channelId }
 }

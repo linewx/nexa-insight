@@ -16,6 +16,12 @@ struct ChannelVideo: Identifiable, Equatable {
     let publishedText: String?   // "3 years ago"
     let summary: String?         // absent in 4/30 measured, so optional
     let thumbnailURL: URL?
+    // Present on site-wide search results, absent on in-channel results (there
+    // the channel is already known from the screen you are on). The card needs
+    // these to make the channel name tappable, which is the only route to
+    // following a channel.
+    var channelTitle: String?
+    var channelId: String?
 
     var id: String { videoId }
 
