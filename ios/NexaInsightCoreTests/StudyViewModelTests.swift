@@ -15,6 +15,15 @@ final class StudyViewModelTests: XCTestCase {
         XCTAssertEqual(vm.currentSentence(sentences: lines, cursorMs: 1500)?.id, 1)
     }
 
+    // A line becomes current exactly at its startMs — no lead/offset. Tapping a
+    // line seeks to its startMs, so highlight must land on that same line, not
+    // the next one.
+    func testCurrentSentenceIsExactAtStart() {
+        let vm = StudyViewModel()
+        XCTAssertEqual(vm.currentSentence(sentences: lines, cursorMs: 1000)?.id, 1)
+        XCTAssertEqual(vm.currentSentence(sentences: lines, cursorMs: 999)?.id, 0)
+    }
+
     func testSearchFiltersBilingual() {
         let vm = StudyViewModel()
         XCTAssertEqual(vm.search("再见", in: lines).map(\.id), [2])
