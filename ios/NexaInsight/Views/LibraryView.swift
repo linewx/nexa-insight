@@ -31,6 +31,7 @@ struct LibraryView: View {
                 backendBaseURL: vm.backendBaseURL,
                 importing: vm.importing,
                 discover: discover,
+                bylineLocale: settings.bylineLocale,
                 selectedSection: $selectedSection,
                 urlDraft: $urlDraft,
                 showImport: $showImport,
@@ -50,6 +51,7 @@ struct LibraryView: View {
                         // that field becomes source_id, this moves with it.
                         importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) }),
                     importing: vm.importing,
+                    bylineLocale: settings.bylineLocale,
                     onImport: addToNexa)
             }
             .sheet(isPresented: $showImport) {
@@ -107,6 +109,7 @@ private struct DashboardShell: View {
     let backendBaseURL: URL
     let importing: Bool
     @ObservedObject var discover: DiscoverViewModel
+    let bylineLocale: Locale
     @Binding var selectedSection: AppSection
     @Binding var urlDraft: String
     @Binding var showImport: Bool
@@ -157,6 +160,7 @@ private struct DashboardShell: View {
             DiscoverView(
                 vm: discover,
                 importing: importing,
+                bylineLocale: bylineLocale,
                 onAddToNexa: onAddToNexa
             )
             .padding(.horizontal, NXSpacing.x8)
@@ -228,6 +232,7 @@ private struct DashboardShell: View {
                     DiscoverView(
                         vm: discover,
                         importing: importing,
+                        bylineLocale: bylineLocale,
                         onAddToNexa: onAddToNexa
                     )
                 } else if selectedSection == .library {
@@ -611,6 +616,7 @@ private struct MobileTopBar: View {
 private struct DiscoverView: View {
     @ObservedObject var vm: DiscoverViewModel
     let importing: Bool
+    let bylineLocale: Locale
     let onAddToNexa: (String) -> Void
     @State private var selectedEntry: DiscoverEntry?
     @State private var showAddChannel = false
@@ -688,11 +694,13 @@ private struct DiscoverView: View {
                     items: vm.visibleEntries,
                     selectedEntry: $selectedEntry,
                     autoSelectFirst: false,
+                    bylineLocale: bylineLocale,
                     onClear: { vm.query = "" })
                 if let selectedEntry {
                     DiscoverPreview(
                         entry: selectedEntry,
                         importing: importing,
+                        bylineLocale: bylineLocale,
                         onAddToNexa: { onAddToNexa(selectedEntry.watchURL.absoluteString) })
                 }
             }
@@ -703,6 +711,7 @@ private struct DiscoverView: View {
                     items: vm.visibleEntries,
                     selectedEntry: $selectedEntry,
                     autoSelectFirst: true,
+                    bylineLocale: bylineLocale,
                     onClear: { vm.query = "" })
                 .frame(minWidth: 360, maxWidth: 520)
 
@@ -710,6 +719,7 @@ private struct DiscoverView: View {
                     DiscoverPreview(
                         entry: previewEntry,
                         importing: importing,
+                        bylineLocale: bylineLocale,
                         onAddToNexa: { onAddToNexa(previewEntry.watchURL.absoluteString) })
                     .frame(maxWidth: 420)
                 }
@@ -1097,6 +1107,7 @@ private struct DiscoverList: View {
     let items: [DiscoverEntry]
     @Binding var selectedEntry: DiscoverEntry?
     let autoSelectFirst: Bool
+    var bylineLocale: Locale = DiscoverFormat.defaultLocale
     let onClear: () -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -1115,6 +1126,7 @@ private struct DiscoverList: View {
                         DiscoverListItem(
                             item: item,
                             selected: item == selectedEntry || (autoSelectFirst && selectedEntry == nil && item == items.first),
+                            bylineLocale: bylineLocale,
                             action: { selectedEntry = item })
                         if item.id != items.last?.id {
                             Divider().overlay(NXColor.border(scheme))
@@ -1129,6 +1141,7 @@ private struct DiscoverList: View {
 private struct DiscoverListItem: View {
     let item: DiscoverEntry
     let selected: Bool
+    var bylineLocale: Locale = DiscoverFormat.defaultLocale
     let action: () -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -1145,7 +1158,7 @@ private struct DiscoverListItem: View {
                         .font(NXFont.bodyMedium)
                         .foregroundStyle(NXColor.text(scheme))
                         .lineLimit(2)
-                    Text(DiscoverFormat.byline(item))
+                    Text(DiscoverFormat.byline(item, locale: bylineLocale))
                         .font(NXFont.auxiliary)
                         .foregroundStyle(NXColor.textSecondary(scheme))
                         .lineLimit(1)
@@ -1174,6 +1187,7 @@ private struct DiscoverListItem: View {
 private struct DiscoverPreview: View {
     let entry: DiscoverEntry
     let importing: Bool
+    var bylineLocale: Locale = DiscoverFormat.defaultLocale
     let onAddToNexa: () -> Void
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -1187,7 +1201,7 @@ private struct DiscoverPreview: View {
                     .font(NXFont.sectionTitle)
                     .foregroundStyle(NXColor.text(scheme))
                     .fixedSize(horizontal: false, vertical: true)
-                Text(DiscoverFormat.byline(entry))
+                Text(DiscoverFormat.byline(entry, locale: bylineLocale))
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                 if let summary = entry.summary {
@@ -1223,24 +1237,6 @@ private struct DiscoverPreview: View {
                     .stroke(NXColor.border(scheme), lineWidth: 1)
             }
         }
-    }
-}
-
-// Byline for a feed entry. Duration is deliberately absent — the RSS feed has
-// no duration tag, so there is nothing truthful to show until after import.
-enum DiscoverFormat {
-    static func byline(_ entry: DiscoverEntry) -> String {
-        var parts = [entry.channelTitle, relativeDate(entry.published)]
-        if let views = entry.viewCount {
-            parts.append("\(views.formatted(.number.notation(.compactName))) views")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    static func relativeDate(_ date: Date, now: Date = Date()) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 

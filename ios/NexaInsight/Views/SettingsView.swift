@@ -76,6 +76,24 @@ struct SettingsView: View {
                         )
                     }
 
+                    SettingsSection(
+                        title: "Display",
+                        subtitle: "Discover content is English, so dates and view counts default to English too."
+                    ) {
+                        Toggle(isOn: $settings.localizedBylines) {
+                            VStack(alignment: .leading, spacing: NXSpacing.x1) {
+                                Text("Use device language for dates")
+                                    .font(NXFont.bodyMedium)
+                                    .foregroundStyle(NXColor.text(scheme))
+                                Text("On a Japanese device this shows \u{300c}3\u{65e5}\u{524d}\u{300d} instead of \u{201c}3d ago\u{201d}.")
+                                    .font(NXFont.auxiliary)
+                                    .foregroundStyle(NXColor.textSecondary(scheme))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .tint(NXColor.primary)
+                    }
+
                     if let savedMessage {
                         SaveNotice(message: savedMessage)
                     }

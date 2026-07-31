@@ -9,6 +9,7 @@ import SwiftUI
 struct ChannelDetailView: View {
     @StateObject var vm: ChannelDetailViewModel
     let importing: Bool
+    var bylineLocale: Locale = DiscoverFormat.defaultLocale
     let onImport: (String) -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -102,6 +103,7 @@ struct ChannelDetailView: View {
                             entry: entry,
                             imported: vm.isImported(videoId: entry.videoId),
                             importing: importing,
+                            bylineLocale: bylineLocale,
                             onImport: { onImport(entry.watchURL.absoluteString) })
                         if entry.id != vm.uploads.last?.id {
                             Divider().overlay(NXColor.border(scheme))
@@ -186,6 +188,7 @@ private struct ChannelUploadRow: View {
     let entry: DiscoverEntry
     let imported: Bool
     let importing: Bool
+    var bylineLocale: Locale = DiscoverFormat.defaultLocale
     let onImport: () -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -197,7 +200,7 @@ private struct ChannelUploadRow: View {
                 .fixedSize(horizontal: false, vertical: true)
             // No duration here — the RSS feed carries none. Reusing
             // DiscoverFormat.byline keeps this consistent with the Discover feed.
-            Text(DiscoverFormat.byline(entry))
+            Text(DiscoverFormat.byline(entry, locale: bylineLocale))
                 .font(NXFont.auxiliary)
                 .foregroundStyle(NXColor.textSecondary(scheme))
             if imported {
