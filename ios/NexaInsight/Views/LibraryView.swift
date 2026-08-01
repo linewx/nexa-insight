@@ -275,7 +275,9 @@ private struct LibraryProcessingState: View {
                     Text("Added to Nexa")
                         .font(NXFont.subsectionTitle)
                         .foregroundStyle(NXColor.text(scheme))
-                    Text("You can keep browsing. Playback, transcript, chapters, and discussion context will appear here when processing finishes.")
+                    // The stage list directly below already shows what is
+                    // happening; naming every artifact again said nothing new.
+                    Text("You can keep browsing while this finishes.")
                         .font(NXFont.body)
                         .foregroundStyle(NXColor.textSecondary(scheme))
                         .fixedSize(horizontal: false, vertical: true)
@@ -510,7 +512,10 @@ private struct ImportSheetHeader: View {
                 Text("Add source")
                     .font(NXFont.pageTitle)
                     .foregroundStyle(NXColor.text(scheme))
-                Text("Paste a source link. Nexa Insight will prepare transcript, chapters, audio, and references for discussion.")
+                // The field below is a URL field with a placeholder — restating
+                // that, then listing what the pipeline produces, was the third
+                // place this app explained itself to someone already using it.
+                Text("Podcasts, talks, and long-form video.")
                     .font(NXFont.body)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .fixedSize(horizontal: false, vertical: true)
