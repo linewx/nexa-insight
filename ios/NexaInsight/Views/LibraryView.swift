@@ -43,6 +43,10 @@ struct LibraryView: View {
         TabView(selection: $selectedSection) {
             // Opens on content rather than on a description of the app.
             tab(.discover, path: $discoverPath) {
+                // No padding here: each screen owns its own insets, so the brand
+                // row and the content below it can share one margin. Applied at
+                // this level it was added ON TOP of the row's, making the header
+                // twice as inset as the list.
                 DiscoverView(
                     vm: discover,
                     importing: vm.importing,
@@ -51,8 +55,6 @@ struct LibraryView: View {
                         discoverPath.append(ChannelTarget(channelId: channelId, title: title))
                     },
                     importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) })
-                .padding(.horizontal, NXSpacing.x4)
-                .padding(.top, NXSpacing.x4)
             }
 
             // Channels was a segmented control inside Discover — a tab within a
@@ -75,8 +77,6 @@ struct LibraryView: View {
                     onDiscover: { selectedSection = .discover },
                     onAddSource: { showImport = true },
                     onResync: { id in Task { await vm.resyncContent(episodeId: id) } })
-                .padding(.horizontal, NXSpacing.x4)
-                .padding(.top, NXSpacing.x4)
             }
 
             // Settings was a sheet behind a gear icon. A sheet is for finishing one
@@ -210,12 +210,15 @@ private struct LibraryMain: View {
             BrandHeader {
                 Button(action: onAddSource) {
                     Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.system(size: 19, weight: .medium))
                 }
                 .accessibilityLabel("Add a source by link")
             }
             ScrollView {
-                list.frame(maxWidth: .infinity, alignment: .leading)
+                list
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, NXSpacing.x4)
+                    .padding(.top, NXSpacing.x2)
             }
         }
     }

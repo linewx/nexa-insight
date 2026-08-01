@@ -48,7 +48,7 @@ struct DiscoverView: View {
                 if !searchExpanded && !vm.isSearchActive {
                     Button { showAddChannel = true } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.system(size: 19, weight: .medium))
                     }
                     .accessibilityLabel("Follow a channel by link")
                 }
@@ -56,7 +56,10 @@ struct DiscoverView: View {
 
             // The row above stays put; only this scrolls.
             ScrollView {
-                content.frame(maxWidth: .infinity, alignment: .leading)
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Same inset as the brand row, so both edges line up.
+                    .padding(.horizontal, NXSpacing.x4)
             }
         }
         // Single column. The old two-pane layout auto-selected a card and showed

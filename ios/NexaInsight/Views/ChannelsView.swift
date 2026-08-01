@@ -19,13 +19,13 @@ struct ChannelsView: View {
             BrandHeader {
                 Button { showYouTubeSubscriptions = true } label: {
                     Image(systemName: "play.rectangle.on.rectangle")
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.system(size: 19, weight: .medium))
                 }
                 .accessibilityLabel("View your YouTube subscriptions")
 
                 Button { showAddChannel = true } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.system(size: 19, weight: .medium))
                 }
                 .accessibilityLabel("Follow a channel by link")
             }

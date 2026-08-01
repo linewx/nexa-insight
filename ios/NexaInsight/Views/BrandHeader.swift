@@ -25,7 +25,7 @@ struct BrandHeader<Actions: View>: View {
         HStack(spacing: NXSpacing.x2) {
             BrandMark()
             Text("NexaInsight")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(NXColor.text(scheme))
                 .lineLimit(1)
                 .fixedSize()
@@ -33,15 +33,21 @@ struct BrandHeader<Actions: View>: View {
 
             Spacer(minLength: NXSpacing.x3)
 
-            // .buttonStyle(.plain) is the load-bearing part: a default Button
-            // paints its label with the accent colour and ignores an inherited
+            // Own HStack so the icons are not packed at the wordmark's 8pt spacing;
+            // adjacent 16pt glyphs need more room than words do to read as separate
+            // targets rather than one cluster.
+            //
+            // .buttonStyle(.plain) is the load-bearing part: a default Button paints
+            // its label with the accent colour and ignores an inherited
             // foregroundStyle, which is why these kept coming out blue.
-            actions
-                .buttonStyle(.plain)
-                .foregroundStyle(NXColor.text(scheme))
+            HStack(spacing: NXSpacing.x6) {
+                actions
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(NXColor.text(scheme))
         }
         .padding(.horizontal, NXSpacing.x4)
-        .padding(.top, NXSpacing.x1)
+        .padding(.top, NXSpacing.x2)
         .padding(.bottom, NXSpacing.x3)
         .frame(maxWidth: .infinity, alignment: .leading)
         // The page's own colour, with no divider. Two mistakes produced the pale
@@ -57,7 +63,7 @@ struct BrandHeader<Actions: View>: View {
 // The real app icon, not a lookalike drawn from an SF Symbol — the point is that
 // the header matches what you tapped on the home screen.
 struct BrandMark: View {
-    var size: CGFloat = 26
+    var size: CGFloat = 32
 
     var body: some View {
         Image("BrandIcon")
@@ -130,7 +136,7 @@ struct CollapsibleSearchField: View {
                 expanded = true
             } label: {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: 19, weight: .medium))
                     // Set here, not via .tint: tint does not reach an Image's
                     // rendering colour, which is why these stayed blue.
                     .foregroundStyle(NXColor.text(scheme))
