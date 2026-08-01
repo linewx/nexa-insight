@@ -43,6 +43,20 @@ struct VideoCard: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, NXSpacing.x3)
+        // `.contain`, NOT `.combine`: combining would swallow the Add button and
+        // the channel link into one label, making both unreachable. This groups the
+        // row while leaving its controls as separate targets.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    // Title, publisher, length — the order in which someone decides whether to
+    // spend four hours on this.
+    private var accessibilityDescription: String {
+        [item.title, item.channelTitle, item.durationText, item.metaText]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
     }
 
     // The channel name is the only route to following a channel, so when it can
@@ -65,6 +79,7 @@ struct VideoCard: View {
                     .foregroundStyle(NXColor.primary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("打开频道 \(title)")
             } else {
                 Text(title)
                     .font(NXFont.auxiliary)
@@ -83,6 +98,7 @@ struct VideoCard: View {
                 title: importing ? "Adding" : "Add to Nexa",
                 systemName: importing ? "clock" : "plus",
                 action: onImport)
+            .accessibilityLabel(importing ? "正在加入 Nexa" : "加入 Nexa：\(item.title)")
         }
     }
 }
@@ -107,6 +123,7 @@ private struct VideoThumbnail: View {
             // expensive pipeline run, so it earns the prominence.
             if let durationText {
                 Text(durationText)
+                    .accessibilityHidden(true)   // already in the row's label
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 4)
