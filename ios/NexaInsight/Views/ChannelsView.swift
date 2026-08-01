@@ -96,6 +96,7 @@ struct ChannelRow: View {
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(NXColor.textTertiary(scheme))
+                .accessibilityHidden(true)   // the whole row is the button
         }
         .padding(.vertical, NXSpacing.x2)
         .contentShape(Rectangle())

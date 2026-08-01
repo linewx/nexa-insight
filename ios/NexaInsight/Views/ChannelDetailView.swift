@@ -90,6 +90,7 @@ struct ChannelDetailView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(NXColor.textTertiary(scheme))
+                .accessibilityHidden(true)   // the field itself is the control
             TextField("Search in this channel", text: $vm.query)
                 .font(NXFont.body)
                 .textInputAutocapitalization(.never)
@@ -102,6 +103,7 @@ struct ChannelDetailView: View {
                         .foregroundStyle(NXColor.textTertiary(scheme))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("清除频道内搜索")
             }
         }
         .padding(.horizontal, NXSpacing.x3)

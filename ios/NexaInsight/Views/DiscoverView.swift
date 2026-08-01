@@ -108,6 +108,7 @@ struct DiscoverView: View {
                 .foregroundStyle(NXColor.primary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("退出搜索")
 
             if vm.searching {
                 skeletons
@@ -174,6 +175,7 @@ private struct DiscoverSearchField: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(focused ? NXColor.primary : NXColor.textTertiary(scheme))
+                .accessibilityHidden(true)   // the field itself is the control
 
             TextField("Search videos, or paste a link", text: $query)
                 .font(NXFont.body)
@@ -198,6 +200,7 @@ private struct DiscoverSearchField: View {
                         .foregroundStyle(NXColor.textTertiary(scheme))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("清除搜索")
             }
         }
         .padding(.horizontal, NXSpacing.x3)
