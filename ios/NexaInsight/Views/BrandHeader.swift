@@ -33,9 +33,11 @@ struct BrandHeader<Actions: View>: View {
 
             Spacer(minLength: NXSpacing.x3)
 
-            // Glyphs in the text colour, set here rather than via .tint — tint does
-            // not reach an Image's rendering colour, which is why they stayed blue.
+            // .buttonStyle(.plain) is the load-bearing part: a default Button
+            // paints its label with the accent colour and ignores an inherited
+            // foregroundStyle, which is why these kept coming out blue.
             actions
+                .buttonStyle(.plain)
                 .foregroundStyle(NXColor.text(scheme))
         }
         .padding(.horizontal, NXSpacing.x4)

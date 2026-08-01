@@ -110,17 +110,10 @@ struct LibraryView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         NavigationStack(path: path) {
-            Group {
-                // Channels supplies its own List, which scrolls itself — wrapping
-                // it would nest two scroll views and break swipe-to-unfollow.
-                if scroll {
-                    ScrollView {
-                        content().frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                } else {
-                    content()
-                }
-            }
+            // Each screen supplies its own brand row and then its own scrolling
+            // area, so the row cannot be dragged up under the status bar — which is
+            // what made the wordmark unreadable mid-scroll.
+            content()
             .background(NXColor.background(colorScheme))
             .navigationDestination(for: Int.self) { id in
                 StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL)
@@ -218,7 +211,9 @@ private struct LibraryMain: View {
                 }
                 .accessibilityLabel("Add a source by link")
             }
-            list
+            ScrollView {
+                list.frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

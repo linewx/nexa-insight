@@ -54,7 +54,10 @@ struct DiscoverView: View {
                 }
             }
 
-            content
+            // The row above stays put; only this scrolls.
+            ScrollView {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         // Single column. The old two-pane layout auto-selected a card and showed
         // a preview duplicating it, on a page whose only action is import — so
