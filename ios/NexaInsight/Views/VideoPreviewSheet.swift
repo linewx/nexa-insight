@@ -44,7 +44,7 @@ struct VideoPreviewSheet: View {
             // depending on the device width.
             Color.black
             if let url = YouTubeWeb.embed(videoId: item.videoId) {
-                WebPage(url: url, onLoadingChange: { loading = $0 })
+                WebPage(url: url, onLoadingChange: { loading = $0 }, wrapInFrame: true)
             } else {
                 Text("This video cannot be previewed.")
                     .font(NXFont.auxiliary)

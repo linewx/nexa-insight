@@ -22,6 +22,15 @@ struct WebPage: UIViewRepresentable {
     // Reported so the caller can show its own progress rather than leaving a blank
     // rectangle during the first (large) page load.
     var onLoadingChange: (Bool) -> Void = { _ in }
+    // Wrap the address in a minimal HTML document loaded from `baseURL`.
+    //
+    // Required for the embed player. Loading the embed URL directly gives WebKit no
+    // origin to report, and YouTube answers with "Video unavailable — error 153",
+    // its origin check. Measured: the same request with an https referer returns
+    // ~10KB MORE HTML and is the only one containing `playableInEmbed`, so the
+    // referer is what unlocks the real player config. An iframe inside a document
+    // with an https baseURL supplies exactly that.
+    var wrapInFrame = false
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -37,15 +46,40 @@ struct WebPage: UIViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.isOpaque = false
         webView.backgroundColor = .clear
-        webView.load(URLRequest(url: url))
+        load(into: webView)
         return webView
+    }
+
+    private func load(into webView: WKWebView) {
+        guard wrapInFrame else {
+            webView.load(URLRequest(url: url))
+            return
+        }
+        // `baseURL` is what WebKit reports as the origin; the host only has to be a
+        // real https address, not one we serve anything from.
+        let html = """
+        <!DOCTYPE html><html><head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <style>html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
+        iframe{border:0;width:100%;height:100%;display:block}</style>
+        </head><body>
+        <iframe src="\(url.absoluteString)" allow="encrypted-media;picture-in-picture"
+                allowfullscreen></iframe>
+        </body></html>
+        """
+        webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube.com"))
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.onLoadingChange = onLoadingChange
         // Only reload on a genuine change of address; SwiftUI re-invokes this on
         // every state change, and reloading each time would restart the video.
-        guard webView.url?.absoluteString != url.absoluteString, !webView.isLoading else { return }
+        // The framed case has no comparable url (it is an HTML string), so it is
+        // loaded once in makeUIView and left alone.
+        guard !wrapInFrame,
+              webView.url?.absoluteString != url.absoluteString,
+              !webView.isLoading
+        else { return }
         webView.load(URLRequest(url: url))
     }
 
