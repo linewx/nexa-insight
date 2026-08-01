@@ -48,8 +48,8 @@ struct ChannelsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(NXColor.background(scheme))
-        .navigationTitle("Channels")
         .toolbar {
+            BrandHeader()
             // Pasting a link is an action on this screen, so it belongs in the
             // toolbar rather than as a row pretending to be a channel.
             ToolbarItem(placement: .topBarTrailing) {

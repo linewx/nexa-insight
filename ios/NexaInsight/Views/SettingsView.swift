@@ -107,7 +107,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(NXColor.background(scheme))
-        .navigationTitle("Settings")
+        .toolbar { BrandHeader() }
         .onAppear(perform: load)
     }
 

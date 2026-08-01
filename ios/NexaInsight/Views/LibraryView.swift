@@ -236,8 +236,8 @@ private struct LibraryMain: View {
                 }
             }
         }
-        .navigationTitle("Library")
         .toolbar {
+            BrandHeader()
             // Pasting a link is an action on this screen, not a destination — which
             // is why Home stopped being a tab.
             ToolbarItem(placement: .topBarTrailing) {

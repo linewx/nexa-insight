@@ -22,18 +22,17 @@ struct DiscoverView: View {
     // the view — the card said "Add to Nexa" forever before this.
     var importedVideoIds: () -> Set<String> = { [] }
     @State private var showAddChannel = false
+    @State private var searchExpanded = false
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var compact: Bool { horizontalSizeClass == .compact }
 
     var body: some View {
-        // No eyebrow, no page title, no segmented control. The tab bar says where
-        // you are, and Channels moved to its own tab — so this screen is now just
-        // a field and the videos it finds.
+        // Nothing above the content but the shared brand header. No eyebrow, no
+        // page title naming what the tab bar already highlights, and no docked
+        // search field — the search lives in the toolbar as an icon.
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            searchField
-
             if vm.isSearchActive {
                 searchState
             } else {
@@ -44,26 +43,34 @@ struct DiscoverView: View {
         // a preview duplicating it, on a page whose only action is import — so
         // "selected" meant nothing and tapping a card appeared to do nothing.
         .frame(maxWidth: 720, alignment: .leading)
-        .navigationTitle("Discover")
+        .toolbar {
+            BrandHeader()
+            ToolbarItem(placement: .topBarTrailing) {
+                CollapsibleSearchField(
+                    query: $vm.query,
+                    active: vm.isSearchActive,
+                    placeholder: "Search videos",
+                    onSubmit: { term in Task { await vm.runSearch(term) } },
+                    onClear: vm.clearSearch,
+                    onPasteLink: onAddToNexa,
+                    expanded: $searchExpanded)
+            }
+            // Pasting a link keeps its own button: folding it behind the search
+            // icon would add a tap to the one action that has no alternative.
+            if !searchExpanded && !vm.isSearchActive {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showAddChannel = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Follow a channel by link")
+                }
+            }
+        }
         .task { await vm.refresh() }
         .refreshable { await vm.refresh() }
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
         }
-    }
-
-    // One field, one behaviour: it searches videos when submitted, and imports
-    // when what you pasted is a link. Typing does nothing on purpose — it used to
-    // filter the feed locally, so the keystrokes and the submitted results were
-    // unrelated.
-    private var searchField: some View {
-        DiscoverSearchField(
-            query: $vm.query,
-            active: vm.isSearchActive,
-            importing: importing,
-            onSubmitSearch: { term in Task { await vm.runSearch(term) } },
-            onImportLink: onAddToNexa,
-            onClear: vm.clearSearch)
     }
 
     @ViewBuilder
@@ -156,68 +163,6 @@ struct DiscoverView: View {
                 VideoCardSkeleton()
                 Divider().overlay(NXColor.border(scheme))
             }
-        }
-    }
-}
-
-private struct DiscoverSearchField: View {
-    @Binding var query: String
-    let active: Bool
-    let importing: Bool
-    let onSubmitSearch: (String) -> Void
-    let onImportLink: (String) -> Void
-    let onClear: () -> Void
-    @FocusState private var focused: Bool
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(spacing: NXSpacing.x3) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(focused ? NXColor.primary : NXColor.textTertiary(scheme))
-                .accessibilityHidden(true)   // the field itself is the control
-
-            TextField("Search videos, or paste a link", text: $query)
-                .font(NXFont.body)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-                .focused($focused)
-                .onSubmit(submit)
-
-            if looksLikeSourceURL(query) {
-                NXPrimaryButton(
-                    title: importing ? "Adding" : "Add",
-                    systemName: importing ? "clock" : nil,
-                    disabled: importing,
-                    action: submit)
-                .fixedSize(horizontal: true, vertical: false)
-            } else if active || !query.isEmpty {
-                // Same action as "Back" above. Two controls that looked alike but
-                // behaved differently is the confusion this screen removed.
-                Button(action: onClear) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除搜索")
-            }
-        }
-        .padding(.horizontal, NXSpacing.x3)
-        .frame(height: 48)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
-        .modifier(NXFocusModifier(focused: focused))
-    }
-
-    private func submit() {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        // A URL cannot be a search term, so this branch has no ambiguity.
-        if looksLikeSourceURL(trimmed) {
-            onImportLink(trimmed)
-        } else {
-            focused = false
-            onSubmitSearch(trimmed)
         }
     }
 }
