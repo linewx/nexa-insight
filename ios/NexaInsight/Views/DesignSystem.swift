@@ -263,8 +263,10 @@ struct NXProgressIndicator: View {
 struct NXEmptyState: View {
     let title: String
     let message: String
-    let actionTitle: String
-    let action: () -> Void
+    // Optional: some empty states have nothing to offer but an explanation, and a
+    // button that merely restates the message is worse than no button.
+    var actionTitle: String?
+    var action: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -276,7 +278,9 @@ struct NXEmptyState: View {
                 .font(NXFont.body)
                 .foregroundStyle(NXColor.textSecondary(scheme))
                 .fixedSize(horizontal: false, vertical: true)
-            NXPrimaryButton(title: actionTitle, systemName: "plus", action: action)
+            if let actionTitle {
+                NXPrimaryButton(title: actionTitle, systemName: "plus", action: action)
+            }
         }
         .padding(.vertical, NXSpacing.x4)
     }

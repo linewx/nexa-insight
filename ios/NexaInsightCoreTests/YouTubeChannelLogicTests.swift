@@ -61,4 +61,39 @@ final class YouTubeChannelLogicTests: XCTestCase {
         XCTAssertTrue(YouTubeChannelLogic.isShortsLink("https://www.youtube.com/shorts/3HQkVfZ4DNY"))
         XCTAssertFalse(YouTubeChannelLogic.isShortsLink("https://www.youtube.com/watch?v=XyXBwO5jYpw"))
     }
+
+    func testDurationSecondsParsesHoursMinutesSeconds() {
+        XCTAssertEqual(YouTubeChannelLogic.durationSeconds("2:19:34"), 8374)
+        XCTAssertEqual(YouTubeChannelLogic.durationSeconds("18:42"), 1122)
+        XCTAssertEqual(YouTubeChannelLogic.durationSeconds("0:45"), 45)
+        XCTAssertEqual(YouTubeChannelLogic.durationSeconds("4:18:22"), 15502)
+    }
+
+    func testDurationSecondsRejectsNonDurations() {
+        XCTAssertNil(YouTubeChannelLogic.durationSeconds(nil))
+        XCTAssertNil(YouTubeChannelLogic.durationSeconds(""))
+        XCTAssertNil(YouTubeChannelLogic.durationSeconds("LIVE"))
+        XCTAssertNil(YouTubeChannelLogic.durationSeconds("45"), "a bare number has no unit")
+        XCTAssertNil(YouTubeChannelLogic.durationSeconds("1:2:3:4"))
+        XCTAssertNil(YouTubeChannelLogic.durationSeconds("ab:cd"))
+    }
+
+    // Site-wide search results carry a duration but no link, the reverse of the
+    // RSS path — so Shorts have to be identified by length there. 60s is
+    // YouTube's own ceiling.
+    func testIsShortDurationUsesTheSixtySecondCeiling() {
+        XCTAssertTrue(YouTubeChannelLogic.isShortDuration("0:45"))
+        XCTAssertTrue(YouTubeChannelLogic.isShortDuration("1:00"))
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("1:01"))
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("18:42"))
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("2:19:34"))
+    }
+
+    // Deliberate asymmetry: an unrecognized duration is kept. A stray Short is
+    // noise, but a dropped 4-hour episode is unfindable — the user searched for it.
+    func testUnparseableDurationIsNotTreatedAsAShort() {
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration(nil))
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("LIVE"))
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("unknown"))
+    }
 }

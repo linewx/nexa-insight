@@ -97,6 +97,26 @@ final class SubscriptionStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.subscriptions[0].subscriberText, "4.7M subscribers")
     }
 
+    // Opening a channel you already follow parses its header and writes back, so
+    // an old subscription saved without an avatar upgrades from a monogram to the
+    // real image. Updating only the title would leave the monogram forever.
+    func testAddingAgainWithAvatarUpgradesAStoredSubscription() {
+        let store = SubscriptionStore(defaults: defaults)
+        store.add(sub("UCSHZKyawb77ixDdsGog4iWA", "Lex Fridman"))
+        XCTAssertNil(store.subscriptions[0].avatarURL)
+
+        store.add(Subscription(
+            channelId: "UCSHZKyawb77ixDdsGog4iWA", title: "Lex Fridman",
+            addedAt: Date(timeIntervalSince1970: 0),
+            avatarURL: URL(string: "https://yt3.googleusercontent.com/abc=s176"),
+            subscriberText: "4.7M subscribers"))
+
+        XCTAssertEqual(store.subscriptions.count, 1)
+        XCTAssertEqual(store.subscriptions[0].avatarURL?.absoluteString,
+                       "https://yt3.googleusercontent.com/abc=s176")
+        XCTAssertEqual(store.subscriptions[0].subscriberText, "4.7M subscribers")
+    }
+
     // Re-following an existing channel must not blank fields the row displays.
     func testAddingAgainWithoutAvatarKeepsTheStoredOne() {
         let store = SubscriptionStore(defaults: defaults)

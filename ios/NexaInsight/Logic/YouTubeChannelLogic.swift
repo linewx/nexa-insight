@@ -32,6 +32,39 @@ enum YouTubeChannelLogic {
         link.contains("/shorts/")
     }
 
+    // Whether a duration string is short enough to be a Short.
+    //
+    // The RSS path tests the link form instead (`isShortsLink`), because the feed
+    // carries no duration at all. Site-wide search results have the reverse
+    // problem: a duration is present but there is no link to inspect. So the
+    // signal has to be the duration itself.
+    //
+    // 60 seconds is YouTube's own Shorts ceiling at the time of writing. Anything
+    // that fails to parse is treated as NOT a Short — dropping a real episode
+    // because its duration string was unfamiliar is the worse error, since a
+    // stray Short is merely noise while a missing episode is unfindable.
+    static func isShortDuration(_ text: String?, maxSeconds: Int = 60) -> Bool {
+        guard let seconds = durationSeconds(text) else { return false }
+        return seconds <= maxSeconds
+    }
+
+    // Parses "2:19:34", "18:42", or "0:45" into seconds. Returns nil for anything
+    // else, including live-stream placeholders and localized text.
+    static func durationSeconds(_ text: String?) -> Int? {
+        guard let text, !text.isEmpty else { return nil }
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard (2...3).contains(parts.count) else { return nil }
+
+        var total = 0
+        for part in parts {
+            guard let value = Int(part), value >= 0, part.count <= 2 || part == parts.first else {
+                return nil
+            }
+            total = total * 60 + value
+        }
+        return total
+    }
+
     static func isValidChannelId(_ value: String) -> Bool {
         guard let match = firstMatch(in: value, pattern: "^(\(idPattern))$") else { return false }
         return match == value

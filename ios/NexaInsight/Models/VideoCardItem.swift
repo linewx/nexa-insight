@@ -28,6 +28,17 @@ struct VideoCardItem: Identifiable, Equatable {
     // The channel name is the only route to following a channel, so it must be
     // tappable — but only when we actually know which channel to open.
     var channelIsTappable: Bool { channelId != nil && channelTitle != nil }
+
+    // Drops the channel attribution. Used on a channel's own screen, where the
+    // channel is already known and a tappable name would navigate back to the
+    // screen you are on.
+    func withoutChannel() -> VideoCardItem {
+        VideoCardItem(
+            videoId: videoId, title: title,
+            channelTitle: nil, channelId: nil,
+            durationText: durationText, metaText: metaText,
+            thumbnailURL: thumbnailURL, watchURL: watchURL)
+    }
 }
 
 extension VideoCardItem {

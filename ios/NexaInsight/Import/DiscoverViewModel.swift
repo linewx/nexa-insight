@@ -2,19 +2,47 @@ import Foundation
 
 // State for the Discover screen.
 //
-// Two error channels on purpose: feedError is page-level (every source failed)
-// while failedChannelIds marks individual dead sources without hiding the
-// entries that did load.
+// The screen has exactly two shapes, and this type's job is to keep them from
+// bleeding into each other:
+//
+//   empty query  → two tabs (Latest feed / My channels)
+//   submitted    → search state covering both tabs
+//
+// An earlier version had `query` doing two jobs — filtering the feed locally as
+// you typed AND running a channel search on submit — so the keystrokes and the
+// results were unrelated. Typing now does nothing until submitted.
 @MainActor
 final class DiscoverViewModel: ObservableObject {
+    enum Tab: String, CaseIterable, Identifiable {
+        case latest
+        case channels
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .latest: return "Latest"
+            case .channels: return "My channels"
+            }
+        }
+    }
+
+    // Feed
     @Published var entries: [DiscoverEntry] = []
     @Published var loading = false
+    // Two error channels on purpose: feedError is page-level (every source
+    // failed) while failedChannelIds marks individual dead sources without
+    // hiding the entries that did load.
     @Published var feedError: String?
-    @Published var addError: String?
     @Published var failedChannelIds: [String] = []
-    @Published var selectedChannelId: String?
+    @Published var addError: String?
+
+    // Navigation
+    @Published var tab: Tab = .latest
+
+    // Search
     @Published var query = ""
-    @Published var searchResults: [ChannelSearchResult] = []
+    @Published var results: [ChannelVideo] = []
     @Published var searching = false
     // True only when the page could not be read at all — never for an empty
     // result set, which is a legitimate answer.
@@ -32,16 +60,15 @@ final class DiscoverViewModel: ObservableObject {
     var subscriptions: [Subscription] { store.subscriptions }
     var hasSubscriptions: Bool { !store.subscriptions.isEmpty }
 
-    var visibleEntries: [DiscoverEntry] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return entries.filter { entry in
-            let matchesChannel = selectedChannelId == nil || entry.channelId == selectedChannelId
-            guard matchesChannel else { return false }
-            guard !trimmed.isEmpty else { return true }
-            let haystack = "\(entry.title) \(entry.channelTitle) \(entry.summary ?? "")"
-            return haystack.localizedCaseInsensitiveContains(trimmed)
-        }
-    }
+    // Search covers the tabs rather than living inside one, so the tab selection
+    // is preserved underneath and restored on exit.
+    var isSearchActive: Bool { searchedTerm != nil }
+
+    // One card type for both sources, so the feed and search results look
+    // identical apart from the data they genuinely have.
+    var feedCards: [VideoCardItem] { entries.map { VideoCardItem($0) } }
+
+    var resultCards: [VideoCardItem] { results.compactMap { VideoCardItem($0) } }
 
     func refresh() async {
         let channelIds = store.subscriptions.map(\.channelId)
@@ -64,6 +91,36 @@ final class DiscoverViewModel: ObservableObject {
             : nil
     }
 
+    // Site-wide video search. Runs on submit only — see the type comment.
+    func runSearch(_ term: String) async {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        searching = true
+        searchUnavailable = false
+        searchedTerm = trimmed
+        defer { searching = false }
+
+        switch await service.searchVideosSiteWide(query: trimmed) {
+        case .parsed(let videos):
+            // Keep YouTube's relevance order; do not sort by date.
+            results = videos
+        case .structureMissing:
+            results = []
+            searchUnavailable = true
+        }
+    }
+
+    // Leaving the search state. "← Back" and the field's clear button both call
+    // this — two controls that looked alike but behaved differently is exactly
+    // the confusion this screen was rebuilt to remove.
+    func clearSearch() {
+        results = []
+        searchedTerm = nil
+        searchUnavailable = false
+        query = ""
+    }
+
     func addSubscription(url: String) async {
         addError = nil
         do {
@@ -79,45 +136,13 @@ final class DiscoverViewModel: ObservableObject {
         store.remove(channelId: channelId)
         entries.removeAll { $0.channelId == channelId }
         failedChannelIds.removeAll { $0 == channelId }
-        if selectedChannelId == channelId { selectedChannelId = nil }
     }
 
-    func runSearch(_ term: String) async {
-        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        searching = true
-        searchUnavailable = false
-        defer { searching = false }
-
-        switch await service.searchChannels(query: trimmed) {
-        case .parsed(let results):
-            searchResults = results
-            searchedTerm = trimmed
-        case .structureMissing:
-            searchResults = []
-            searchedTerm = trimmed
-            searchUnavailable = true
-        }
-    }
-
-    func clearSearch() {
-        searchResults = []
-        searchedTerm = nil
-        searchUnavailable = false
-        query = ""
-    }
-
-    // Search results already carry channelId, so this skips resolveChannel's
-    // handle lookup — that extra request only exists for pasted URLs.
-    // searchResults is deliberately left untouched so the row can flip to
-    // "Following" in place.
-    func subscribe(to result: ChannelSearchResult) async {
-        store.add(Subscription(channelId: result.channelId, title: result.title, addedAt: Date()))
+    // Called when returning from a channel screen, where the user may have
+    // followed or unfollowed. Refreshing only when the set actually changed
+    // avoids N feed requests on every back-navigation.
+    func syncAfterChannelVisit(previousChannelIds: [String]) async {
+        guard Set(previousChannelIds) != Set(store.subscriptions.map(\.channelId)) else { return }
         await refresh()
-    }
-
-    func isFollowing(_ result: ChannelSearchResult) -> Bool {
-        store.contains(channelId: result.channelId)
     }
 }

@@ -4,6 +4,7 @@ import XCTest
 private struct StubService: DiscoverFeedFetching {
     var videoOutcome: ChannelVideoOutcome = .parsed([])
     var uploads: [DiscoverEntry] = []
+    var header: ChannelHeader = .empty
     var capturedQueries: Captured = Captured()
 
     final class Captured { var queries: [String] = [] }
@@ -14,12 +15,13 @@ private struct StubService: DiscoverFeedFetching {
     func resolveChannel(fromURL url: String) async throws -> Subscription {
         throw DiscoverFeedError.unrecognizedChannelLink
     }
-    func searchChannels(query: String) async -> ChannelSearchOutcome { .parsed([]) }
+    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome { .parsed([]) }
     func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome {
         capturedQueries.queries.append(query)
         return videoOutcome
     }
     func fetchChannelUploads(channelId: String) async -> [DiscoverEntry] { uploads }
+    func fetchChannelHeader(channelId: String) async -> ChannelHeader { header }
 }
 
 private func video(_ id: String, _ title: String) -> ChannelVideo {
@@ -37,14 +39,33 @@ private func upload(_ id: String, _ title: String, at seconds: TimeInterval) -> 
 
 @MainActor
 final class ChannelDetailViewModelTests: XCTestCase {
-    private let sub = Subscription(channelId: "UCSHZKyawb77ixDdsGog4iWA",
-                                   title: "Lex Fridman",
-                                   addedAt: Date(timeIntervalSince1970: 0))
+    private let channelId = "UCSHZKyawb77ixDdsGog4iWA"
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "ChannelDetailViewModelTests")!
+        defaults.removePersistentDomain(forName: "ChannelDetailViewModelTests")
+    }
+
+    private func makeStore(following: Bool = false) -> SubscriptionStore {
+        let store = SubscriptionStore(defaults: defaults)
+        if following {
+            store.add(Subscription(channelId: channelId, title: "Lex Fridman",
+                                   addedAt: Date(timeIntervalSince1970: 0)))
+        }
+        return store
+    }
 
     private func makeVM(_ service: StubService,
-                        imported: Set<String> = []) -> ChannelDetailViewModel {
-        ChannelDetailViewModel(subscription: sub, service: service,
-                               importedVideoIds: { imported })
+                        imported: Set<String> = [],
+                        store: SubscriptionStore? = nil) -> ChannelDetailViewModel {
+        ChannelDetailViewModel(
+            channelId: channelId,
+            fallbackTitle: "Lex Fridman",
+            store: store ?? makeStore(),
+            service: service,
+            importedVideoIds: { imported })
     }
 
     func testLoadUploadsPopulatesRecencyList() async {
@@ -150,10 +171,132 @@ final class ChannelDetailViewModelTests: XCTestCase {
     func testIsImportedReflectsLaterChanges() async {
         final class Box { var ids: Set<String> = [] }
         let box = Box()
-        let vm = ChannelDetailViewModel(subscription: sub, service: StubService(),
-                                        importedVideoIds: { box.ids })
+        let vm = ChannelDetailViewModel(
+            channelId: channelId, fallbackTitle: "Lex Fridman",
+            store: makeStore(), service: StubService(),
+            importedVideoIds: { box.ids })
         XCTAssertFalse(vm.isImported(videoId: "a"))
         box.ids.insert("a")
         XCTAssertTrue(vm.isImported(videoId: "a"))
+    }
+
+    // MARK: - Following
+    //
+    // This screen is the only place that writes to the subscription store, and it
+    // must work for a channel the user has never followed — that is how someone
+    // inspects a channel before deciding.
+
+    func testOpensForAChannelNeverFollowed() async {
+        var service = StubService()
+        service.uploads = [upload("v1", "Something", at: 1000)]
+
+        let vm = makeVM(service, store: makeStore(following: false))
+        XCTAssertFalse(vm.following)
+
+        await vm.loadUploads()
+        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["v1"],
+                       "content loads whether or not the channel is followed")
+    }
+
+    func testFollowWritesToTheStore() async {
+        let store = makeStore(following: false)
+        let vm = makeVM(StubService(), store: store)
+
+        vm.toggleFollow()
+
+        XCTAssertTrue(vm.following)
+        XCTAssertEqual(store.subscriptions.map(\.channelId), [channelId])
+    }
+
+    func testUnfollowRemovesFromTheStore() async {
+        let store = makeStore(following: true)
+        let vm = makeVM(StubService(), store: store)
+        XCTAssertTrue(vm.following, "state is read from the store at init")
+
+        vm.toggleFollow()
+
+        XCTAssertFalse(vm.following)
+        XCTAssertTrue(store.subscriptions.isEmpty)
+    }
+
+    func testFollowCapturesHeaderFieldsForTheChannelList() async {
+        var service = StubService()
+        service.header = ChannelHeader(
+            title: "Lex Fridman Official",
+            avatarURL: URL(string: "https://yt3.googleusercontent.com/a=s176"),
+            subscriberText: "4.7M subscribers")
+
+        let store = makeStore(following: false)
+        let vm = makeVM(service, store: store)
+        await vm.loadHeader()
+        vm.toggleFollow()
+
+        let saved = store.subscriptions[0]
+        XCTAssertEqual(saved.title, "Lex Fridman Official")
+        XCTAssertEqual(saved.avatarURL?.absoluteString, "https://yt3.googleusercontent.com/a=s176")
+        XCTAssertEqual(saved.subscriberText, "4.7M subscribers",
+                       "so the channel list shows an avatar instead of a monogram")
+    }
+
+    // MARK: - Header
+
+    func testHeaderTitleWinsOverTheFallback() async {
+        var service = StubService()
+        service.header = ChannelHeader(title: "Lex Fridman Official", avatarURL: nil, subscriberText: nil)
+
+        let vm = makeVM(service)
+        XCTAssertEqual(vm.title, "Lex Fridman", "the tapped card's name is used until the header arrives")
+
+        await vm.loadHeader()
+        XCTAssertEqual(vm.title, "Lex Fridman Official")
+    }
+
+    // The contract that keeps a scrape failure from breaking the screen: YouTube
+    // is migrating this layer, and the content below comes from other sources.
+    func testHeaderFailureLeavesTheScreenUsable() async {
+        var service = StubService()
+        service.header = .empty
+        service.uploads = [upload("v1", "Still here", at: 1000)]
+
+        let vm = makeVM(service)
+        await vm.load()
+
+        XCTAssertEqual(vm.title, "Lex Fridman", "falls back to the name we arrived with")
+        XCTAssertNil(vm.avatarURL)
+        XCTAssertNil(vm.subscriberText)
+        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["v1"], "content is unaffected")
+    }
+
+    // MARK: - Cards
+
+    // A tappable channel name here would navigate back to this same screen.
+    func testCardsOnThisScreenCarryNoChannelLink() async {
+        var service = StubService()
+        service.uploads = [upload("v1", "From this channel", at: 1000)]
+        service.videoOutcome = .parsed([video("a", "Alpha")])
+
+        let vm = makeVM(service)
+        await vm.loadUploads()
+        vm.query = "physics"
+        await vm.runSearch()
+
+        XCTAssertFalse(vm.uploadCards[0].channelIsTappable)
+        XCTAssertNil(vm.uploadCards[0].channelTitle)
+        XCTAssertFalse(vm.resultCards[0].channelIsTappable)
+    }
+
+    // Search results have a duration, RSS uploads do not. Same card, one nil.
+    func testDurationPresentOnSearchResultsAbsentOnUploads() async {
+        var service = StubService()
+        service.uploads = [upload("v1", "An upload", at: 1000)]
+        service.videoOutcome = .parsed([video("a", "Alpha")])
+
+        let vm = makeVM(service)
+        await vm.loadUploads()
+        XCTAssertNil(vm.uploadCards[0].durationText)
+
+        vm.query = "physics"
+        await vm.runSearch()
+        XCTAssertEqual(vm.resultCards[0].durationText, "1:02:03")
     }
 }

@@ -21,6 +21,20 @@ struct DiscoverEntry: Identifiable, Equatable {
     var id: String { videoId }
 }
 
+// Where a channel-name tap navigates to.
+//
+// Deliberately NOT a Subscription: the channel screen must open for channels the
+// user does not follow, since that is how someone inspects a channel before
+// deciding to follow it. Navigating on a Subscription value implied a
+// relationship that may not exist. The title is what the tapped card displayed,
+// used until the channel page's own header parses.
+struct ChannelTarget: Identifiable, Equatable, Hashable {
+    let channelId: String
+    let title: String
+
+    var id: String { channelId }
+}
+
 // A channel the user follows. channelId is the RSS key, so it is also the
 // identity — subscribing twice to the same channel collapses to one entry.
 struct Subscription: Codable, Identifiable, Equatable, Hashable {
