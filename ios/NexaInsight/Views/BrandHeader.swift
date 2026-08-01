@@ -7,23 +7,46 @@ import SwiftUI
 // above a tab bar highlighting that same name. Two statements of one fact, and a
 // large-title bar costs ~40pt to make it. The brand goes here instead, so the
 // header reads as the app rather than as a label for the screen.
-struct BrandHeader: ToolbarContent {
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            HStack(spacing: NXSpacing.x2) {
-                BrandMark()
-                Text("NexaInsight")
-                    .font(.system(size: 17, weight: .semibold))
-                    // The bar hands out width between leading and trailing items;
-                    // without this the name was compressed to a single vertical
-                    // sliver and then dropped entirely.
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("NexaInsight")
+// A pinned row above the content, NOT a toolbar item.
+//
+// As a leading ToolbarItem it disappeared on scroll: the navigation bar collapses
+// leading items to make room for a title. The brand is not a navigation control and
+// should not be subject to that, so it sits in the layout instead — and the actions
+// beside it stay put for the same reason.
+struct BrandHeader<Actions: View>: View {
+    @ViewBuilder var actions: Actions
+    @Environment(\.colorScheme) private var scheme
+
+    init(@ViewBuilder actions: () -> Actions) {
+        self.actions = actions()
+    }
+
+    var body: some View {
+        HStack(spacing: NXSpacing.x2) {
+            BrandMark()
+            Text("NexaInsight")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(NXColor.text(scheme))
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityAddTraits(.isHeader)
+
+            Spacer(minLength: NXSpacing.x3)
+
+            // Glyphs in the text colour, set here rather than via .tint — tint does
+            // not reach an Image's rendering colour, which is why they stayed blue.
+            actions
+                .foregroundStyle(NXColor.text(scheme))
         }
-        .nxPlainToolbarItem()
+        .padding(.horizontal, NXSpacing.x4)
+        .padding(.vertical, NXSpacing.x2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // A tone above the page, so the row reads as a header rather than as
+        // content, with a hairline where it meets the list.
+        .background(NXColor.surface1(scheme))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(NXColor.border(scheme)).frame(height: 0.5)
+        }
     }
 }
 
@@ -104,6 +127,9 @@ struct CollapsibleSearchField: View {
             } label: {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 16, weight: .medium))
+                    // Set here, not via .tint: tint does not reach an Image's
+                    // rendering colour, which is why these stayed blue.
+                    .foregroundStyle(NXColor.text(scheme))
             }
             .accessibilityLabel("Search")
         }
@@ -121,5 +147,9 @@ struct CollapsibleSearchField: View {
             onSubmit(trimmed)
         }
     }
+}
+extension BrandHeader where Actions == EmptyView {
+    // Screens with nothing to act on — Settings is the whole page already.
+    init() { self.init(actions: { EmptyView() }) }
 }
 #endif

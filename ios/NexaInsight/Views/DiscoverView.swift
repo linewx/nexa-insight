@@ -30,29 +30,10 @@ struct DiscoverView: View {
     private var compact: Bool { horizontalSizeClass == .compact }
 
     var body: some View {
-        // Nothing above the content but the shared brand header. No eyebrow, no
-        // page title naming what the tab bar already highlights, and no docked
-        // search field — the search lives in the toolbar as an icon.
-        VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            if vm.isSearchActive {
-                searchState
-            } else {
-                latestTab
-            }
-        }
-        // Single column. The old two-pane layout auto-selected a card and showed
-        // a preview duplicating it, on a page whose only action is import — so
-        // "selected" meant nothing and tapping a card appeared to do nothing.
-        .frame(maxWidth: 720, alignment: .leading)
-        .nxToolbarGlyphs(scheme)
-        .toolbar {
-            // The brand yields while searching: a toolbar splits its width between
-            // leading and trailing items, so leaving it in squeezed the field to
-            // about 100pt — too narrow to read your own query.
-            if !searchExpanded && !vm.isSearchActive {
-                BrandHeader()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
+        // The brand row is pinned above the scrolling content rather than living in
+        // the navigation bar, which collapsed it on scroll.
+        VStack(alignment: .leading, spacing: 0) {
+            BrandHeader {
                 CollapsibleSearchField(
                     query: $vm.query,
                     active: vm.isSearchActive,
@@ -61,26 +42,42 @@ struct DiscoverView: View {
                     onClear: vm.clearSearch,
                     onPasteLink: onAddToNexa,
                     expanded: $searchExpanded)
-            }
-            .nxPlainToolbarItem()
-            // Pasting a link keeps its own button: folding it behind the search
-            // icon would add a tap to the one action that has no alternative.
-            if !searchExpanded && !vm.isSearchActive {
-                ToolbarItem(placement: .topBarTrailing) {
+
+                // Pasting a link keeps its own button: folding it behind the search
+                // icon would add a tap to the one action that has no alternative.
+                if !searchExpanded && !vm.isSearchActive {
                     Button { showAddChannel = true } label: {
                         Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .medium))
                     }
                     .accessibilityLabel("Follow a channel by link")
                 }
-                .nxPlainToolbarItem()
             }
+
+            content
         }
+        // Single column. The old two-pane layout auto-selected a card and showed
+        // a preview duplicating it, on a page whose only action is import — so
+        // "selected" meant nothing and tapping a card appeared to do nothing.
+        .frame(maxWidth: 720, alignment: .leading)
         .task { await vm.refresh() }
         .refreshable { await vm.refresh() }
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
         }
 
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x4) {
+            if vm.isSearchActive {
+                searchState
+            } else {
+                latestTab
+            }
+        }
+        .padding(.top, NXSpacing.x4)
     }
 
     @ViewBuilder

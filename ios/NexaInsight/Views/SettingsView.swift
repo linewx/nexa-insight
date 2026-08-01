@@ -12,9 +12,15 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        // No NavigationStack and no header of its own: this is a tab now, so the
-        // caller supplies the stack and the navigation bar supplies the title.
-        // The old close button belonged to a sheet that no longer exists.
+        VStack(spacing: 0) {
+            BrandHeader()
+            form
+        }
+    }
+
+    // No NavigationStack of its own: this is a tab, so the caller supplies the
+    // stack. The old close button belonged to a sheet that no longer exists.
+    private var form: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NXSpacing.x8) {
                     SettingsSection(
@@ -107,8 +113,6 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(NXColor.background(scheme))
-        .nxToolbarGlyphs(scheme)
-        .toolbar { BrandHeader() }
         .onAppear(perform: load)
     }
 

@@ -15,9 +15,28 @@ struct ChannelsView: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        // A List rather than a hand-rolled VStack: swipe-to-unfollow is a List
-        // affordance, and using the real one means the gesture, the animation,
-        // and the row insets all come from the system.
+        VStack(spacing: 0) {
+            BrandHeader {
+                Button { showYouTubeSubscriptions = true } label: {
+                    Image(systemName: "play.rectangle.on.rectangle")
+                        .font(.system(size: 16, weight: .medium))
+                }
+                .accessibilityLabel("View your YouTube subscriptions")
+
+                Button { showAddChannel = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .medium))
+                }
+                .accessibilityLabel("Follow a channel by link")
+            }
+            list
+        }
+    }
+
+    // A List rather than a hand-rolled VStack: swipe-to-unfollow is a List
+    // affordance, and using the real one means the gesture, the animation, and the
+    // row insets all come from the system.
+    private var list: some View {
         List {
             if vm.subscriptions.isEmpty {
                 NXEmptyState(
@@ -49,33 +68,6 @@ struct ChannelsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(NXColor.background(scheme))
-        .nxToolbarGlyphs(scheme)
-        .toolbar {
-            BrandHeader()
-            // Pasting a link is an action on this screen, so it belongs in the
-            // toolbar rather than as a row pretending to be a channel.
-            // Your real YouTube subscriptions, as a reference while deciding what
-            // to follow here. This is the only route to them without OAuth —
-            // `subscriptions.list?mine=true` rejects an API key.
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showYouTubeSubscriptions = true
-                } label: {
-                    Image(systemName: "play.rectangle.on.rectangle")
-                }
-                .accessibilityLabel("View your YouTube subscriptions")
-            }
-            .nxPlainToolbarItem()
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showAddChannel = true
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .accessibilityLabel("Follow a channel by link")
-            }
-            .nxPlainToolbarItem()
-        }
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
         }

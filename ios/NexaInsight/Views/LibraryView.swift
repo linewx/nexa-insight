@@ -210,9 +210,21 @@ private struct LibraryMain: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        // The eyebrow, a restatement of what Library is, and a note that Discover
-        // is separate took three lines before the first item. The tab bar and the
-        // navigation title already say where you are.
+        VStack(spacing: 0) {
+            BrandHeader {
+                Button(action: onAddSource) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .medium))
+                }
+                .accessibilityLabel("Add a source by link")
+            }
+            list
+        }
+    }
+
+    // The eyebrow, a restatement of what Library is, and a note that Discover is
+    // separate took three lines before the first item. The tab bar says where you are.
+    private var list: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x6) {
             if let progress {
                 LibraryProcessingState(progress: progress)
@@ -238,19 +250,6 @@ private struct LibraryMain: View {
                     }
                 }
             }
-        }
-        .nxToolbarGlyphs(scheme)
-        .toolbar {
-            BrandHeader()
-            // Pasting a link is an action on this screen, not a destination — which
-            // is why Home stopped being a tab.
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(action: onAddSource) {
-                    Image(systemName: "plus")
-                }
-                .accessibilityLabel("Add a source by link")
-            }
-            .nxPlainToolbarItem()
         }
     }
 

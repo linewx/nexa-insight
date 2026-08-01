@@ -46,6 +46,7 @@ struct ChannelDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showChannelHome = true } label: {
                     Image(systemName: "safari")
+                        .foregroundStyle(NXColor.text(scheme))
                 }
                 .accessibilityLabel("Open this channel on YouTube")
             }
