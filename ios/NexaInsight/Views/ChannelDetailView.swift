@@ -13,13 +13,13 @@ struct ChannelDetailView: View {
     @StateObject var vm: ChannelDetailViewModel
     let importing: Bool
     let onImport: (String) -> Void
+    @State private var searchExpanded = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NXSpacing.x4) {
                 header
-                searchField
 
                 if vm.isSearchActive {
                     searchSection
@@ -36,6 +36,17 @@ struct ChannelDetailView: View {
         // identical behaved differently. Refresh reloads the first page rather than
         // re-fetching every page already scrolled.
         .refreshable { await vm.reload() }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                CollapsibleSearchField(
+                    query: $vm.query,
+                    active: vm.isSearchActive,
+                    placeholder: "Search in this channel",
+                    onSubmit: { _ in Task { await vm.runSearch() } },
+                    onClear: vm.clearSearch,
+                    expanded: $searchExpanded)
+            }
+        }
         .navigationTitle(vm.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
@@ -83,32 +94,6 @@ struct ChannelDetailView: View {
             NXSecondaryButton(title: "Follow", systemName: "plus", action: vm.toggleFollow)
                 .fixedSize(horizontal: true, vertical: false)
         }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: NXSpacing.x3) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(NXColor.textTertiary(scheme))
-                .accessibilityHidden(true)   // the field itself is the control
-            TextField("Search in this channel", text: $vm.query)
-                .font(NXFont.body)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-                .onSubmit { Task { await vm.runSearch() } }
-            if vm.isSearchActive || !vm.query.isEmpty {
-                Button(action: vm.clearSearch) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除频道内搜索")
-            }
-        }
-        .padding(.horizontal, NXSpacing.x3)
-        .frame(height: 48)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
     }
 
     @ViewBuilder
