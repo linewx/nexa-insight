@@ -236,11 +236,6 @@ private struct LibraryMain: View {
                 }
             }
         }
-        // iOS 26 draws grouped toolbar items inside a shared capsule, which reads
-        // as a control panel floating above the page. Hidden, so the icons sit on
-        // the same background as the content behind them. Gated rather than raising
-        // the app's iOS 17 floor for one cosmetic modifier.
-        .nxPlainToolbarBackground()
         .toolbar {
             BrandHeader()
             // Pasting a link is an action on this screen, not a destination — which
@@ -251,6 +246,7 @@ private struct LibraryMain: View {
                 }
                 .accessibilityLabel("Add a source by link")
             }
+            .nxPlainToolbarItem()
         }
     }
 

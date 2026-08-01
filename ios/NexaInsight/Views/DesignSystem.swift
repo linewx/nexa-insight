@@ -328,13 +328,20 @@ struct NXErrorState: View {
 }
 
 extension View {
-    // Removes the navigation bar's own background so toolbar glyphs sit on the
-    // page rather than inside iOS 26's grouped-item capsule. A no-op below iOS 18,
-    // where that capsule does not exist.
-    @ViewBuilder
-    func nxPlainToolbarBackground() -> some View {
-        if #available(iOS 18.0, *) {
-            self.toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+    // No-op kept for call sites; the capsule is per-ITEM, not per-bar, so hiding
+    // the bar's background never touched it. See nxPlainToolbarItem.
+    func nxPlainToolbarBackground() -> some View { self }
+}
+
+extension ToolbarContent {
+    // iOS 26 wraps each toolbar item in its own Liquid Glass background, which is
+    // what made the icons read as a control panel floating over the page.
+    // `sharedBackgroundVisibility` is the per-item control; the bar-level
+    // `toolbarBackgroundVisibility` does not affect it.
+    @ToolbarContentBuilder
+    func nxPlainToolbarItem() -> some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            self.sharedBackgroundVisibility(.hidden)
         } else {
             self
         }

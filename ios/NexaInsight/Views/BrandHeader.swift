@@ -12,28 +12,34 @@ struct BrandHeader: ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             HStack(spacing: NXSpacing.x2) {
                 BrandMark()
-                Text("Nexa")
+                Text("NexaInsight")
                     .font(.system(size: 17, weight: .semibold))
+                    // The bar hands out width between leading and trailing items;
+                    // without this the name was compressed to a single vertical
+                    // sliver and then dropped entirely.
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Nexa Insight")
+            .accessibilityLabel("NexaInsight")
         }
+        .nxPlainToolbarItem()
     }
 }
 
+// The real app icon, not a lookalike drawn from an SF Symbol — the point is that
+// the header matches what you tapped on the home screen.
 struct BrandMark: View {
-    var size: CGFloat = 24
+    var size: CGFloat = 26
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: NXRadius.small)
-                .fill(NXColor.primary)
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: size * 0.46, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        Image("BrandIcon")
+            .resizable()
+            .frame(width: size, height: size)
+            // iOS clips the home-screen icon to a squircle; matching that here keeps
+            // the two readings of the same mark consistent.
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 

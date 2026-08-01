@@ -48,6 +48,7 @@ struct ChannelDetailView: View {
                 }
                 .accessibilityLabel("Open this channel on YouTube")
             }
+            .nxPlainToolbarItem()
             ToolbarItem(placement: .topBarTrailing) {
                 CollapsibleSearchField(
                     query: $vm.query,
@@ -57,17 +58,13 @@ struct ChannelDetailView: View {
                     onClear: vm.clearSearch,
                     expanded: $searchExpanded)
             }
+            .nxPlainToolbarItem()
         }
         // The channel name moved into the scrolling header (see `header`). Inline
         // in the bar it had to share 44pt with two trailing icons, and iOS 26's
         // grouped-item capsule squeezed it to a single vertical sliver.
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
-        // iOS 26 draws grouped toolbar items inside a shared capsule, which reads
-        // as a control panel floating above the page. Hidden, so the icons sit on
-        // the same background as the content behind them. Gated rather than raising
-        // the app's iOS 17 floor for one cosmetic modifier.
-        .nxPlainToolbarBackground()
         .sheet(isPresented: $showChannelHome) {
             if let url = YouTubeWeb.channel(channelId: vm.channelId) {
                 WebPageSheet(title: vm.title, url: url)
