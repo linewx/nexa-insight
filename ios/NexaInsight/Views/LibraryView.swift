@@ -89,6 +89,9 @@ struct LibraryView: View {
             .tabItem { Label(AppSection.settings.title, systemImage: AppSection.settings.icon) }
         }
         .tint(NXColor.primary)
+        // One header per screen: the brand row above. Left visible, the navigation
+        // bar drew a second band behind it in a different tone.
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showImport) {
             ImportSheet(vm: vm, urlDraft: $urlDraft)
                 .presentationDetents([.large])

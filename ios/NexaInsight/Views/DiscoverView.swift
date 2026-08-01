@@ -65,6 +65,9 @@ struct DiscoverView: View {
         .frame(maxWidth: 720, alignment: .leading)
         .task { await vm.refresh() }
         .refreshable { await vm.refresh() }
+        // One header per screen: the brand row above. Left visible, the navigation
+        // bar drew a second band behind it in a different tone.
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
         }

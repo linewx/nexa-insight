@@ -16,6 +16,9 @@ struct SettingsView: View {
             BrandHeader()
             form
         }
+        // One header per screen: the brand row above. Left visible, the navigation
+        // bar drew a second band behind it in a different tone.
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // No NavigationStack of its own: this is a tab, so the caller supplies the

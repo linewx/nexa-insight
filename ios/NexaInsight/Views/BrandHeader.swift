@@ -41,14 +41,16 @@ struct BrandHeader<Actions: View>: View {
                 .foregroundStyle(NXColor.text(scheme))
         }
         .padding(.horizontal, NXSpacing.x4)
-        .padding(.vertical, NXSpacing.x2)
+        .padding(.top, NXSpacing.x1)
+        .padding(.bottom, NXSpacing.x3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // A tone above the page, so the row reads as a header rather than as
-        // content, with a hairline where it meets the list.
-        .background(NXColor.surface1(scheme))
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(NXColor.border(scheme)).frame(height: 0.5)
-        }
+        // The page's own colour, with no divider. Two mistakes produced the pale
+        // strip pinned to the top: giving this row surface1, AND leaving the
+        // navigation bar drawing its own background behind it — two stacked bands
+        // in a slightly different colour from everything around them. The row does
+        // not need one: it sits outside the scroll view, so no content ever passes
+        // under it, and type weight alone marks it as the top of the page.
+        .background(NXColor.background(scheme))
     }
 }
 

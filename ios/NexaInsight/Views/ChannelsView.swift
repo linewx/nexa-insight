@@ -68,6 +68,9 @@ struct ChannelsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(NXColor.background(scheme))
+        // One header per screen: the brand row above. Left visible, the navigation
+        // bar drew a second band behind it in a different tone.
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
         }
