@@ -75,7 +75,7 @@ struct VideoCard: View {
 
                 Spacer(minLength: 0)
 
-                overflowMenu
+                addButton
             }
             .padding(.top, NXSpacing.x3)
             .padding(.horizontal, NXSpacing.x1)
@@ -113,33 +113,41 @@ struct VideoCard: View {
         }
     }
 
-    // Add moved in here. It triggers transcription, per-sentence translation and AI
-    // chaptering over hours of audio, so repeating it as an outlined button on every
-    // card both crowded the list and made an expensive action look incidental.
-    private var overflowMenu: some View {
-        Menu {
-            if imported {
-                Label("In your library", systemImage: "checkmark.circle")
-            } else {
-                Button(action: onImport) {
-                    Label(importing ? "Adding…" : "Add to Nexa", systemImage: "plus")
-                }
-                .disabled(importing)
+    // One glyph, no menu and no words.
+    //
+    // "Add to Nexa" as text was wider than the action deserved on a card whose job
+    // is to show a thumbnail and a title, and burying it in a ⋮ menu hid the only
+    // thing you come here to do behind an extra tap. The ⋮ carried a second item —
+    // go to channel — which the tappable avatar already provides.
+    //
+    // The three states are distinct glyphs rather than one that changes colour, so
+    // "already added" cannot be mistaken for "tap to add" at a glance.
+    @ViewBuilder
+    private var addButton: some View {
+        if imported {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(NXColor.success)
+                .frame(width: 36, height: 36)
+                .accessibilityLabel("In your library")
+        } else {
+            Button(action: onImport) {
+                Image(systemName: importing ? "clock" : "plus.circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(importing
+                                     ? NXColor.textTertiary(scheme)
+                                     : NXColor.primary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
-            if let channelId = item.channelId, let channelTitle = item.channelTitle,
-               let onOpenChannel {
-                Button { onOpenChannel(channelId, channelTitle) } label: {
-                    Label("Go to \(channelTitle)", systemImage: "person.2")
-                }
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(NXColor.textSecondary(scheme))
-                .frame(width: 32, height: 32)
-                .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(importing)
+            // The label carries the title, since the glyph alone would announce as
+            // "add" with no indication of what is being added.
+            .accessibilityLabel(importing
+                                ? "Adding \(item.title)"
+                                : "Add to Nexa: \(item.title)")
         }
-        .accessibilityLabel("More actions")
     }
 
     // Title, publisher, length — the order in which someone decides whether to
