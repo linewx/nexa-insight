@@ -17,6 +17,10 @@ struct StudyView: View {
     // How far the screen is dragged during a back-swipe. Drives the follow-the-finger
     // offset so the gesture has the visual feedback the system one would give.
     @State private var backSwipeOffset: CGFloat = 0
+    // Intensive-listening state. Loop lives here rather than on a row so only one
+    // sentence can ever loop; speed mirrors the player's rate for the badge.
+    @State private var loop: SentenceLoop = .off
+    @State private var speed: Double = 1
     private let sentences: [SentenceDTO]
     private let episode: EpisodeDTO?
 
@@ -49,9 +53,28 @@ struct StudyView: View {
             onRefreshAudio: { Task { await refreshAudio() } },
             onTalk: startDiscussion,
             onSeekIntent: { ms in playIntent(seekTo: ms) },
+            loop: loop,
+            speed: speed,
+            onReplay: {
+                if let ms = IntensiveListening.replayTarget(current) { playIntent(seekTo: ms) }
+            },
+            onToggleLoop: { sentence in loop = loop.toggled(sentence) },
+            onStep: { sentence in playIntent(seekTo: sentence.startMs) },
+            onCycleSpeed: {
+                speed = IntensiveListening.cycledSpeed(after: speed)
+                player.speed(speed)
+            },
             discussionSession: liveSession,
             onEndDiscussion: endDiscussion
         )
+        // Drives the loop. Without this the loop control would toggle a flag and
+        // playback would sail past the sentence end — the rewind has to be applied
+        // as the position advances.
+        .onChange(of: player.currentMs) { _, ms in
+            if let target = loop.rewindTarget(for: current, at: ms) {
+                player.seek(target)
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         // Hidden, not merely transparent. Every attempt to keep the bar present for
         // the sake of the system pop gesture cost more than it bought: transparent
@@ -227,6 +250,12 @@ private struct StudyWorkspace: View {
     // Still an intent rather than a raw player call so a connected class moves the
     // floor (see ClassroomController.userStartedPlayback).
     var onSeekIntent: (Int) -> Void = { _ in }
+    var loop: SentenceLoop = .off
+    var speed: Double = 1
+    var onReplay: () -> Void = {}
+    var onToggleLoop: (SentenceDTO) -> Void = { _ in }
+    var onStep: (SentenceDTO) -> Void = { _ in }
+    var onCycleSpeed: () -> Void = {}
     let discussionSession: LiveClassSession?
     let onEndDiscussion: () -> Void
     @Environment(\.colorScheme) private var scheme
@@ -297,7 +326,13 @@ private struct StudyWorkspace: View {
                 sentences: visible,
                 current: current,
                 onSentenceTap: onSentenceTap,
-                onShadow: onShadow
+                onShadow: onShadow,
+                loop: loop,
+                speed: speed,
+                onReplay: onReplay,
+                onToggleLoop: onToggleLoop,
+                onStep: onStep,
+                onCycleSpeed: onCycleSpeed
             )
             if !following {
                 NXSecondaryButton(title: "Back to current", systemName: "scope", action: onSync)
@@ -1049,6 +1084,12 @@ private struct TranscriptBlock: View {
     let current: SentenceDTO?
     let onSentenceTap: (SentenceDTO) -> Void
     let onShadow: (SentenceDTO) -> Void
+    var loop: SentenceLoop = .off
+    var speed: Double = 1
+    var onReplay: () -> Void = {}
+    var onToggleLoop: (SentenceDTO) -> Void = { _ in }
+    var onStep: (SentenceDTO) -> Void = { _ in }
+    var onCycleSpeed: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -1062,11 +1103,22 @@ private struct TranscriptBlock: View {
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(sentences) { sentence in
+                        let previous = IntensiveListening.previousSentence(sentences, from: sentence)
+                        let next = IntensiveListening.nextSentence(sentences, from: sentence)
                         TranscriptRow(
                             sentence: sentence,
                             selected: sentence.id == current?.id,
                             onTap: { onSentenceTap(sentence) },
-                            onShadow: { onShadow(sentence) }
+                            onShadow: { onShadow(sentence) },
+                            looping: loop.isLooping(sentence),
+                            speed: speed,
+                            canStepBack: previous != nil,
+                            canStepForward: next != nil,
+                            onReplay: onReplay,
+                            onToggleLoop: { onToggleLoop(sentence) },
+                            onPrevious: { if let previous { onStep(previous) } },
+                            onNext: { if let next { onStep(next) } },
+                            onCycleSpeed: onCycleSpeed
                         )
                         .id(sentence.id)
                         if sentence.id != sentences.last?.id {
@@ -1084,45 +1136,130 @@ private struct TranscriptRow: View {
     let selected: Bool
     let onTap: () -> Void
     let onShadow: () -> Void
+    // Intensive-listening controls, shown only under the sentence being played.
+    var looping: Bool = false
+    var speed: Double = 1
+    var canStepBack: Bool = true
+    var canStepForward: Bool = true
+    var onReplay: () -> Void = {}
+    var onToggleLoop: () -> Void = {}
+    var onPrevious: () -> Void = {}
+    var onNext: () -> Void = {}
+    var onCycleSpeed: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                HStack(spacing: NXSpacing.x2) {
-                    Text(formatTime(sentence.startMs))
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(selected ? NXColor.primary : NXColor.textTertiary(scheme))
-                        .monospacedDigit()
-                        .frame(width: 52, alignment: .leading)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onTap) {
                 VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    Text(sentence.sourceText)
-                        .font(NXFont.body)
-                        .fontWeight(selected ? .medium : .regular)
-                        .foregroundStyle(NXColor.text(scheme))
-                        .lineSpacing(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if !sentence.chinese.isEmpty {
-                        Text(sentence.chinese)
+                    HStack(spacing: NXSpacing.x2) {
+                        Text(formatTime(sentence.startMs))
+                            .font(NXFont.auxiliary)
+                            .foregroundStyle(selected ? NXColor.primary : NXColor.textTertiary(scheme))
+                            .monospacedDigit()
+                            .frame(width: 52, alignment: .leading)
+                    }
+                    VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                        Text(sentence.sourceText)
                             .font(NXFont.body)
-                            .foregroundStyle(NXColor.textSecondary(scheme))
+                            .fontWeight(selected ? .medium : .regular)
+                            .foregroundStyle(NXColor.text(scheme))
                             .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !sentence.chinese.isEmpty {
+                            Text(sentence.chinese)
+                                .font(NXFont.body)
+                                .foregroundStyle(NXColor.textSecondary(scheme))
+                                .lineSpacing(2)
+                        }
                     }
                 }
+                .padding(.top, NXSpacing.x4)
+                .padding(.bottom, selected ? NXSpacing.x2 : NXSpacing.x4)
+                .padding(.leading, NXSpacing.x4)
+                .padding(.trailing, NXSpacing.x2)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, NXSpacing.x4)
-            .padding(.leading, NXSpacing.x4)
-            .padding(.trailing, NXSpacing.x2)
-            .background(selected ? NXColor.primary.opacity(0.045) : Color.clear)
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(selected ? NXColor.primary : Color.clear)
-                    .frame(width: 2)
+            .buttonStyle(.plain)
+
+            // One row, on one sentence. Putting these in the bottom bar would mean
+            // seven controls in a 50pt capsule; putting them on every row would
+            // repeat them hundreds of times. The sentence you are working on is
+            // the only place they mean anything.
+            if selected {
+                actions
             }
-            .contentShape(Rectangle())
+        }
+        .background(selected ? NXColor.primary.opacity(0.045) : Color.clear)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(selected ? NXColor.primary : Color.clear)
+                .frame(width: 2)
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: NXSpacing.x1) {
+            action("arrow.left.to.line", "上一句", enabled: canStepBack, action: onPrevious)
+            action("arrow.counterclockwise", "重听这句", action: onReplay)
+            action("repeat", "循环这句", on: looping, action: onToggleLoop)
+            action("waveform.badge.mic", "跟读", action: onShadow)
+
+            // The rate lives on a label rather than an icon: the current value IS
+            // the information, and it only differs from 1× when you changed it.
+            Button(action: onCycleSpeed) {
+                Text(IntensiveListening.speedBadge(speed) ?? "1×")
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(speed == 1 ? NXColor.textSecondary(scheme) : NXColor.primary)
+                    .frame(height: 32)
+                    .padding(.horizontal, NXSpacing.x2)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("播放速度 \(IntensiveListening.speedBadge(speed) ?? "1×")")
+
+            Spacer(minLength: 0)
+
+            action("arrow.right.to.line", "下一句", enabled: canStepForward, action: onNext)
+        }
+        .padding(.leading, NXSpacing.x4)
+        .padding(.trailing, NXSpacing.x2)
+        .padding(.bottom, NXSpacing.x3)
+    }
+
+    @ViewBuilder
+    private func action(
+        _ systemName: String,
+        _ label: String,
+        on: Bool = false,
+        enabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            action()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(tint(on: on, enabled: enabled))
+                // 32pt tall, 36 wide: below Apple's 44pt ideal, but these sit
+                // inside a row the learner is already looking at, and full-size
+                // targets here would push the next sentence off screen.
+                .frame(width: 36, height: 32)
+                .background(on ? NXColor.primary.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: NXRadius.small))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(on ? [.isSelected] : [])
+    }
+
+    private func tint(on: Bool, enabled: Bool) -> Color {
+        if !enabled { return NXColor.textTertiary(scheme).opacity(0.4) }
+        return on ? NXColor.primary : NXColor.textSecondary(scheme)
     }
 }
 
