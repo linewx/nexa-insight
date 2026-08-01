@@ -14,6 +14,8 @@ private struct StubAPI: YouTubeAPIFetching {
 
     final class Calls {
         var tokens: [String?] = []
+        var topicCalls = 0
+        var searchQueries: [String] = []
         var count: Int { tokens.count }
     }
 
@@ -23,6 +25,21 @@ private struct StubAPI: YouTubeAPIFetching {
         let index = calls.count - 1
         guard index < pages.count else { return .empty }
         return pages[index]
+    }
+
+    var topics: [String: [String]] = [:]
+    var searchResults: [ChannelVideo] = []
+
+    func fetchTopics(channelIds: [String]) async throws -> [String: [String]] {
+        calls.topicCalls += 1
+        return topics
+    }
+
+    func searchTopic(query: String) async throws -> [ChannelVideo] {
+        // Counted, because search.list costs 100 units from a 100/day bucket — a
+        // test that lets this run twice is describing a real quota bug.
+        calls.searchQueries.append(query)
+        return searchResults
     }
 }
 
@@ -249,5 +266,112 @@ final class ChannelCatalogPagingTests: XCTestCase {
         await vm.loadFirstPage()
 
         XCTAssertFalse(vm.uploadCards[0].channelIsTappable)
+    }
+}
+
+
+// Exploration is the one path that spends the expensive quota, so these lock the
+// spending rules rather than the recommendations themselves.
+@MainActor
+final class ExplorationQuotaTests: XCTestCase {
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "ExplorationQuotaTests")!
+        defaults.removePersistentDomain(forName: "ExplorationQuotaTests")
+    }
+
+    private func makeVM(_ api: StubAPI, subs: [String] = ["UCSHZKyawb77ixDdsGog4iWA"])
+        -> (DiscoverViewModel, StubFeed) {
+        let store = SubscriptionStore(defaults: defaults)
+        for id in subs {
+            store.add(Subscription(channelId: id, title: "Ch", addedAt: Date(timeIntervalSince1970: 0)))
+        }
+        let feed = StubFeed()
+        let vm = DiscoverViewModel(
+            store: store, service: feed, api: api,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults))
+        return (vm, feed)
+    }
+
+    private func stub() -> StubAPI {
+        var api = StubAPI()
+        api.pages = [UploadsPage(videos: [video("a")], nextPageToken: nil, totalCount: 1)]
+        api.topics = ["UCSHZKyawb77ixDdsGog4iWA": ["Knowledge"]]
+        api.searchResults = [video("x"), video("y")]
+        return api
+    }
+
+    // search.list has its own bucket of exactly 100 calls per day. Refreshing must
+    // reuse the cached result, or a few pull-to-refreshes exhaust the day.
+    func testSearchesAtMostOncePerDay() async {
+        let api = stub()
+        let (vm, _) = makeVM(api)
+
+        await vm.refresh()
+        await vm.refresh()
+        await vm.refresh()
+
+        XCTAssertEqual(api.calls.searchQueries.count, 1,
+                       "three refreshes must not mean three searches")
+    }
+
+    // A search that fails or returns nothing still consumed the quota, so it must
+    // not be retried on the next refresh.
+    func testFailedSearchDoesNotRetryToday() async {
+        var api = stub()
+        api.searchResults = []
+        let (vm, _) = makeVM(api)
+
+        await vm.refresh()
+        await vm.refresh()
+
+        XCTAssertEqual(api.calls.searchQueries.count, 1, "an empty result still cost 100 units")
+    }
+
+    // Profiling is 1 unit for every channel at once, so it runs before deciding
+    // whether the expensive call is worthwhile.
+    func testProfilesTopicsBeforeSearching() async {
+        let api = stub()
+        let (vm, _) = makeVM(api)
+        await vm.refresh()
+        XCTAssertEqual(api.calls.topicCalls, 1)
+        XCTAssertEqual(api.calls.searchQueries.first, Recommend.query(for: "History"))
+    }
+
+    // With no topic profile there is nothing to reason from, so no search happens.
+    func testNoProfileMeansNoSearch() async {
+        var api = stub()
+        api.topics = [:]
+        let (vm, _) = makeVM(api)
+        await vm.refresh()
+        XCTAssertTrue(api.calls.searchQueries.isEmpty)
+        XCTAssertTrue(vm.exploration.isEmpty)
+    }
+
+    // A suggestion from a channel you already follow is not a suggestion.
+    func testDropsResultsFromFollowedChannels() async {
+        var api = stub()
+        api.searchResults = [
+            ChannelVideo(videoId: "own", title: "From a followed channel",
+                         durationText: nil, viewsText: nil, publishedText: nil,
+                         summary: nil, thumbnailURL: nil,
+                         channelTitle: "Ch", channelId: "UCSHZKyawb77ixDdsGog4iWA"),
+            video("new"),
+        ]
+        let (vm, _) = makeVM(api)
+        await vm.refresh()
+        XCTAssertFalse(vm.exploration.map(\.videoId).contains("own"))
+    }
+
+    // The marker is the only thing distinguishing a suggestion once it is mixed in.
+    func testSuggestionsAreIdentifiable() async {
+        let api = stub()
+        let (vm, _) = makeVM(api)
+        await vm.refresh()
+        XCTAssertFalse(vm.explorationIds.isEmpty)
+        XCTAssertNotNil(vm.explorationTopic)
     }
 }

@@ -52,6 +52,15 @@ final class DiscoverViewModel: ObservableObject {
     // The API-sourced feed, kept separate from `entries` (RSS) because only one is
     // ever in use — exactly one of the two is non-empty at any time.
     @Published var apiEntries: [ChannelVideo] = []
+    // Videos from outside the followed set, mixed into the feed and marked. Kept
+    // separate so a bad recommendation can be identified and removed rather than
+    // being indistinguishable from a subscription.
+    @Published var exploration: [ChannelVideo] = []
+    @Published var explorationTopic: String?
+    // Engagement per channel, from local playback data. No network cost.
+    private var engagement: [String: ChannelEngagement] = [:]
+    // How the app learns what a channel is about, so it knows what is adjacent.
+    private var topicProfile: [String: [String]] = [:]
 
     private let store: SubscriptionStore
     private let service: DiscoverFeedFetching
@@ -59,12 +68,20 @@ final class DiscoverViewModel: ObservableObject {
     // has not set one up. Every path degrades to RSS rather than erroring.
     private let api: YouTubeAPIFetching?
 
+    // Local engagement data, injected so this stays testable without a store.
+    private let episodesProvider: () -> [EpisodeDTO]
+    private let explorationCache: ExplorationCache
+
     init(store: SubscriptionStore,
          service: DiscoverFeedFetching,
-         api: YouTubeAPIFetching? = nil) {
+         api: YouTubeAPIFetching? = nil,
+         episodesProvider: @escaping () -> [EpisodeDTO] = { [] },
+         explorationCache: ExplorationCache = ExplorationCache()) {
         self.store = store
         self.service = service
         self.api = api
+        self.episodesProvider = episodesProvider
+        self.explorationCache = explorationCache
     }
 
     var subscriptions: [Subscription] { store.subscriptions }
@@ -78,9 +95,31 @@ final class DiscoverViewModel: ObservableObject {
     // identical apart from the data they genuinely have. The API feed wins when
     // present — it carries durations, which RSS does not.
     var feedCards: [VideoCardItem] {
-        apiEntries.isEmpty
+        let followed = apiEntries.isEmpty
             ? entries.map { VideoCardItem($0) }
             : apiEntries.compactMap { VideoCardItem($0) }
+        return mixExploration(into: followed)
+    }
+
+    // Which cards came from outside the followed set, so the view can mark them.
+    var explorationIds: Set<String> { Set(exploration.map(\.videoId)) }
+
+    // Interleaves at fixed slots rather than appending: a section at the bottom
+    // never gets read, and leading with an unproven pick is worse than not making
+    // one. Never first, never adjacent — see Recommend.insertionSlots.
+    private func mixExploration(into followed: [VideoCardItem]) -> [VideoCardItem] {
+        let extras = exploration.compactMap { VideoCardItem($0) }
+        guard !extras.isEmpty else { return followed }
+        let slots = Recommend.insertionSlots(feedCount: followed.count,
+                                             explorationCount: extras.count)
+        guard !slots.isEmpty else { return followed }
+
+        var result = followed
+        // Descending, so each insertion cannot shift the index of the next one.
+        for (extra, slot) in zip(extras, slots).reversed() where slot - 1 <= result.count {
+            result.insert(extra, at: slot - 1)
+        }
+        return result
     }
 
     var resultCards: [VideoCardItem] { results.compactMap { VideoCardItem($0) } }
@@ -104,7 +143,8 @@ final class DiscoverViewModel: ObservableObject {
 
         apiEntries = []
         let result = await service.fetchFeeds(channelIds: channelIds)
-        entries = result.entries
+        engagement = localEngagement()
+        entries = Recommend.rankedFeed(result.entries, engagement: engagement)
         failedChannelIds = result.failedChannelIds
         // Page-level error only when nothing at all came back.
         feedError = result.failedChannelIds.count == channelIds.count
@@ -145,13 +185,85 @@ final class DiscoverViewModel: ObservableObject {
         // Newest-first across channels, which needs the real timestamp — the
         // relative display string ("3 years ago") cannot be sorted. Items without
         // one sort last rather than being dropped.
-        apiEntries = collected.sorted {
-            ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast)
-        }
+        // Newest-first across channels, then engagement decides the order within a
+        // recency band — see Recommend.rankedFeed for why recency stays outermost.
+        engagement = localEngagement()
+        apiEntries = rankByEngagement(collected)
         entries = []
         failedChannelIds = failed
         feedError = nil
+        await loadExploration(channelIds: channelIds)
         return true
+    }
+
+    // Same banding as the RSS path, expressed over ChannelVideo (which carries
+    // publishedAt only on the API path).
+    private func rankByEngagement(_ videos: [ChannelVideo]) -> [ChannelVideo] {
+        videos.sorted { left, right in
+            let leftDate = left.publishedAt ?? .distantPast
+            let rightDate = right.publishedAt ?? .distantPast
+            let leftBand = Recommend.recencyBand(leftDate)
+            let rightBand = Recommend.recencyBand(rightDate)
+            if leftBand != rightBand { return leftBand < rightBand }
+            let leftScore = left.channelId.flatMap { engagement[$0]?.score } ?? 0
+            let rightScore = right.channelId.flatMap { engagement[$0]?.score } ?? 0
+            if abs(leftScore - rightScore) > 0.01 { return leftScore > rightScore }
+            return leftDate > rightDate
+        }
+    }
+
+    // Local only: playback position, and whether an episode was finished. Costs
+    // nothing and is a truer signal than the follow list — following says "I want
+    // to", finishing three hours says "I am studying this".
+    private func localEngagement() -> [String: ChannelEngagement] {
+        let episodes = episodesProvider()
+        guard !episodes.isEmpty else { return [:] }
+        // Episodes store a channel NAME, while subscriptions are keyed by id, so
+        // the two are matched by title here.
+        let idByTitle = Dictionary(
+            store.subscriptions.map { ($0.title, $0.channelId) },
+            uniquingKeysWith: { first, _ in first })
+        return Recommend.engagement(from: episodes) { episode in
+            episode.channel.flatMap { idByTitle[$0] }
+        }
+    }
+
+    // One search per day, cached. search.list costs 100 units from a bucket of
+    // exactly 100 per day, so refreshing Discover must not spend it again.
+    private func loadExploration(channelIds: [String]) async {
+        guard let api else { return }
+
+        if explorationCache.isFresh() {
+            exploration = explorationCache.videos()
+            explorationTopic = explorationCache.topic()
+            return
+        }
+
+        // Profiling is free (1 unit for every channel at once), so it happens
+        // before deciding whether the expensive search is worth it.
+        topicProfile = (try? await api.fetchTopics(channelIds: channelIds)) ?? [:]
+        var covered: [String: Int] = [:]
+        for labels in topicProfile.values {
+            for label in labels { covered[label, default: 0] += 1 }
+        }
+        guard let topic = Recommend.explorationTopic(covered: covered) else { return }
+
+        // Marked before the request returns, so a failure cannot retry on the next
+        // refresh and burn the day's only search.
+        explorationCache.markAttempted(topic: topic)
+        explorationTopic = topic
+
+        let found = (try? await api.searchTopic(query: Recommend.query(for: topic))) ?? []
+        // Anything from a channel already followed is not exploration.
+        let followed = Set(channelIds)
+        let fresh = found.filter { video in
+            guard let id = video.channelId else { return true }
+            return !followed.contains(id)
+        }
+        exploration = Array(fresh.prefix(3))
+        if !exploration.isEmpty {
+            explorationCache.store(topic: topic, videos: exploration)
+        }
     }
 
     // Site-wide video search. Runs on submit only — see the type comment.

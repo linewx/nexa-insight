@@ -18,6 +18,10 @@ struct VideoCard: View {
     // name and the Add button — so the obvious gesture on the obvious target was
     // inert.
     var onTap: (() -> Void)?
+    // Set on items from outside the followed set. Mixed into the feed rather than
+    // sectioned off, so the marker is the only thing distinguishing them — without
+    // it the feed would silently contain channels you never chose.
+    var explorationTopic: String?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -36,6 +40,12 @@ struct VideoCard: View {
                     .onTapGesture { onTap?() }
 
                 channelLine
+
+                if let explorationTopic {
+                    Text("Suggested · \(explorationTopic)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(NXColor.insight)
+                }
 
                 if !item.metaText.isEmpty {
                     Text(item.metaText)

@@ -161,6 +161,104 @@ enum YouTubeAPIParser {
         return "\(count.formatted(.number.grouping(.automatic).locale(Locale(identifier: "en_US")))) views"
     }
 
+
+    // MARK: - channels.list topicDetails
+
+    private struct TopicsResponse: Decodable {
+        struct Item: Decodable {
+            struct TopicDetails: Decodable { let topicCategories: [String]? }
+            let id: String
+            let topicDetails: TopicDetails?
+        }
+        let items: [Item]
+    }
+
+    // Wikipedia URLs reduced to their last path component: "Knowledge", "Politics".
+    // Measured live — Veritasium reports Knowledge, Lex Fridman Politics/Society.
+    // Returns [:] rather than throwing: a channel with no topics is normal, and a
+    // missing profile only costs us the exploration slot.
+    static func parseTopics(_ data: Data) -> [String: [String]] {
+        guard let response = try? JSONDecoder().decode(TopicsResponse.self, from: data) else {
+            return [:]
+        }
+        var result: [String: [String]] = [:]
+        for item in response.items {
+            let labels = (item.topicDetails?.topicCategories ?? []).compactMap {
+                URL(string: $0)?.lastPathComponent
+            }
+            if !labels.isEmpty { result[item.id] = labels }
+        }
+        return result
+    }
+
+    // MARK: - search.list
+
+    private struct SearchResponse: Decodable {
+        struct Item: Decodable {
+            struct ID: Decodable { let videoId: String? }
+            struct Snippet: Decodable {
+                struct Thumbnail: Decodable { let url: String }
+                let title: String
+                let description: String?
+                let channelId: String?
+                let channelTitle: String?
+                let publishedAt: Date?
+                let thumbnails: [String: Thumbnail]?
+            }
+            let id: ID
+            let snippet: Snippet
+        }
+        let items: [Item]
+    }
+
+    static func parseSearch(_ data: Data, now: Date = Date()) throws -> [ChannelVideo] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let response = try? decoder.decode(SearchResponse.self, from: data) else {
+            throw YouTubeAPIError.unreadable
+        }
+        return response.items.compactMap { item -> ChannelVideo? in
+            guard let videoId = item.id.videoId, !videoId.isEmpty else { return nil }
+            return ChannelVideo(
+                videoId: videoId,
+                // search.list HTML-escapes its text ("Homer&#39;s Odyssey"), unlike
+                // playlistItems. Left encoded it would display literally.
+                title: decodingEntities(item.snippet.title),
+                durationText: nil,
+                viewsText: nil,
+                publishedText: item.snippet.publishedAt
+                    .map { VideoCardItem.relativeDate($0, now: now) },
+                publishedAt: item.snippet.publishedAt,
+                summary: item.snippet.description.flatMap {
+                    $0.isEmpty ? nil : decodingEntities($0)
+                },
+                thumbnailURL: searchThumbnail(item.snippet.thumbnails),
+                channelTitle: item.snippet.channelTitle.map(decodingEntities),
+                channelId: item.snippet.channelId)
+        }
+    }
+
+    // search.list offers only default/medium/high — no maxres or standard.
+    private static func searchThumbnail(
+        _ thumbnails: [String: SearchResponse.Item.Snippet.Thumbnail]?
+    ) -> URL? {
+        guard let thumbnails else { return nil }
+        for key in ["high", "medium", "default"] {
+            if let raw = thumbnails[key]?.url, let url = URL(string: raw) { return url }
+        }
+        return nil
+    }
+
+    private static func decodingEntities(_ text: String) -> String {
+        guard text.contains("&") else { return text }
+        return text
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+    }
+
     // MARK: - Errors
 
     // Turns an error body into a reason string, so quota exhaustion (which the

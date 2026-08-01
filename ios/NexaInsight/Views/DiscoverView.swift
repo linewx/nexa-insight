@@ -166,7 +166,9 @@ struct DiscoverView: View {
                     importing: importing,
                     onImport: { onAddToNexa(card.watchURL.absoluteString) },
                     onOpenChannel: onOpenChannel,
-                    onTap: { previewing = card })
+                    onTap: { previewing = card },
+                    explorationTopic: vm.explorationIds.contains(card.videoId)
+                        ? vm.explorationTopic : nil)
                 if card.id != cards.last?.id {
                     Divider().overlay(NXColor.border(scheme))
                 }

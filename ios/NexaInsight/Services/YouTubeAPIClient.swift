@@ -2,6 +2,12 @@ import Foundation
 
 protocol YouTubeAPIFetching {
     func fetchUploads(channelId: String, pageToken: String?) async throws -> UploadsPage
+    // Topic labels for many channels at once. One call covers every followed
+    // channel for 1 unit, which is what makes profiling free.
+    func fetchTopics(channelIds: [String]) async throws -> [String: [String]]
+    // The only expensive call in the app: search.list costs 100 units from a
+    // SEPARATE bucket of 100 per day. Caller must cache; one per day is the budget.
+    func searchTopic(query: String) async throws -> [ChannelVideo]
 }
 
 // YouTube Data API v3, used for a channel's full upload list.
@@ -77,6 +83,58 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
             URLQueryItem(name: "key", value: apiKey),
         ])
         return try YouTubeAPIParser.parseVideoDetails(data)
+    }
+
+
+    // MARK: - Discovery
+
+    func fetchTopics(channelIds: [String]) async throws -> [String: [String]] {
+        guard !apiKey.isEmpty else { throw YouTubeAPIError.missingKey }
+        let valid = channelIds.filter { YouTubeChannelLogic.isValidChannelId($0) }
+        guard !valid.isEmpty else { return [:] }
+
+        // Batched: 50 ids per call, 1 unit, so profiling never scales with follows.
+        var topics: [String: [String]] = [:]
+        for chunk in stride(from: 0, to: valid.count, by: 50).map({
+            Array(valid[$0..<min($0 + 50, valid.count)])
+        }) {
+            let data = try await get("channels", [
+                URLQueryItem(name: "part", value: "topicDetails"),
+                URLQueryItem(name: "id", value: chunk.joined(separator: ",")),
+                URLQueryItem(name: "key", value: apiKey),
+            ])
+            for (id, labels) in YouTubeAPIParser.parseTopics(data) {
+                topics[id] = labels
+            }
+        }
+        return topics
+    }
+
+    func searchTopic(query: String) async throws -> [ChannelVideo] {
+        guard !apiKey.isEmpty else { throw YouTubeAPIError.missingKey }
+        let data = try await get("search", [
+            URLQueryItem(name: "part", value: "snippet"),
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "type", value: "video"),
+            // Long-form only. This app exists for material worth an hour of
+            // intensive listening; a five-minute clip is not that.
+            URLQueryItem(name: "videoDuration", value: "long"),
+            URLQueryItem(name: "relevanceLanguage", value: "en"),
+            URLQueryItem(name: "maxResults", value: "10"),
+            URLQueryItem(name: "key", value: apiKey),
+        ])
+        let found = try YouTubeAPIParser.parseSearch(data)
+        // Durations come from a second endpoint, as with uploads. Failing that must
+        // not lose the results.
+        let details = (try? await fetchDetails(videoIds: found.map(\.videoId))) ?? [:]
+        return found.compactMap { video in
+            guard let detail = details[video.videoId] else { return video }
+            guard !detail.isShort else { return nil }
+            var enriched = video
+            enriched.durationText = detail.durationText
+            enriched.viewsText = detail.viewsText
+            return enriched
+        }
     }
 
     private func get(_ endpoint: String, _ queryItems: [URLQueryItem]) async throws -> Data {
