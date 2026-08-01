@@ -431,17 +431,34 @@ private struct WorkspaceTopBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
             HStack(alignment: .center, spacing: NXSpacing.x3) {
-                NXIconButton(systemName: "chevron.left", accessibilityLabel: "Back") { dismiss() }
+                // Which episode, shown the way the row you tapped showed it. The
+                // clock alone said where you were in the audio but never what the
+                // audio was — fine on arrival, not after an hour of transcript or
+                // a return from the background.
+                //
+                // The same mark as the library row rather than a second treatment
+                // of one thing: recognition is the whole point of an image here.
+                if let episode {
+                    SourceThumbnail(episode: episode, size: 32)
+                }
 
-                // One line, not four. The title, the channel, and a "Source" tag
-                // took three stacked lines of fixed chrome — and the title was
-                // already visible on the row you tapped to get here. What this bar
-                // is for is knowing where you are in the audio and moving there,
-                // so only the clock stays.
-                Text("\(formatTime(displayedMs)) / \(Resume.clockText(durationMs ?? 0))")
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .monospacedDigit()
+                // One line, still: title and clock share the row the chevron and
+                // clock used to. Stacking the channel under the title is what cost
+                // three lines of fixed chrome before, and the title is the part
+                // that identifies the episode.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(episode?.title ?? "Study")
+                        .font(NXFont.subsectionTitle)
+                        .foregroundStyle(NXColor.text(scheme))
+                        // Truncates rather than wraps: a second line would grow the
+                        // bar by the height this redesign set out to reclaim.
+                        .lineLimit(1)
+
+                    Text("\(formatTime(displayedMs)) / \(Resume.clockText(durationMs ?? 0))")
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.textSecondary(scheme))
+                        .monospacedDigit()
+                }
 
                 Spacer(minLength: NXSpacing.x3)
 
@@ -484,6 +501,11 @@ private struct WorkspaceTopBar: View {
         .onChange(of: player.currentMs) { _, _ in
             if !isScrubbing { scrubValue = progress }
         }
+        // The chevron was the only way out that was not a gesture, and the
+        // edge-swipe replacing it is hand-rolled (the navigation bar is hidden, so
+        // interactivePopGestureRecognizer is off) — VoiceOver cannot perform it.
+        // This restores the standard two-finger-Z escape without adding chrome.
+        .accessibilityAction(.escape) { dismiss() }
     }
 
     private var shouldShowCompactStatus: Bool {

@@ -398,7 +398,10 @@ private struct SourceListItem: View {
     }
 }
 
-private struct SourceThumbnail: View {
+// Also the study header's mark (see WorkspaceTopBar), which is why this is not
+// private: the same episode should be recognisable by the same image in the row
+// you tapped and on the screen it opens.
+struct SourceThumbnail: View {
     let episode: EpisodeDTO
     let size: CGFloat
     @Environment(\.colorScheme) private var scheme
