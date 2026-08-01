@@ -40,6 +40,7 @@ class MediaAdapter(Protocol):
     def stream(self, url: str) -> tuple[str | None, datetime | None]: ...
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
     def download_audio(self, url: str, destination: Path) -> Path: ...
+    def is_constant_bitrate(self, audio: Path) -> bool: ...
     def split_audio(self, audio: Path, output_dir: Path) -> list[Path]: ...
 
 
@@ -107,6 +108,29 @@ class YtDlpMediaAdapter:
         cbr.replace(destination)
         generated.unlink(missing_ok=True)
         return destination
+
+    def is_constant_bitrate(self, audio: Path) -> bool:
+        """Whether an existing file is already the CBR the player needs.
+
+        Measured by packet-size variety, NOT by the declared bitrate or the
+        presence of a Xing header — neither distinguishes CBR from VBR. A real
+        CBR file yields 1-2 distinct packet sizes; the VBR file that caused the
+        desync had 15.
+
+        Returns False when ffprobe cannot read the file, so an unreadable file is
+        re-downloaded rather than trusted.
+        """
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "packet=size", "-of", "csv=p=0", str(audio)],
+                check=True, capture_output=True, text=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+        sizes = {line for line in result.stdout.split() if line}
+        # An empty read means ffprobe found no audio packets at all.
+        return 0 < len(sizes) <= 2
 
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]:
         # Only the source-language track is fetched now. The zh-Hans auto-caption
@@ -223,7 +247,12 @@ class ImportPipeline:
                 session.commit()
             self.repo.upsert_job(job_id, stage="audio", progress=15)
             audio = root / "source.mp3"
-            if not audio.exists():
+            # Existence is not enough: a file left by a run that predates the CBR
+            # re-encode (or that died mid-import) is VBR, and AVPlayer drifts on
+            # VBR. Reusing it meant no retry could ever fix the desync, because
+            # the re-encode lives inside download_audio. Observed on a real
+            # import: 15 distinct packet sizes at 103kbps, against 128k CBR.
+            if not audio.exists() or not self.media.is_constant_bitrate(audio):
                 self.media.download_audio(episode.source_url, audio)
             self.repo.set_audio_path(episode.id, str(audio.relative_to(self.settings.data_dir)))
             if job.stage == "audio_backfill":
