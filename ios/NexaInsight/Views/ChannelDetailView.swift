@@ -136,23 +136,69 @@ struct ChannelDetailView: View {
     @ViewBuilder
     private var uploadsSection: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            NXSectionHeader(title: "Recent uploads")
+            // The title states which source you are looking at, because the two
+            // have very different ceilings — 865 versus 15 for the same channel.
+            NXSectionHeader(title: vm.catalog.isEmpty ? "Recent uploads" : "All videos")
 
-            if vm.loadingUploads && vm.uploads.isEmpty {
+            if vm.loadingUploads && vm.uploadCards.isEmpty {
                 skeletons
             } else if vm.uploadCards.isEmpty {
-                Text("Could not load recent uploads. Try searching instead.")
+                Text("Could not load this channel's uploads. Try searching instead.")
                     .font(NXFont.body)
                     .foregroundStyle(NXColor.textSecondary(scheme))
             } else {
                 cardList(vm.uploadCards)
-                // The feed itself caps at 15; searching reaches older uploads.
-                Text("The channel feed lists its \(vm.uploadCards.count) most recent uploads. Search to find older ones.")
+                footer
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if vm.canLoadMore {
+            // The trigger is the footer's own appearance rather than a "load more"
+            // button: reaching the bottom IS the intent to see more.
+            HStack(spacing: NXSpacing.x2) {
+                ProgressView().controlSize(.small)
+                Text(countText)
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, NXSpacing.x3)
+            .task(id: vm.uploadCards.count) { await vm.loadMoreIfNeeded() }
+        } else {
+            VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                Text(countText)
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textTertiary(scheme))
                     .fixedSize(horizontal: false, vertical: true)
+                // A paging failure is stated inline: the videos already loaded
+                // stay usable, so this is not an error state.
+                if let catalogError = vm.catalogError {
+                    Text(catalogError)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(.top, NXSpacing.x2)
         }
+    }
+
+    // Never silently truncates: whichever source is in use, the count says what is
+    // shown and what the ceiling is.
+    private var countText: String {
+        let shown = vm.uploadCards.count
+        if vm.catalog.isEmpty {
+            return vm.hasCatalog
+                ? "Showing \(shown) recent uploads. The full catalog needs a working YouTube API key."
+                : "Showing this channel's \(shown) most recent uploads. Add a YouTube API key in Settings to browse the full catalog, or search to find older videos."
+        }
+        if let total = vm.catalogTotal, total > shown {
+            return "Showing \(shown) of \(total) videos."
+        }
+        return "Showing all \(shown) videos."
     }
 
     @ViewBuilder

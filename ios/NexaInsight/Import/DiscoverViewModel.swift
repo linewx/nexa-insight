@@ -49,12 +49,22 @@ final class DiscoverViewModel: ObservableObject {
     @Published var searchUnavailable = false
     @Published var searchedTerm: String?
 
+    // The API-sourced feed, kept separate from `entries` (RSS) because only one is
+    // ever in use — exactly one of the two is non-empty at any time.
+    @Published var apiEntries: [ChannelVideo] = []
+
     private let store: SubscriptionStore
     private let service: DiscoverFeedFetching
+    // nil when no API key is configured, which is the normal state for a user who
+    // has not set one up. Every path degrades to RSS rather than erroring.
+    private let api: YouTubeAPIFetching?
 
-    init(store: SubscriptionStore, service: DiscoverFeedFetching) {
+    init(store: SubscriptionStore,
+         service: DiscoverFeedFetching,
+         api: YouTubeAPIFetching? = nil) {
         self.store = store
         self.service = service
+        self.api = api
     }
 
     var subscriptions: [Subscription] { store.subscriptions }
@@ -65,8 +75,13 @@ final class DiscoverViewModel: ObservableObject {
     var isSearchActive: Bool { searchedTerm != nil }
 
     // One card type for both sources, so the feed and search results look
-    // identical apart from the data they genuinely have.
-    var feedCards: [VideoCardItem] { entries.map { VideoCardItem($0) } }
+    // identical apart from the data they genuinely have. The API feed wins when
+    // present — it carries durations, which RSS does not.
+    var feedCards: [VideoCardItem] {
+        apiEntries.isEmpty
+            ? entries.map { VideoCardItem($0) }
+            : apiEntries.compactMap { VideoCardItem($0) }
+    }
 
     var resultCards: [VideoCardItem] { results.compactMap { VideoCardItem($0) } }
 
@@ -74,6 +89,7 @@ final class DiscoverViewModel: ObservableObject {
         let channelIds = store.subscriptions.map(\.channelId)
         guard !channelIds.isEmpty else {
             entries = []
+            apiEntries = []
             failedChannelIds = []
             feedError = nil
             return
@@ -82,6 +98,11 @@ final class DiscoverViewModel: ObservableObject {
         loading = true
         defer { loading = false }
 
+        // With a key, the feed comes from the Data API: same source as a channel
+        // page, so the cards carry durations here too. Without one it stays on RSS.
+        if api != nil, await refreshFromAPI(channelIds: channelIds) { return }
+
+        apiEntries = []
         let result = await service.fetchFeeds(channelIds: channelIds)
         entries = result.entries
         failedChannelIds = result.failedChannelIds
@@ -89,6 +110,48 @@ final class DiscoverViewModel: ObservableObject {
         feedError = result.failedChannelIds.count == channelIds.count
             ? "Could not reach any of your channels. Check your connection and try again."
             : nil
+    }
+
+    // Returns false when nothing at all came back, so the caller can fall back to
+    // RSS — a key that is invalid or out of quota must not empty the feed.
+    //
+    // Only the FIRST page of each channel is fetched: this is "what's new", not a
+    // catalog, and N channels already costs 2N requests. Browsing deeper is what
+    // the channel page is for.
+    private func refreshFromAPI(channelIds: [String]) async -> Bool {
+        guard let api else { return false }
+
+        var collected: [ChannelVideo] = []
+        var failed: [String] = []
+
+        await withTaskGroup(of: (String, [ChannelVideo]?).self) { group in
+            for channelId in channelIds {
+                group.addTask {
+                    let page = try? await api.fetchUploads(channelId: channelId, pageToken: nil)
+                    return (channelId, page?.videos)
+                }
+            }
+            for await (channelId, videos) in group {
+                guard let videos else {
+                    failed.append(channelId)
+                    continue
+                }
+                collected += videos
+            }
+        }
+
+        guard !collected.isEmpty else { return false }
+
+        // Newest-first across channels, which needs the real timestamp — the
+        // relative display string ("3 years ago") cannot be sorted. Items without
+        // one sort last rather than being dropped.
+        apiEntries = collected.sorted {
+            ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast)
+        }
+        entries = []
+        failedChannelIds = failed
+        feedError = nil
+        return true
     }
 
     // Site-wide video search. Runs on submit only — see the type comment.
@@ -134,7 +197,10 @@ final class DiscoverViewModel: ObservableObject {
 
     func removeSubscription(channelId: String) {
         store.remove(channelId: channelId)
+        // Both feed sources, not just RSS: whichever one is live, the unfollowed
+        // channel's videos have to leave the list immediately.
         entries.removeAll { $0.channelId == channelId }
+        apiEntries.removeAll { $0.channelId == channelId }
         failedChannelIds.removeAll { $0 == channelId }
     }
 

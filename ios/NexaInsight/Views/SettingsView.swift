@@ -5,6 +5,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     private let keychain = KeychainStore()
     @State private var openAIKey = ""
+    @State private var youtubeAPIKey = ""
     @State private var dashscopeKey = ""
     @State private var workspaceId = ""
     @State private var savedMessage: String?
@@ -60,6 +61,23 @@ struct SettingsView: View {
                     }
 
                     SettingsSection(
+                        title: "Channel browsing",
+                        subtitle: "A YouTube Data API key lets a channel page list its whole catalog instead of the 15 most recent uploads."
+                    ) {
+                        SettingsSecureField(
+                            title: "YouTube API key",
+                            text: $youtubeAPIKey,
+                            placeholder: "Stored in Keychain",
+                            systemName: "key"
+                        )
+                        ReadinessRow(
+                            ready: !youtubeAPIKey.isEmpty,
+                            readyText: "Full channel catalog available",
+                            missingText: "Without a key, channels show their 15 most recent uploads"
+                        )
+                    }
+
+                    SettingsSection(
                         title: "Optional services",
                         subtitle: "OpenAI is only needed for features that explicitly use it."
                     ) {
@@ -99,12 +117,14 @@ struct SettingsView: View {
 
     private func load() {
         openAIKey = keychain.get(.openAIKey) ?? ""
+        youtubeAPIKey = keychain.get(.youtubeAPIKey) ?? ""
         dashscopeKey = keychain.get(.dashscopeKey) ?? ""
         workspaceId = keychain.get(.dashscopeWorkspaceId) ?? ""
     }
 
     private func save() {
         saveOrDelete(openAIKey, for: .openAIKey)
+        saveOrDelete(youtubeAPIKey, for: .youtubeAPIKey)
         saveOrDelete(dashscopeKey, for: .dashscopeKey)
         saveOrDelete(workspaceId, for: .dashscopeWorkspaceId)
         savedMessage = "Settings saved"

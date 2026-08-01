@@ -28,7 +28,8 @@ struct LibraryView: View {
         _subscriptions = StateObject(wrappedValue: subscriptionStore)
         _discover = StateObject(wrappedValue: DiscoverViewModel(
             store: subscriptionStore,
-            service: DiscoverFeedService()))
+            service: DiscoverFeedService(),
+            api: Self.youtubeAPI()))
     }
 
     var body: some View {
@@ -60,6 +61,10 @@ struct LibraryView: View {
                         fallbackTitle: target.title,
                         store: subscriptions,
                         service: DiscoverFeedService(),
+                        // Read at navigation time, not at app launch: a key added
+                        // in Settings then takes effect on the next channel you
+                        // open, with no restart.
+                        api: Self.youtubeAPI(),
                         // The one place this round still reads youtubeId. When
                         // that field becomes source_id, this moves with it.
                         importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) }),
@@ -89,6 +94,15 @@ struct LibraryView: View {
     private func addToNexa(_ url: String) {
         selectedSection = .library
         Task { await vm.startImport(urlString: url) }
+    }
+
+    // nil when no key is stored, which is the normal state for a user who has not
+    // set one up — every caller degrades to the RSS feed rather than erroring.
+    private static func youtubeAPI() -> YouTubeAPIFetching? {
+        guard let key = KeychainStore().get(.youtubeAPIKey),
+              !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return YouTubeAPIClient(apiKey: key)
     }
 }
 

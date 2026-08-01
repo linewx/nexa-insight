@@ -1,7 +1,12 @@
 import Foundation
 import Security
 
-enum SecretKey: String { case openAIKey, dashscopeKey, dashscopeWorkspaceId }
+enum SecretKey: String {
+    case openAIKey, dashscopeKey, dashscopeWorkspaceId
+    // YouTube Data API v3, for a channel's full upload list. Optional: without it
+    // channel pages fall back to the 15-entry RSS feed rather than breaking.
+    case youtubeAPIKey
+}
 
 struct KeychainStore {
     let service = "com.nexainsight.secrets"

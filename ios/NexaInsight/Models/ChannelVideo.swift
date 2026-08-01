@@ -11,9 +11,17 @@ import Foundation
 struct ChannelVideo: Identifiable, Equatable {
     let videoId: String
     let title: String
-    let durationText: String?    // "2:19:34" — present in 30/30 measured
-    let viewsText: String?       // "3,028,760 views"
+    // var, not let: the Data API path fills these from a second request
+    // (videos.list) after the page itself has parsed, so the list can render
+    // before duration badges arrive.
+    var durationText: String?    // "2:19:34" — present in 30/30 measured
+    var viewsText: String?       // "3,028,760 views"
     let publishedText: String?   // "3 years ago"
+    // Only the Data API supplies a real timestamp; the scraped pages give the
+    // relative string above and nothing else. It exists solely as a sort key for
+    // merging several channels into one newest-first feed — which a display
+    // string cannot do. nil on every scraped path.
+    var publishedAt: Date?
     let summary: String?         // absent in 4/30 measured, so optional
     let thumbnailURL: URL?
     // Present on site-wide search results, absent on in-channel results (there
