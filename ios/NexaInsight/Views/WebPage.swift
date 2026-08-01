@@ -32,6 +32,10 @@ struct WebPage: UIViewRepresentable {
     // with an https baseURL supplies exactly that.
     var wrapInFrame = false
 
+    // Any real https host works; nothing is served from it. It only has to be
+    // stable and not youtube.com, and to match the `origin` query parameter.
+    static let embedOrigin = "https://nexa-insight.local"
+
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         // Keeps the video in the page instead of taking over the screen, so the
@@ -55,8 +59,10 @@ struct WebPage: UIViewRepresentable {
             webView.load(URLRequest(url: url))
             return
         }
-        // `baseURL` is what WebKit reports as the origin; the host only has to be a
-        // real https address, not one we serve anything from.
+        // `baseURL` is what WebKit reports as the origin, and it must NOT be
+        // youtube.com: that makes the iframe's parent origin YouTube itself, which
+        // its embed config refuses ("error 152-4"). A neutral https host is what
+        // the documented iframe contract expects, matched by the `origin` param.
         let html = """
         <!DOCTYPE html><html><head>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -67,7 +73,7 @@ struct WebPage: UIViewRepresentable {
                 allowfullscreen></iframe>
         </body></html>
         """
-        webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube.com"))
+        webView.loadHTMLString(html, baseURL: URL(string: Self.embedOrigin))
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
@@ -117,7 +123,12 @@ enum YouTubeWeb {
     // The embed player, not the watch page: no recommendations rail, no comments,
     // and it is the documented way to play a video you do not own.
     static func embed(videoId: String) -> URL? {
-        URL(string: "https://www.youtube.com/embed/\(videoId)?playsinline=1&rel=0")
+        let origin = WebPage.embedOrigin.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics) ?? ""
+        // youtube-nocookie is the privacy-preserving embed host, and `origin` is
+        // the parameter the iframe API expects to match the embedding page.
+        return URL(string: "https://www.youtube-nocookie.com/embed/\(videoId)"
+                   + "?playsinline=1&rel=0&origin=\(origin)")
     }
 
     static func channel(channelId: String) -> URL? {
