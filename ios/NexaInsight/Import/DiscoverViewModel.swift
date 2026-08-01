@@ -71,17 +71,22 @@ final class DiscoverViewModel: ObservableObject {
     // Local engagement data, injected so this stays testable without a store.
     private let episodesProvider: () -> [EpisodeDTO]
     private let explorationCache: ExplorationCache
+    // A closure, not a stored value: the Settings toggle can change while Discover
+    // is on screen, and a captured Locale would keep the old language until relaunch.
+    private let bylineLocale: () -> Locale
 
     init(store: SubscriptionStore,
          service: DiscoverFeedFetching,
          api: YouTubeAPIFetching? = nil,
          episodesProvider: @escaping () -> [EpisodeDTO] = { [] },
-         explorationCache: ExplorationCache = ExplorationCache()) {
+         explorationCache: ExplorationCache = ExplorationCache(),
+         bylineLocale: @escaping () -> Locale = { DiscoverFormat.defaultLocale }) {
         self.store = store
         self.service = service
         self.api = api
         self.episodesProvider = episodesProvider
         self.explorationCache = explorationCache
+        self.bylineLocale = bylineLocale
     }
 
     var subscriptions: [Subscription] { store.subscriptions }
@@ -95,8 +100,9 @@ final class DiscoverViewModel: ObservableObject {
     // identical apart from the data they genuinely have. The API feed wins when
     // present — it carries durations, which RSS does not.
     var feedCards: [VideoCardItem] {
+        let locale = bylineLocale()
         let followed = apiEntries.isEmpty
-            ? entries.map { VideoCardItem($0) }
+            ? entries.map { VideoCardItem($0, locale: locale) }
             : apiEntries.compactMap { VideoCardItem($0) }
         return mixExploration(into: followed.map(withAvatar))
     }

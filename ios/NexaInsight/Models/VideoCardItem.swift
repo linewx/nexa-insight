@@ -46,11 +46,20 @@ struct VideoCardItem: Identifiable, Equatable {
 }
 
 extension VideoCardItem {
-    // `now` is injectable so relative-date rendering is testable offline.
-    init(_ entry: DiscoverEntry, now: Date = Date()) {
-        var parts = [VideoCardItem.relativeDate(entry.published, now: now)]
+    // `now` and `locale` are injectable: the first so relative-date rendering is
+    // testable offline, the second because the byline language is a setting.
+    //
+    // Formatting goes through DiscoverFormat rather than a second copy here. A
+    // ja-JP device reported "3日前" and "41万 views" next to English titles, since
+    // RelativeDateTimeFormatter and .compactName both follow Locale.current — and
+    // that fix, with its tests, already lives there.
+    init(_ entry: DiscoverEntry,
+         now: Date = Date(),
+         locale: Locale = DiscoverFormat.defaultLocale) {
+        var parts = [DiscoverFormat.relativeDate(entry.published, now: now, locale: locale)]
         if let views = entry.viewCount {
-            parts.append("\(views.formatted(.number.notation(.compactName))) views")
+            let formatted = views.formatted(.number.notation(.compactName).locale(locale))
+            parts.append("\(formatted) views")
         }
         self.init(
             videoId: entry.videoId,
@@ -66,6 +75,9 @@ extension VideoCardItem {
     // Fails only when the videoId cannot form a watch URL, since a card with no
     // import target would be dead weight.
     init?(_ video: ChannelVideo) {
+        // No locale here: ChannelVideo's metadata arrives as display strings from
+        // YouTube (pinned to en-US by Accept-Language) rather than as values we
+        // format, so there is nothing for a locale to apply to.
         guard let watchURL = video.watchURL else { return nil }
         self.init(
             videoId: video.videoId,
@@ -80,9 +92,11 @@ extension VideoCardItem {
             watchURL: watchURL)
     }
 
-    static func relativeDate(_ date: Date, now: Date = Date()) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
+    // Kept as a thin forward: several call sites use it, and DiscoverFormat is now
+    // the single place the locale decision is made.
+    static func relativeDate(_ date: Date,
+                             now: Date = Date(),
+                             locale: Locale = DiscoverFormat.defaultLocale) -> String {
+        DiscoverFormat.relativeDate(date, now: now, locale: locale)
     }
 }

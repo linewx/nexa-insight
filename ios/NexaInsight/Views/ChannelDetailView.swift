@@ -183,8 +183,7 @@ struct ChannelDetailView: View {
             .task(id: vm.uploadCards.count) { await vm.loadMoreIfNeeded() }
         } else {
             VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                Text(countText)
-                    .font(NXFont.auxiliary)
+                Text(countText)                    .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textTertiary(scheme))
                     .fixedSize(horizontal: false, vertical: true)
                 // A paging failure is stated inline: the videos already loaded

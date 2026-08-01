@@ -36,7 +36,9 @@ struct LibraryView: View {
             api: Self.youtubeAPI(),
             // Ranking reads local playback data: what was finished, how long was
             // listened. No network cost, and a truer signal than the follow list.
-            episodesProvider: { store.downloadedEpisodes() }))
+            episodesProvider: { store.downloadedEpisodes() },
+            // Read on each access so the Settings toggle takes effect immediately.
+            bylineLocale: { settings.bylineLocale }))
     }
 
     var body: some View {
@@ -117,8 +119,7 @@ struct LibraryView: View {
             // area, so the row cannot be dragged up under the status bar — which is
             // what made the wordmark unreadable mid-scroll.
             content()
-            .background(NXColor.background(colorScheme))
-            .navigationDestination(for: Int.self) { id in
+            .background(NXColor.background(colorScheme))            .navigationDestination(for: Int.self) { id in
                 StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL)
             }
             .navigationDestination(for: ChannelTarget.self) { target in
