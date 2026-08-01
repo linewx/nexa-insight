@@ -12,6 +12,11 @@ import SwiftData
     var localAudioPath: String?
     var status: String
     var createdAt: Date
+    // Playback position. OPTIONAL deliberately: SwiftData has to open stores
+    // written before these existed, and a non-optional would need a migration for
+    // what is only a convenience.
+    var positionMs: Int?
+    var lastPlayedAt: Date?
     @Relationship(deleteRule: .cascade) var chapters: [StoredChapter]
     @Relationship(deleteRule: .cascade) var sentences: [StoredSentence]
     @Relationship(deleteRule: .cascade) var recordings: [StoredRecording]

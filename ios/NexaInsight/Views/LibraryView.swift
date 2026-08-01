@@ -336,6 +336,12 @@ private struct SourceListItem: View {
     let episode: EpisodeDTO
     @Environment(\.colorScheme) private var scheme
 
+    // Where you got to, when you got somewhere. An untouched or finished episode
+    // shows its plain duration instead — a 0% bar on everything would be noise.
+    private var progressFraction: Double? {
+        Resume.progressFraction(savedMs: episode.positionMs, durationMs: episode.durationMs)
+    }
+
     var body: some View {
         NavigationLink(value: episode.id) {
             HStack(spacing: NXSpacing.x3) {
@@ -349,16 +355,34 @@ private struct SourceListItem: View {
                         .font(NXFont.auxiliary)
                         .foregroundStyle(NXColor.textSecondary(scheme))
                         .lineLimit(1)
+                    if let progressFraction {
+                        progressBar(progressFraction)
+                    }
                 }
                 Spacer()
-                Text(durationText(episode.durationMs))
+                // The remaining time is what decides whether to start now, so a
+                // part-heard episode shows position/total rather than just total.
+                Text(Resume.progressText(savedMs: episode.positionMs, durationMs: episode.durationMs)
+                        ?? durationText(episode.durationMs))
                     .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textTertiary(scheme))
+                    .foregroundStyle(progressFraction == nil ? NXColor.textTertiary(scheme) : NXColor.primary)
                     .monospacedDigit()
             }
             .padding(.vertical, NXSpacing.x3)
         }
         .buttonStyle(.plain)
+    }
+
+    private func progressBar(_ fraction: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(NXColor.border(scheme))
+                Capsule().fill(NXColor.primary).frame(width: geo.size.width * fraction)
+            }
+        }
+        .frame(height: 2)
+        .padding(.top, 2)
+        .accessibilityHidden(true)   // the position/total text already says this
     }
 }
 

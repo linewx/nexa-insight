@@ -21,6 +21,7 @@ struct StudyView: View {
     // sentence can ever loop; speed mirrors the player's rate for the badge.
     @State private var loop: SentenceLoop = .off
     @State private var speed: Double = 1
+    @State private var savedPositionMs: Int?
     private let sentences: [SentenceDTO]
     private let episode: EpisodeDTO?
 
@@ -32,7 +33,14 @@ struct StudyView: View {
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
         let relative = store.localAudioPath(for: episodeId) ?? "audio/\(episodeId).mp3"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        _player = StateObject(wrappedValue: LocalAudioPlayback(fileURL: base.appendingPathComponent(relative)))
+        // Resume where the learner left off. Nothing persisted a position before,
+        // so a 3h46m episode restarted at 0:00 every time it was reopened.
+        let resumeMs = Resume.startPosition(
+            savedMs: store.playbackPosition(for: episodeId),
+            durationMs: self.episode?.durationMs) ?? 0
+        _player = StateObject(wrappedValue: LocalAudioPlayback(
+            fileURL: base.appendingPathComponent(relative),
+            initialPositionMs: resumeMs))
     }
 
     var visible: [SentenceDTO] { vm.search(query, in: sentences) }
@@ -73,6 +81,19 @@ struct StudyView: View {
         .onChange(of: player.currentMs) { _, ms in
             if let target = loop.rewindTarget(for: current, at: ms) {
                 player.seek(target)
+            }
+            // Throttled: writing on every tick would hit SwiftData several times a
+            // second for the whole session.
+            if Resume.shouldPersist(newMs: ms, lastSavedMs: savedPositionMs) {
+                savedPositionMs = ms
+                store.savePlaybackPosition(ms, for: episodeId)
+            }
+        }
+        // Leaving mid-sentence is the common case, so the exact position is
+        // written on the way out rather than only at throttle boundaries.
+        .onDisappear {
+            if player.currentMs >= Resume.minimumMs {
+                store.savePlaybackPosition(player.currentMs, for: episodeId)
             }
         }
         .navigationBarTitleDisplayMode(.inline)

@@ -31,6 +31,9 @@ struct EpisodeDTO: Codable, Identifiable, Equatable {
     let audioPath: String?
     let status: String
     let error: String?
+    // Saved playback position. Optional and defaulted so the backend's decoding of
+    // this DTO is unaffected — the backend has no such field.
+    var positionMs: Int? = nil
 }
 
 struct JobDTO: Codable, Equatable {
