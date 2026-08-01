@@ -115,6 +115,13 @@ final class DiscoverViewModel: ObservableObject {
     // Which cards came from outside the followed set, so the view can mark them.
     var explorationIds: Set<String> { Set(exploration.map(\.videoId)) }
 
+    // Newest video per followed channel, for the Channels list. Derived from the
+    // feed already in memory, so the rows cost no request — and are simply absent
+    // until the feed has loaded once.
+    var latestByChannel: [String: ChannelLatest] {
+        ChannelList.latestByChannel(entries: entries, apiEntries: apiEntries)
+    }
+
     // Interleaves at fixed slots rather than appending: a section at the bottom
     // never gets read, and leading with an unproven pick is worse than not making
     // one. Never first, never adjacent — see Recommend.insertionSlots.
@@ -134,6 +141,19 @@ final class DiscoverViewModel: ObservableObject {
     }
 
     var resultCards: [VideoCardItem] { results.compactMap { VideoCardItem($0) } }
+
+    // For a screen that wants the feed but must not pay for it twice. Discover's
+    // .task and pull-to-refresh still call refresh() directly; this is what the
+    // Channels tab uses, since switching tabs re-runs .task and N channels cost 2N
+    // requests.
+    //
+    // Following a new channel does not refetch here — Discover's own refresh covers
+    // that, and the new row falls back to its subscriber count until then. Pull to
+    // refresh on this list forces it.
+    func loadFeedIfNeeded() async {
+        guard entries.isEmpty, apiEntries.isEmpty else { return }
+        await refresh()
+    }
 
     func refresh() async {
         let channelIds = store.subscriptions.map(\.channelId)
