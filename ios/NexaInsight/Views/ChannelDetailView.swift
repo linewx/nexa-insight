@@ -38,6 +38,7 @@ struct ChannelDetailView: View {
         // identical behaved differently. Refresh reloads the first page rather than
         // re-fetching every page already scrolled.
         .refreshable { await vm.reload() }
+        .nxToolbarGlyphs(scheme)
         .toolbar {
             // The channel's own page on YouTube: description, playlists, community.
             // Cheaper and more complete than scraping those into our own screen,

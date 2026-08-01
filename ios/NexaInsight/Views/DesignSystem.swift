@@ -334,10 +334,10 @@ extension View {
 }
 
 extension ToolbarContent {
-    // iOS 26 wraps each toolbar item in its own Liquid Glass background, which is
-    // what made the icons read as a control panel floating over the page.
-    // `sharedBackgroundVisibility` is the per-item control; the bar-level
-    // `toolbarBackgroundVisibility` does not affect it.
+    // Drops the per-item Liquid Glass capsule iOS 26 draws around each toolbar
+    // item, so the glyphs are not each sitting in their own little panel. The BAR
+    // keeps its own background — without it the icons had nothing to sit against
+    // and were hard to read over scrolling content.
     @ToolbarContentBuilder
     func nxPlainToolbarItem() -> some ToolbarContent {
         if #available(iOS 26.0, *) {
@@ -345,6 +345,21 @@ extension ToolbarContent {
         } else {
             self
         }
+    }
+}
+
+extension View {
+    // Toolbar glyphs in the primary text colour, not the accent. A tinted icon
+    // reads as "active" or "selected", which none of these are — the accent stays
+    // on the tab bar, where it does mean that.
+    //
+    // Also gives the bar a surface of its own, always visible. iOS only reveals a
+    // bar background once content scrolls under it, so at rest the header was the
+    // same colour as the page and the icons had nothing to sit against.
+    func nxToolbarGlyphs(_ scheme: ColorScheme) -> some View {
+        tint(NXColor.text(scheme))
+            .toolbarBackground(NXColor.surface1(scheme), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
     }
 }
 #endif

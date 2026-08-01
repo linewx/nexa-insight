@@ -107,6 +107,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(NXColor.background(scheme))
+        .nxToolbarGlyphs(scheme)
         .toolbar { BrandHeader() }
         .onAppear(perform: load)
     }

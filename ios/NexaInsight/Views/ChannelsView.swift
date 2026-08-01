@@ -49,6 +49,7 @@ struct ChannelsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(NXColor.background(scheme))
+        .nxToolbarGlyphs(scheme)
         .toolbar {
             BrandHeader()
             // Pasting a link is an action on this screen, so it belongs in the

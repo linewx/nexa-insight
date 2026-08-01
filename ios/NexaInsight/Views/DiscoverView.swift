@@ -44,6 +44,7 @@ struct DiscoverView: View {
         // a preview duplicating it, on a page whose only action is import — so
         // "selected" meant nothing and tapping a card appeared to do nothing.
         .frame(maxWidth: 720, alignment: .leading)
+        .nxToolbarGlyphs(scheme)
         .toolbar {
             // The brand yields while searching: a toolbar splits its width between
             // leading and trailing items, so leaving it in squeezed the field to

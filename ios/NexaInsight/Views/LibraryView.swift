@@ -239,6 +239,7 @@ private struct LibraryMain: View {
                 }
             }
         }
+        .nxToolbarGlyphs(scheme)
         .toolbar {
             BrandHeader()
             // Pasting a link is an action on this screen, not a destination — which
