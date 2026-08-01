@@ -14,7 +14,7 @@ struct ChannelDetailView: View {
     let importing: Bool
     let onImport: (String) -> Void
     @State private var searchExpanded = false
-    @State private var previewing: VideoCardItem?
+    @State private var playingId: String?
     @State private var showChannelHome = false
     @Environment(\.colorScheme) private var scheme
 
@@ -70,14 +70,7 @@ struct ChannelDetailView: View {
                 WebPageSheet(title: vm.title, url: url)
             }
         }
-        .sheet(item: $previewing) { card in
-            // No onOpenChannel: you are already on this channel's screen.
-            VideoPreviewSheet(
-                item: card,
-                imported: vm.isImported(videoId: card.videoId),
-                importing: importing,
-                onImport: { onImport(card.watchURL.absoluteString) })
-        }
+
     }
 
     // Avatar and subscriber count come from the channel page. When that parse
@@ -231,7 +224,8 @@ struct ChannelDetailView: View {
                     imported: vm.isImported(videoId: card.videoId),
                     importing: importing,
                     onImport: { onImport(card.watchURL.absoluteString) },
-                    onTap: { previewing = card })
+                    onTap: { playingId = playingId == card.videoId ? nil : card.videoId },
+                    playing: playingId == card.videoId)
 
             }
         }

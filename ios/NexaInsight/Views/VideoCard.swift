@@ -22,6 +22,10 @@ struct VideoCard: View {
     // sectioned off, so the marker is the only thing distinguishing them — without
     // it the feed would silently contain channels you never chose.
     var explorationTopic: String?
+    // When set, the thumbnail is replaced in place by the embed player. Expanding
+    // inline rather than pushing a sheet keeps you in the list — the decision this
+    // screen supports is a comparison between videos, and a modal hides the others.
+    var playing = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -29,8 +33,20 @@ struct VideoCard: View {
             // Full-width 16:9, as on YouTube. This costs density — about 2.4 cards
             // per screen against 6.3 for the previous row — bought back partly by
             // moving Add into the ⋮ menu so no card carries a button.
-            VideoThumbnail(url: item.thumbnailURL, durationText: item.durationText)
-                .onTapGesture { onTap?() }
+            // The player takes the thumbnail's exact frame, so expanding does not
+            // move anything below it.
+            ZStack {
+                if playing, let url = YouTubeWeb.embed(videoId: item.videoId) {
+                    WebPage(url: url, wrapInFrame: true)
+                        .background(Color.black)
+                } else {
+                    VideoThumbnail(url: item.thumbnailURL, durationText: item.durationText)
+                        .onTapGesture { onTap?() }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: NXRadius.surface))
 
             HStack(alignment: .top, spacing: NXSpacing.x3) {
                 channelAvatar
@@ -144,8 +160,6 @@ private struct VideoThumbnail: View {
     let durationText: String?
     @Environment(\.colorScheme) private var scheme
 
-    private let width: CGFloat = 112
-
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             image
@@ -157,16 +171,21 @@ private struct VideoThumbnail: View {
             if let durationText {
                 Text(durationText)
                     .accessibilityHidden(true)   // already in the row's label
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 4)
+                    .monospacedDigit()
+                    .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 4))
-                    .padding(4)
+                    .background(Color.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 4))
+                    .padding(NXSpacing.x2)
             }
         }
-        .frame(width: width, height: width * 9 / 16)
-        .clipShape(RoundedRectangle(cornerRadius: NXRadius.small))
+        // Width first, then height derived from it. A fixed 112pt frame was still
+        // here, which is why the "full-width" card kept rendering as a thumbnail
+        // strip down the left third of the row.
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16 / 9, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: NXRadius.surface))
     }
 
     @ViewBuilder

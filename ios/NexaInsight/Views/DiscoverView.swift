@@ -23,7 +23,7 @@ struct DiscoverView: View {
     var importedVideoIds: () -> Set<String> = { [] }
     @State private var showAddChannel = false
     @State private var searchExpanded = false
-    @State private var previewing: VideoCardItem?
+    @State private var playingId: String?
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -79,14 +79,7 @@ struct DiscoverView: View {
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
         }
-        .sheet(item: $previewing) { card in
-            VideoPreviewSheet(
-                item: card,
-                imported: importedVideoIds().contains(card.videoId),
-                importing: importing,
-                onImport: { onAddToNexa(card.watchURL.absoluteString) },
-                onOpenChannel: onOpenChannel)
-        }
+
     }
 
     @ViewBuilder
@@ -166,9 +159,13 @@ struct DiscoverView: View {
                     importing: importing,
                     onImport: { onAddToNexa(card.watchURL.absoluteString) },
                     onOpenChannel: onOpenChannel,
-                    onTap: { previewing = card },
+                    // Toggles: tapping the playing card collapses it. Only one
+                    // plays at a time, so each WKWebView is torn down when another
+                    // starts — one WebContent process, not one per card.
+                    onTap: { playingId = playingId == card.videoId ? nil : card.videoId },
                     explorationTopic: vm.explorationIds.contains(card.videoId)
-                        ? vm.explorationTopic : nil)
+                        ? vm.explorationTopic : nil,
+                    playing: playingId == card.videoId)
 
             }
         }
