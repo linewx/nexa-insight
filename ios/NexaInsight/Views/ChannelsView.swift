@@ -11,6 +11,7 @@ struct ChannelsView: View {
     @ObservedObject var vm: DiscoverViewModel
     let onOpenChannel: (String, String) -> Void
     @State private var showAddChannel = false
+    @State private var showYouTubeSubscriptions = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -52,6 +53,17 @@ struct ChannelsView: View {
             BrandHeader()
             // Pasting a link is an action on this screen, so it belongs in the
             // toolbar rather than as a row pretending to be a channel.
+            // Your real YouTube subscriptions, as a reference while deciding what
+            // to follow here. This is the only route to them without OAuth —
+            // `subscriptions.list?mine=true` rejects an API key.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showYouTubeSubscriptions = true
+                } label: {
+                    Image(systemName: "play.rectangle.on.rectangle")
+                }
+                .accessibilityLabel("View your YouTube subscriptions")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showAddChannel = true
@@ -63,6 +75,15 @@ struct ChannelsView: View {
         }
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
+        }
+        .sheet(isPresented: $showYouTubeSubscriptions) {
+            WebPageSheet(
+                title: "YouTube subscriptions",
+                url: YouTubeWeb.subscriptions,
+                // Stated plainly: a cross-origin page's contents are unreadable to
+                // us, so this cannot import anything. Implying otherwise would send
+                // someone looking for a button that does not exist.
+                note: "Read-only. Copy a channel link and paste it with + to follow it here.")
         }
     }
 }

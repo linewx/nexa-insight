@@ -14,11 +14,18 @@ struct VideoCard: View {
     let onImport: () -> Void
     // nil on a channel's own screen, where the channel is already known.
     var onOpenChannel: ((String, String) -> Void)?
+    // Tapping the card itself. Nothing responded to this before — only the channel
+    // name and the Add button — so the obvious gesture on the obvious target was
+    // inert.
+    var onTap: (() -> Void)?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         HStack(alignment: .top, spacing: NXSpacing.x3) {
+            // Thumbnail and title open the preview; the channel link and Add stay
+            // separate targets below, which is why this is not one big Button.
             VideoThumbnail(url: item.thumbnailURL, durationText: item.durationText)
+                .onTapGesture { onTap?() }
 
             VStack(alignment: .leading, spacing: NXSpacing.x1) {
                 Text(item.title)
@@ -26,6 +33,7 @@ struct VideoCard: View {
                     .foregroundStyle(NXColor.text(scheme))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                    .onTapGesture { onTap?() }
 
                 channelLine
 

@@ -23,6 +23,7 @@ struct DiscoverView: View {
     var importedVideoIds: () -> Set<String> = { [] }
     @State private var showAddChannel = false
     @State private var searchExpanded = false
+    @State private var previewing: VideoCardItem?
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -75,6 +76,14 @@ struct DiscoverView: View {
         .refreshable { await vm.refresh() }
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
+        }
+        .sheet(item: $previewing) { card in
+            VideoPreviewSheet(
+                item: card,
+                imported: importedVideoIds().contains(card.videoId),
+                importing: importing,
+                onImport: { onAddToNexa(card.watchURL.absoluteString) },
+                onOpenChannel: onOpenChannel)
         }
     }
 
@@ -154,7 +163,8 @@ struct DiscoverView: View {
                     imported: importedVideoIds().contains(card.videoId),
                     importing: importing,
                     onImport: { onAddToNexa(card.watchURL.absoluteString) },
-                    onOpenChannel: onOpenChannel)
+                    onOpenChannel: onOpenChannel,
+                    onTap: { previewing = card })
                 if card.id != cards.last?.id {
                     Divider().overlay(NXColor.border(scheme))
                 }

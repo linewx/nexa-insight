@@ -14,6 +14,8 @@ struct ChannelDetailView: View {
     let importing: Bool
     let onImport: (String) -> Void
     @State private var searchExpanded = false
+    @State private var previewing: VideoCardItem?
+    @State private var showChannelHome = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -37,6 +39,15 @@ struct ChannelDetailView: View {
         // re-fetching every page already scrolled.
         .refreshable { await vm.reload() }
         .toolbar {
+            // The channel's own page on YouTube: description, playlists, community.
+            // Cheaper and more complete than scraping those into our own screen,
+            // for a question ("what is this channel like?") asked rarely.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showChannelHome = true } label: {
+                    Image(systemName: "safari")
+                }
+                .accessibilityLabel("Open this channel on YouTube")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 CollapsibleSearchField(
                     query: $vm.query,
@@ -50,6 +61,19 @@ struct ChannelDetailView: View {
         .navigationTitle(vm.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
+        .sheet(isPresented: $showChannelHome) {
+            if let url = YouTubeWeb.channel(channelId: vm.channelId) {
+                WebPageSheet(title: vm.title, url: url)
+            }
+        }
+        .sheet(item: $previewing) { card in
+            // No onOpenChannel: you are already on this channel's screen.
+            VideoPreviewSheet(
+                item: card,
+                imported: vm.isImported(videoId: card.videoId),
+                importing: importing,
+                onImport: { onImport(card.watchURL.absoluteString) })
+        }
     }
 
     // Avatar and subscriber count come from the channel page. When that parse
@@ -202,7 +226,8 @@ struct ChannelDetailView: View {
                     item: card,
                     imported: vm.isImported(videoId: card.videoId),
                     importing: importing,
-                    onImport: { onImport(card.watchURL.absoluteString) })
+                    onImport: { onImport(card.watchURL.absoluteString) },
+                    onTap: { previewing = card })
                 if card.id != cards.last?.id {
                     Divider().overlay(NXColor.border(scheme))
                 }
