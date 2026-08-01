@@ -326,4 +326,18 @@ struct NXErrorState: View {
         .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.border(scheme), lineWidth: 1))
     }
 }
+
+extension View {
+    // Removes the navigation bar's own background so toolbar glyphs sit on the
+    // page rather than inside iOS 26's grouped-item capsule. A no-op below iOS 18,
+    // where that capsule does not exist.
+    @ViewBuilder
+    func nxPlainToolbarBackground() -> some View {
+        if #available(iOS 18.0, *) {
+            self.toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+        } else {
+            self
+        }
+    }
+}
 #endif
