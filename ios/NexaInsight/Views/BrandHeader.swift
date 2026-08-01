@@ -87,6 +87,9 @@ struct CollapsibleSearchField: View {
             }
             .padding(.horizontal, NXSpacing.x3)
             .frame(height: 36)
+            // Claims the width a toolbar would otherwise share with the leading
+            // items. Without this the field collapses to fit its placeholder.
+            .frame(minWidth: 240, maxWidth: .infinity)
             .background(NXColor.surface2(scheme), in: Capsule())
             .onAppear { focused = true }
         } else {

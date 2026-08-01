@@ -44,7 +44,12 @@ struct DiscoverView: View {
         // "selected" meant nothing and tapping a card appeared to do nothing.
         .frame(maxWidth: 720, alignment: .leading)
         .toolbar {
-            BrandHeader()
+            // The brand yields while searching: a toolbar splits its width between
+            // leading and trailing items, so leaving it in squeezed the field to
+            // about 100pt — too narrow to read your own query.
+            if !searchExpanded && !vm.isSearchActive {
+                BrandHeader()
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 CollapsibleSearchField(
                     query: $vm.query,
