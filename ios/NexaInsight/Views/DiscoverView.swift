@@ -17,6 +17,10 @@ struct DiscoverView: View {
     let importing: Bool
     let onAddToNexa: (String) -> Void
     let onOpenChannel: (String, String) -> Void
+    // Which videos are already in the library. Read as a closure so a video
+    // imported during this session flips to "In your library" without rebuilding
+    // the view — the card said "Add to Nexa" forever before this.
+    var importedVideoIds: () -> Set<String> = { [] }
     @State private var showAddChannel = false
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -134,7 +138,7 @@ struct DiscoverView: View {
             ForEach(cards) { card in
                 VideoCard(
                     item: card,
-                    imported: false,
+                    imported: importedVideoIds().contains(card.videoId),
                     importing: importing,
                     onImport: { onAddToNexa(card.watchURL.absoluteString) },
                     onOpenChannel: onOpenChannel)

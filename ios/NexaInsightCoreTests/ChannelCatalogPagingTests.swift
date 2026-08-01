@@ -217,6 +217,29 @@ final class ChannelCatalogPagingTests: XCTestCase {
         XCTAssertEqual(vm.uploadCards[0].durationText, "1:02:03", "the catalog carries duration")
     }
 
+    // Pull-to-refresh must reset paging, or the next scroll would append page 2 of
+    // the old list onto page 1 of the new one.
+    func testReloadResetsPagingState() async {
+        var api = StubAPI()
+        api.pages = [
+            UploadsPage(videos: [video("a")], nextPageToken: "T2", totalCount: 3),
+            UploadsPage(videos: [video("b")], nextPageToken: "T3", totalCount: 3),
+            UploadsPage(videos: [video("c")], nextPageToken: "T2", totalCount: 3),
+        ]
+
+        let vm = makeVM(api: api)
+        await vm.loadFirstPage()
+        await vm.loadMoreIfNeeded()
+        XCTAssertEqual(vm.catalog.count, 2)
+
+        await vm.reload()
+
+        // tokens.last is String?? — flatten it, or the assertion compares
+        // Optional(nil) against nil and fails for the wrong reason.
+        XCTAssertNil(api.calls.tokens.last ?? "sentinel", "refresh starts from the first page")
+        XCTAssertEqual(vm.catalog.map(\.videoId), ["c"], "the old pages are dropped")
+    }
+
     // Cards on a channel's own screen never link back to that channel.
     func testCatalogCardsCarryNoChannelLink() async {
         var api = StubAPI()

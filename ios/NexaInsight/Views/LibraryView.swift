@@ -46,7 +46,8 @@ struct LibraryView: View {
                     onAddToNexa: addToNexa,
                     onOpenChannel: { channelId, title in
                         discoverPath.append(ChannelTarget(channelId: channelId, title: title))
-                    })
+                    },
+                    importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) })
                 .padding(.horizontal, NXSpacing.x4)
                 .padding(.top, NXSpacing.x4)
             }
@@ -148,8 +149,12 @@ struct LibraryView: View {
         vm.updateClient(BackendClient(baseURL: url))
     }
 
+    // Stays where you are. Switching to Library used to tear down whatever screen
+    // you imported from — tapping Add on video 400 of a channel dropped you into
+    // Library, and coming back reloaded the catalog from page one, losing eight
+    // pages of scrolling. Import already runs in the background, so the only thing
+    // that jump bought was showing you a progress bar you did not ask for.
     private func addToNexa(_ url: String) {
-        selectedSection = .library
         Task { await vm.startImport(urlString: url) }
     }
 

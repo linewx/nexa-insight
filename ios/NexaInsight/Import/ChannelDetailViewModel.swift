@@ -112,6 +112,16 @@ final class ChannelDetailViewModel: ObservableObject {
         if catalog.isEmpty { await loadUploads() }
     }
 
+    // Pull-to-refresh. Resets paging state so a refresh cannot append page 2 of
+    // the old list onto page 1 of the new one.
+    func reload() async {
+        nextPageToken = nil
+        reachedEnd = false
+        catalog = []
+        catalogError = nil
+        await load()
+    }
+
     func loadFirstPage() async {
         guard let api else { return }
         loadingUploads = true

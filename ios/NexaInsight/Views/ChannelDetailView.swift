@@ -32,6 +32,10 @@ struct ChannelDetailView: View {
             .padding(.vertical, NXSpacing.x4)
         }
         .background(NXColor.background(scheme))
+        // Discover had this and the channel screen did not, so two lists that look
+        // identical behaved differently. Refresh reloads the first page rather than
+        // re-fetching every page already scrolled.
+        .refreshable { await vm.reload() }
         .navigationTitle(vm.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
