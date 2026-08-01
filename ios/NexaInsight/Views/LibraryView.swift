@@ -10,13 +10,17 @@ struct LibraryView: View {
     // channel screen has to show up in the channel list, so they cannot each
     // hold their own instance.
     @StateObject private var subscriptions: SubscriptionStore
-    @State private var selectedSection: AppSection = .home
+    @State private var selectedSection: AppSection = .discover
     @State private var showImport = false
-    @State private var showSettings = false
     @State private var urlDraft = ""
-    // NavigationPath rather than a typed array: this stack pushes both episode
-    // ids (Int) and channels (ChannelTarget).
-    @State private var path = NavigationPath()
+    // One navigation path PER TAB. A single shared stack would mean opening a
+    // channel from Discover, switching to Library, and coming back to find the
+    // channel screen pushed onto the wrong tab — each tab has to remember its own
+    // place, which is what makes a tab bar feel native.
+    @State private var discoverPath = NavigationPath()
+    @State private var channelsPath = NavigationPath()
+    @State private var libraryPath = NavigationPath()
+    @Environment(\.colorScheme) private var colorScheme
 
     init(store: EpisodeStore, settings: AppSettings) {
         self.store = store
@@ -33,24 +37,87 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            DashboardShell(
-                episodes: vm.episodes,
-                progress: vm.progress,
-                importError: vm.importError,
-                backendBaseURL: vm.backendBaseURL,
-                importing: vm.importing,
-                discover: discover,
-                selectedSection: $selectedSection,
-                urlDraft: $urlDraft,
-                showImport: $showImport,
-                showSettings: $showSettings,
-                onAddToNexa: addToNexa,
-                onOpenChannel: { channelId, title in
-                    path.append(ChannelTarget(channelId: channelId, title: title))
-                },
-                onResync: { id in Task { await vm.resyncContent(episodeId: id) } }
-            )
+        TabView(selection: $selectedSection) {
+            // Opens on content rather than on a description of the app.
+            tab(.discover, path: $discoverPath) {
+                DiscoverView(
+                    vm: discover,
+                    importing: vm.importing,
+                    onAddToNexa: addToNexa,
+                    onOpenChannel: { channelId, title in
+                        discoverPath.append(ChannelTarget(channelId: channelId, title: title))
+                    })
+                .padding(.horizontal, NXSpacing.x4)
+                .padding(.top, NXSpacing.x4)
+            }
+
+            // Channels was a segmented control inside Discover — a tab within a
+            // tab, meaning two positions to remember at once. Promoting it here
+            // removed Discover's internal switch entirely.
+            tab(.channels, path: $channelsPath, scroll: false) {
+                ChannelsView(
+                    vm: discover,
+                    onOpenChannel: { channelId, title in
+                        channelsPath.append(ChannelTarget(channelId: channelId, title: title))
+                    })
+            }
+
+            tab(.library, path: $libraryPath) {
+                LibraryMain(
+                    episodes: vm.episodes,
+                    progress: vm.progress,
+                    importError: vm.importError,
+                    backendBaseURL: vm.backendBaseURL,
+                    onDiscover: { selectedSection = .discover },
+                    onAddSource: { showImport = true },
+                    onResync: { id in Task { await vm.resyncContent(episodeId: id) } })
+                .padding(.horizontal, NXSpacing.x4)
+                .padding(.top, NXSpacing.x4)
+            }
+
+            // Settings was a sheet behind a gear icon. A sheet is for finishing one
+            // task and dismissing; settings is somewhere you return to — and the
+            // channel screen now sends you here to add an API key.
+            NavigationStack {
+                SettingsView(settings: settings)
+            }
+            .tag(AppSection.settings)
+            .tabItem { Label(AppSection.settings.title, systemImage: AppSection.settings.icon) }
+        }
+        .tint(NXColor.primary)
+        .sheet(isPresented: $showImport) {
+            ImportSheet(vm: vm, urlDraft: $urlDraft)
+                .presentationDetents([.large])
+        }
+        .onAppear {
+            syncBackendClient()
+            vm.reload()
+        }
+        .onChange(of: settings.backendBaseURL) { _, _ in syncBackendClient() }
+    }
+
+    // Each tab carries its own stack and the same two destinations, so a channel
+    // opened from Discover and one opened from Channels each stay on their own tab.
+    @ViewBuilder
+    private func tab<Content: View>(
+        _ section: AppSection,
+        path: Binding<NavigationPath>,
+        scroll: Bool = true,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        NavigationStack(path: path) {
+            Group {
+                // Channels supplies its own List, which scrolls itself — wrapping
+                // it would nest two scroll views and break swipe-to-unfollow.
+                if scroll {
+                    ScrollView {
+                        content().frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    content()
+                }
+            }
+            .background(NXColor.background(colorScheme))
             .navigationDestination(for: Int.self) { id in
                 StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL)
             }
@@ -71,19 +138,9 @@ struct LibraryView: View {
                     importing: vm.importing,
                     onImport: addToNexa)
             }
-            .sheet(isPresented: $showImport) {
-                ImportSheet(vm: vm, urlDraft: $urlDraft)
-                    .presentationDetents([.large])
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView(settings: settings)
-            }
-            .onAppear {
-                syncBackendClient()
-                vm.reload()
-            }
-            .onChange(of: settings.backendBaseURL) { _, _ in syncBackendClient() }
         }
+        .tag(section)
+        .tabItem { Label(section.title, systemImage: section.icon) }
     }
 
     private func syncBackendClient() {
@@ -106,24 +163,30 @@ struct LibraryView: View {
     }
 }
 
+// The tab bar. Home is gone: it was a paste field plus several paragraphs
+// describing the app, and pasting a link is an action (Library's +) rather than a
+// destination you return to. Every tab here is somewhere you come back to.
 private enum AppSection: String, CaseIterable {
-    case home
     case discover
+    case channels
     case library
+    case settings
 
     var title: String {
         switch self {
-        case .home: return "Home"
         case .discover: return "Discover"
+        case .channels: return "Channels"
         case .library: return "Library"
+        case .settings: return "Settings"
         }
     }
 
     var icon: String {
         switch self {
-        case .home: return "house"
         case .discover: return "sparkle.magnifyingglass"
+        case .channels: return "person.2"
         case .library: return "rectangle.stack"
+        case .settings: return "gearshape"
         }
     }
 }
@@ -672,22 +735,14 @@ private struct LibraryMain: View {
     let backendBaseURL: URL
     let onDiscover: () -> Void
     let onAddSource: () -> Void
+    var onResync: (Int) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x8) {
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                Text("LIBRARY")
-                    .font(NXFont.label)
-                    .foregroundStyle(NXColor.primary)
-                Text("Sources you chose to think through.")
-                    .font(NXFont.pageTitle)
-                    .foregroundStyle(NXColor.text(scheme))
-                Text("Discover stays separate. Library only contains content added to Nexa or uploaded by you.")
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-            }
-
+        // The eyebrow, a restatement of what Library is, and a note that Discover
+        // is separate took three lines before the first item. The tab bar and the
+        // navigation title already say where you are.
+        VStack(alignment: .leading, spacing: NXSpacing.x6) {
             if let progress {
                 LibraryProcessingState(progress: progress)
             } else if let importError {
@@ -696,23 +751,43 @@ private struct LibraryMain: View {
 
             if episodes.isEmpty {
                 NXEmptyState(
-                    title: "No sources in Library yet",
-                    message: "Add a public source from Discover, paste a link, or upload a file. Processing runs in the background.",
+                    title: "Nothing added yet",
+                    message: "Find something in Discover, or paste a link with the + button.",
                     actionTitle: "Open Discover",
                     action: onDiscover
                 )
             } else {
-                DashboardSection(title: "Sources") {
-                    VStack(spacing: 0) {
-                        ForEach(episodes) { episode in
-                            SourceListItem(episode: episode)
-                            if episode.id != episodes.last?.id {
-                                Divider().overlay(NXColor.border(scheme))
-                            }
+                VStack(spacing: 0) {
+                    ForEach(episodes) { episode in
+                        SourceListItem(episode: episode)
+                            .contextMenu { resyncButton(episode.id) }
+                        if episode.id != episodes.last?.id {
+                            Divider().overlay(NXColor.border(scheme))
                         }
                     }
                 }
             }
+        }
+        .navigationTitle("Library")
+        .toolbar {
+            // Pasting a link is an action on this screen, not a destination — which
+            // is why Home stopped being a tab.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: onAddSource) {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add a source by link")
+            }
+        }
+    }
+
+    // Long-press to re-pull corrected content and re-download the audio. Lives
+    // here rather than on the study screen, which has no room for maintenance.
+    @ViewBuilder private func resyncButton(_ episodeId: Int) -> some View {
+        Button {
+            onResync(episodeId)
+        } label: {
+            Label("重新同步内容和音频", systemImage: "arrow.triangle.2.circlepath")
         }
     }
 }

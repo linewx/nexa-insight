@@ -9,15 +9,14 @@ struct SettingsView: View {
     @State private var dashscopeKey = ""
     @State private var workspaceId = ""
     @State private var savedMessage: String?
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: NXSpacing.x8) {
-                    SettingsHeader(onClose: { dismiss() })
-
+        // No NavigationStack and no header of its own: this is a tab now, so the
+        // caller supplies the stack and the navigation bar supplies the title.
+        // The old close button belonged to a sheet that no longer exists.
+        ScrollView {
+            VStack(alignment: .leading, spacing: NXSpacing.x8) {
                     SettingsSection(
                         title: "Backend",
                         subtitle: "Used for importing and downloading prepared sources."
@@ -98,21 +97,18 @@ struct SettingsView: View {
                         SaveNotice(message: savedMessage)
                     }
 
-                    HStack {
-                        NXSecondaryButton(title: "Close", action: { dismiss() })
-                        Spacer()
-                        NXPrimaryButton(title: "Save changes", systemName: "checkmark", action: save)
-                    }
-                }
-                .frame(maxWidth: 760, alignment: .leading)
-                .padding(.horizontal, NXSpacing.x6)
-                .padding(.vertical, NXSpacing.x6)
-                .frame(maxWidth: .infinity)
+                    // Save is the only action left. "Close" dismissed a sheet that
+                    // no longer exists — you leave by tapping another tab.
+                    NXPrimaryButton(title: "Save changes", systemName: "checkmark", action: save)
             }
-            .background(NXColor.background(scheme))
-            .toolbar(.hidden, for: .navigationBar)
-            .onAppear(perform: load)
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, NXSpacing.x4)
+            .padding(.vertical, NXSpacing.x4)
+            .frame(maxWidth: .infinity)
         }
+        .background(NXColor.background(scheme))
+        .navigationTitle("Settings")
+        .onAppear(perform: load)
     }
 
     private func load() {
@@ -136,26 +132,6 @@ struct SettingsView: View {
             keychain.delete(key)
         } else {
             keychain.set(trimmed, for: key)
-        }
-    }
-}
-
-private struct SettingsHeader: View {
-    let onClose: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(alignment: .top, spacing: NXSpacing.x4) {
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                Text("Settings")
-                    .font(NXFont.pageTitle)
-                    .foregroundStyle(NXColor.text(scheme))
-                Text("Connections and local secrets for Nexa Insight.")
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-            }
-            Spacer()
-            NXIconButton(systemName: "xmark", accessibilityLabel: "Close settings", action: onClose)
         }
     }
 }

@@ -4,12 +4,14 @@ import SwiftUI
 // Discover has exactly two shapes, and the whole point of this file is that they
 // never overlap:
 //
-//   empty query  → two tabs (Latest / My channels)
-//   submitted    → search results, covering both tabs
+//   empty query  → the newest videos from channels you follow
+//   submitted    → site-wide video search results
 //
 // What this replaced had a search box returning channels while the identical box
 // inside a channel returned videos, two rows of chips that looked the same and
 // meant opposite things, and subscriptions shown twice with different behaviour.
+// The Latest/Channels segmented control that followed it is gone too: Channels is
+// a tab now, so this screen has no internal mode switch at all.
 struct DiscoverView: View {
     @ObservedObject var vm: DiscoverViewModel
     let importing: Bool
@@ -22,36 +24,27 @@ struct DiscoverView: View {
     private var compact: Bool { horizontalSizeClass == .compact }
 
     var body: some View {
+        // No eyebrow, no page title, no segmented control. The tab bar says where
+        // you are, and Channels moved to its own tab — so this screen is now just
+        // a field and the videos it finds.
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            header
             searchField
 
             if vm.isSearchActive {
                 searchState
             } else {
-                tabs
-                tabContent
+                latestTab
             }
         }
         // Single column. The old two-pane layout auto-selected a card and showed
         // a preview duplicating it, on a page whose only action is import — so
         // "selected" meant nothing and tapping a card appeared to do nothing.
         .frame(maxWidth: 720, alignment: .leading)
+        .navigationTitle("Discover")
         .task { await vm.refresh() }
         .refreshable { await vm.refresh() }
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x1) {
-            Text("DISCOVER")
-                .font(NXFont.label)
-                .foregroundStyle(NXColor.primary)
-            Text("Find something worth thinking through.")
-                .font(compact ? .system(size: 20, weight: .semibold) : NXFont.pageTitle)
-                .foregroundStyle(NXColor.text(scheme))
         }
     }
 
@@ -67,45 +60,6 @@ struct DiscoverView: View {
             onSubmitSearch: { term in Task { await vm.runSearch(term) } },
             onImportLink: onAddToNexa,
             onClear: vm.clearSearch)
-    }
-
-    private var tabs: some View {
-        HStack(spacing: NXSpacing.x6) {
-            ForEach(DiscoverViewModel.Tab.allCases) { tab in
-                Button {
-                    vm.tab = tab
-                } label: {
-                    Text(tab.title)
-                        .font(vm.tab == tab ? NXFont.bodyMedium : NXFont.body)
-                        .foregroundStyle(vm.tab == tab
-                            ? NXColor.text(scheme)
-                            : NXColor.textSecondary(scheme))
-                        .padding(.bottom, NXSpacing.x2)
-                        .overlay(alignment: .bottom) {
-                            // A 2pt indicator rather than a segmented control,
-                            // whose pill shape fights the app's flat language.
-                            Rectangle()
-                                .fill(vm.tab == tab ? NXColor.primary : .clear)
-                                .frame(height: 2)
-                        }
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer(minLength: 0)
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(NXColor.border(scheme))
-                .frame(height: 1)
-        }
-    }
-
-    @ViewBuilder
-    private var tabContent: some View {
-        switch vm.tab {
-        case .latest: latestTab
-        case .channels: channelsTab
-        }
     }
 
     @ViewBuilder
@@ -133,54 +87,6 @@ struct DiscoverView: View {
                     .foregroundStyle(NXColor.textTertiary(scheme))
             }
             cardList(vm.feedCards)
-        }
-    }
-
-    @ViewBuilder
-    private var channelsTab: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if vm.subscriptions.isEmpty {
-                NXEmptyState(
-                    title: "No channels yet",
-                    message: "Search for a video above and tap its channel name to follow that channel.",
-                    actionTitle: "Paste a channel link",
-                    action: { showAddChannel = true })
-            } else {
-                ForEach(vm.subscriptions) { subscription in
-                    Button {
-                        onOpenChannel(subscription.channelId, subscription.title)
-                    } label: {
-                        ChannelRow(subscription: subscription)
-                    }
-                    .buttonStyle(.plain)
-                    // Swipe to unfollow: the native gesture, so no extra edit
-                    // mode or per-row button is needed.
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            vm.removeSubscription(channelId: subscription.channelId)
-                        } label: {
-                            Label("Unfollow", systemImage: "minus.circle")
-                        }
-                    }
-                    Divider().overlay(NXColor.border(scheme))
-                }
-
-                Button {
-                    showAddChannel = true
-                } label: {
-                    HStack(spacing: NXSpacing.x3) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Paste a channel link")
-                            .font(NXFont.body)
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(NXColor.primary)
-                    .padding(.vertical, NXSpacing.x3)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 
@@ -306,40 +212,6 @@ private struct DiscoverSearchField: View {
             focused = false
             onSubmitSearch(trimmed)
         }
-    }
-}
-
-private struct ChannelRow: View {
-    let subscription: Subscription
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(spacing: NXSpacing.x3) {
-            ChannelAvatar(
-                url: subscription.avatarURL,
-                title: subscription.title,
-                channelId: subscription.channelId)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(subscription.title)
-                    .font(NXFont.bodyMedium)
-                    .foregroundStyle(NXColor.text(scheme))
-                    .lineLimit(1)
-                if let subscriberText = subscription.subscriberText {
-                    Text(subscriberText)
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(NXColor.textTertiary(scheme))
-        }
-        .padding(.vertical, NXSpacing.x3)
-        .contentShape(Rectangle())
     }
 }
 
