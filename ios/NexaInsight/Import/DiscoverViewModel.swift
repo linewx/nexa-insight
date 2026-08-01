@@ -98,7 +98,18 @@ final class DiscoverViewModel: ObservableObject {
         let followed = apiEntries.isEmpty
             ? entries.map { VideoCardItem($0) }
             : apiEntries.compactMap { VideoCardItem($0) }
-        return mixExploration(into: followed)
+        return mixExploration(into: followed.map(withAvatar))
+    }
+
+    // Followed channels already have an avatar stored from when they were followed,
+    // so the card shows a real image rather than a monogram — no extra request.
+    private func withAvatar(_ card: VideoCardItem) -> VideoCardItem {
+        guard let channelId = card.channelId,
+              let subscription = store.subscriptions.first(where: { $0.channelId == channelId })
+        else { return card }
+        var copy = card
+        copy.channelAvatarURL = subscription.avatarURL
+        return copy
     }
 
     // Which cards came from outside the followed set, so the view can mark them.

@@ -21,6 +21,10 @@ struct VideoCardItem: Identifiable, Equatable {
     // channel name, which the card renders on its own line as a tap target.
     let metaText: String
     let thumbnailURL: URL?
+    // Only followed channels have one (captured when following). Search results and
+    // suggestions carry none, so the row falls back to a monogram rather than
+    // spending a request per card to fetch one.
+    var channelAvatarURL: URL?
     let watchURL: URL
 
     var id: String { videoId }
@@ -37,7 +41,7 @@ struct VideoCardItem: Identifiable, Equatable {
             videoId: videoId, title: title,
             channelTitle: nil, channelId: nil,
             durationText: durationText, metaText: metaText,
-            thumbnailURL: thumbnailURL, watchURL: watchURL)
+            thumbnailURL: thumbnailURL, channelAvatarURL: nil, watchURL: watchURL)
     }
 }
 

@@ -169,9 +169,7 @@ struct DiscoverView: View {
                     onTap: { previewing = card },
                     explorationTopic: vm.explorationIds.contains(card.videoId)
                         ? vm.explorationTopic : nil)
-                if card.id != cards.last?.id {
-                    Divider().overlay(NXColor.border(scheme))
-                }
+
             }
         }
     }

@@ -25,47 +25,105 @@ struct VideoCard: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        HStack(alignment: .top, spacing: NXSpacing.x3) {
-            // Thumbnail and title open the preview; the channel link and Add stay
-            // separate targets below, which is why this is not one big Button.
+        VStack(alignment: .leading, spacing: 0) {
+            // Full-width 16:9, as on YouTube. This costs density — about 2.4 cards
+            // per screen against 6.3 for the previous row — bought back partly by
+            // moving Add into the ⋮ menu so no card carries a button.
             VideoThumbnail(url: item.thumbnailURL, durationText: item.durationText)
                 .onTapGesture { onTap?() }
 
-            VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                Text(item.title)
-                    .font(NXFont.bodyMedium)
-                    .foregroundStyle(NXColor.text(scheme))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onTapGesture { onTap?() }
+            HStack(alignment: .top, spacing: NXSpacing.x3) {
+                channelAvatar
 
-                channelLine
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(NXFont.bodyMedium)
+                        .foregroundStyle(NXColor.text(scheme))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                if let explorationTopic {
-                    Text("Suggested · \(explorationTopic)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(NXColor.insight)
-                }
-
-                if !item.metaText.isEmpty {
-                    Text(item.metaText)
+                    // One line, not two: channel, views and age read as a single
+                    // byline the way they do on YouTube.
+                    Text(byline)
                         .font(NXFont.auxiliary)
                         .foregroundStyle(NXColor.textSecondary(scheme))
                         .lineLimit(1)
+
+                    if let explorationTopic {
+                        Text("Suggested · \(explorationTopic)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(NXColor.insight)
+                    }
                 }
+                .onTapGesture { onTap?() }
 
-                action
-                    .padding(.top, NXSpacing.x1)
+                Spacer(minLength: 0)
+
+                overflowMenu
             }
-
-            Spacer(minLength: 0)
+            .padding(.top, NXSpacing.x3)
+            .padding(.horizontal, NXSpacing.x1)
         }
-        .padding(.vertical, NXSpacing.x3)
-        // `.contain`, NOT `.combine`: combining would swallow the Add button and
-        // the channel link into one label, making both unreachable. This groups the
-        // row while leaving its controls as separate targets.
+        .padding(.bottom, NXSpacing.x4)
+        // `.contain`, NOT `.combine`: combining would swallow the menu and the
+        // channel link into one label, making both unreachable.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
+    }
+
+    private var byline: String {
+        // The channel name joins the byline here rather than having its own line —
+        // it is still reachable through the avatar and the ⋮ menu.
+        [item.channelTitle, item.metaText.isEmpty ? nil : item.metaText]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var channelAvatar: some View {
+        if let channelTitle = item.channelTitle {
+            let avatar = ChannelAvatar(
+                url: item.channelAvatarURL,
+                title: channelTitle,
+                channelId: item.channelId ?? channelTitle,
+                size: 36)
+            if let channelId = item.channelId, let onOpenChannel {
+                Button { onOpenChannel(channelId, channelTitle) } label: { avatar }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open channel \(channelTitle)")
+            } else {
+                avatar
+            }
+        }
+    }
+
+    // Add moved in here. It triggers transcription, per-sentence translation and AI
+    // chaptering over hours of audio, so repeating it as an outlined button on every
+    // card both crowded the list and made an expensive action look incidental.
+    private var overflowMenu: some View {
+        Menu {
+            if imported {
+                Label("In your library", systemImage: "checkmark.circle")
+            } else {
+                Button(action: onImport) {
+                    Label(importing ? "Adding…" : "Add to Nexa", systemImage: "plus")
+                }
+                .disabled(importing)
+            }
+            if let channelId = item.channelId, let channelTitle = item.channelTitle,
+               let onOpenChannel {
+                Button { onOpenChannel(channelId, channelTitle) } label: {
+                    Label("Go to \(channelTitle)", systemImage: "person.2")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(NXColor.textSecondary(scheme))
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("More actions")
     }
 
     // Title, publisher, length — the order in which someone decides whether to
@@ -75,49 +133,6 @@ struct VideoCard: View {
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
-    }
-
-    // The channel name is the only route to following a channel, so when it can
-    // navigate it reads as a link. When it cannot, it stays plain text rather
-    // than looking tappable and doing nothing.
-    @ViewBuilder
-    private var channelLine: some View {
-        if let title = item.channelTitle {
-            if let channelId = item.channelId, let onOpenChannel {
-                Button {
-                    onOpenChannel(channelId, title)
-                } label: {
-                    HStack(spacing: 2) {
-                        Text(title)
-                            .font(NXFont.auxiliary)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .foregroundStyle(NXColor.primary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开频道 \(title)")
-            } else {
-                Text(title)
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var action: some View {
-        if imported {
-            NXTag(text: "In your library", tint: NXColor.success)
-        } else {
-            NXSecondaryButton(
-                title: importing ? "Adding" : "Add to Nexa",
-                systemName: importing ? "clock" : "plus",
-                action: onImport)
-            .accessibilityLabel(importing ? "正在加入 Nexa" : "加入 Nexa：\(item.title)")
-        }
     }
 }
 
@@ -189,18 +204,24 @@ struct VideoCardSkeleton: View {
     @State private var pulse = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: NXSpacing.x3) {
-            RoundedRectangle(cornerRadius: NXRadius.small)
+        // Mirrors VideoCard's shape exactly. A skeleton of the wrong proportions
+        // makes the list jump when real content replaces it.
+        VStack(alignment: .leading, spacing: NXSpacing.x3) {
+            RoundedRectangle(cornerRadius: NXRadius.surface)
                 .fill(NXColor.surface2(scheme))
-                .frame(width: 112, height: 63)
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                bar(widthFraction: 0.9)
-                bar(widthFraction: 0.4)
-                bar(widthFraction: 0.6)
+                .aspectRatio(16 / 9, contentMode: .fit)
+            HStack(alignment: .top, spacing: NXSpacing.x3) {
+                Circle()
+                    .fill(NXColor.surface2(scheme))
+                    .frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                    bar(widthFraction: 0.9)
+                    bar(widthFraction: 0.5)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.vertical, NXSpacing.x3)
+        .padding(.bottom, NXSpacing.x4)
         .opacity(pulse ? 0.55 : 1)
         .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
         .onAppear { pulse = true }

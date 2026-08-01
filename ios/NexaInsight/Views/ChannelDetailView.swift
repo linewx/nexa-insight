@@ -232,9 +232,7 @@ struct ChannelDetailView: View {
                     importing: importing,
                     onImport: { onImport(card.watchURL.absoluteString) },
                     onTap: { previewing = card })
-                if card.id != cards.last?.id {
-                    Divider().overlay(NXColor.border(scheme))
-                }
+
             }
         }
     }
