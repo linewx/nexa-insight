@@ -293,7 +293,8 @@ private struct StudyWorkspace: View {
                 durationMs: episode?.durationMs,
                 audioRefreshState: audioRefreshState,
                 onRefreshAudio: onRefreshAudio,
-                onSeekIntent: onSeekIntent
+                onSeekIntent: onSeekIntent,
+                speed: speed
             )
             studySurface
         }
@@ -307,11 +308,48 @@ private struct StudyWorkspace: View {
         ZStack(alignment: .bottom) {
             transcriptScrollArea(
                 horizontalPadding: compact ? NXSpacing.x4 : NXSpacing.x8,
-                contentMaxWidth: compact ? .infinity : 1_080,
+                // 1080pt of single-column text is far past a comfortable reading
+                // measure; 680 keeps lines readable and leaves the width for a
+                // second column later.
+                contentMaxWidth: compact ? .infinity : 680,
                 // Clears the persistent bottom bar plus breathing room, so
                 // scrolling to the end never strands text beneath it.
                 bottomInset: 140
             )
+
+            // Floats over the transcript at the top, so searching does not require
+            // scrolling back to find the field. It used to be the first item INSIDE
+            // the scroll view, which meant a search box you could only reach from
+            // the top of a four-hour transcript.
+            VStack {
+                SearchInput(query: $query)
+                    .padding(.horizontal, compact ? NXSpacing.x4 : NXSpacing.x8)
+                    .padding(.top, NXSpacing.x2)
+                Spacer(minLength: 0)
+            }
+
+            // Also floating, and pinned above the dock rather than sitting at the
+            // end of the transcript — where you had to scroll to the bottom to
+            // find the button that takes you back to the middle.
+            if !following {
+                VStack {
+                    Spacer(minLength: 0)
+                    Button(action: onSync) {
+                        HStack(spacing: NXSpacing.x1) {
+                            Image(systemName: "scope").font(.system(size: 12, weight: .semibold))
+                            Text("Back to current").font(NXFont.control)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, NXSpacing.x3)
+                        .frame(height: 34)
+                        .background(NXColor.primary, in: Capsule())
+                        .nxFloatingShadow(scheme)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, discussionSession == nil ? NXSpacing.x4 : 92)
+                }
+                .transition(.opacity)
+            }
 
             if let discussionSession {
                 // Edge-to-edge, pinned to the bottom: the bar is part of the page
@@ -320,6 +358,7 @@ private struct StudyWorkspace: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: discussionSession != nil)
+        .animation(.easeOut(duration: 0.18), value: following)
     }
 
     private func transcriptScrollArea(horizontalPadding: CGFloat, contentMaxWidth: CGFloat, bottomInset: CGFloat) -> some View {
@@ -328,7 +367,9 @@ private struct StudyWorkspace: View {
                 transcriptContent
                     .frame(maxWidth: contentMaxWidth, alignment: .leading)
                     .padding(.horizontal, horizontalPadding)
-                    .padding(.top, NXSpacing.x8)
+                    // Clears the floating search field, so the first sentence is
+                    // never hidden beneath it at rest.
+                    .padding(.top, 64)
                     .padding(.bottom, bottomInset)
                     .frame(maxWidth: .infinity)
             }
@@ -342,7 +383,6 @@ private struct StudyWorkspace: View {
 
     private var transcriptContent: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x6) {
-            SearchInput(query: $query)
             TranscriptBlock(
                 sentences: visible,
                 current: current,
@@ -355,9 +395,6 @@ private struct StudyWorkspace: View {
                 onStep: onStep,
                 onCycleSpeed: onCycleSpeed
             )
-            if !following {
-                NXSecondaryButton(title: "Back to current", systemName: "scope", action: onSync)
-            }
         }
     }
 }
@@ -373,6 +410,7 @@ private struct WorkspaceTopBar: View {
     // so this bar no longer starts or stops playback. Seeks still go through an
     // intent rather than the player so a connected class moves the floor.
     var onSeekIntent: (Int) -> Void = { _ in }
+    var speed: Double = 1
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -395,31 +433,26 @@ private struct WorkspaceTopBar: View {
             HStack(alignment: .center, spacing: NXSpacing.x3) {
                 NXIconButton(systemName: "chevron.left", accessibilityLabel: "Back") { dismiss() }
 
-                VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                    HStack(spacing: NXSpacing.x2) {
-                        NXTag(text: "Source", tint: NXColor.primary)
-                        Text(formatTime(displayedMs))
-                            .font(NXFont.auxiliary)
-                            .foregroundStyle(NXColor.textTertiary(scheme))
-                            .monospacedDigit()
-                    }
-                    Text(episode?.title ?? "Study")
-                        .font(compact ? NXFont.subsectionTitle : NXFont.sectionTitle)
-                        .foregroundStyle(NXColor.text(scheme))
-                        .lineLimit(compact ? 2 : 1)
-                    if let channel = episode?.channel {
-                        Text(channel)
-                            .font(NXFont.auxiliary)
-                            .foregroundStyle(NXColor.textSecondary(scheme))
-                            .lineLimit(1)
-                    }
-                }
+                // One line, not four. The title, the channel, and a "Source" tag
+                // took three stacked lines of fixed chrome — and the title was
+                // already visible on the row you tapped to get here. What this bar
+                // is for is knowing where you are in the audio and moving there,
+                // so only the clock stays.
+                Text("\(formatTime(displayedMs)) / \(Resume.clockText(durationMs ?? 0))")
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .monospacedDigit()
 
-                // No play button up here: the dock at the bottom owns playback now
-                // (it's within thumb reach, and it routes through the classroom
-                // floor). The dock is always present — StudyView starts the class
-                // on appear — so playback is never left without a control.
                 Spacer(minLength: NXSpacing.x3)
+
+                // The rate is the one piece of playback state that is otherwise
+                // invisible from up here, and only when it is not 1×.
+                if let badge = IntensiveListening.speedBadge(speed) {
+                    Text(badge)
+                        .font(.system(size: 11, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(NXColor.primary)
+                }
             }
 
             if shouldShowCompactStatus {
