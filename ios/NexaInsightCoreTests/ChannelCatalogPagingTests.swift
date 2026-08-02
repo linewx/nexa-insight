@@ -455,21 +455,80 @@ final class ColdStartTests: XCTestCase {
         XCTAssertFalse(vm.coldStartLoading)
     }
 
-    // The quota is the reason forced refresh is not unconditional: search.list allows
-    // 100 calls a DAY, so a gesture that spent one each time would exhaust it within
-    // minutes of pulling.
-    func testPullToRefreshDoesNotSpendQuotaWhenAKeyExists() async {
+    // A pull must never leave you with less than you had. When the refetch came back
+    // empty — a broken scrape, a dropped connection — it was assigning that empty
+    // result straight over the list, so refreshing was riskier than not refreshing.
+    func testFailedPullKeepsExistingSuggestions() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a"), video("b")])
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: nil,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+        XCTAssertEqual(vm.coldStartCards.count, 2)
+
+        // The next pull finds nothing.
+        feed.siteWideOutcome = .structureMissing
+        let vm2 = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: nil,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+        await vm2.refresh()
+        let before = vm2.coldStartCards.count
+        await vm2.refresh(forced: true)
+
+        XCTAssertEqual(vm2.coldStartCards.count, before,
+                       "a failed pull must not reduce what is on screen")
+    }
+
+    // A device that searched BEFORE the schema key existed has a day stamp but no
+    // version. That entry must be treated as stale, or a query fix stays invisible.
+    func testCacheEntryWrittenBeforeVersioningIsStale() {
+        let cache = ExplorationCache(defaults: defaults, namespace: "cold")
+        // Exactly what the old code wrote: a day, a topic, a payload — no schema.
+        let today = Int(Date().timeIntervalSince1970 / 86_400)
+        defaults.set(today, forKey: "coldStartDay")
+        defaults.set("technology deep dive", forKey: "coldStartTopic")
+        defaults.set(Data("[]".utf8), forKey: "coldStartVideos")
+
+        XCTAssertFalse(cache.isFresh(),
+                       "an unversioned entry must not count as today's search")
+    }
+
+    // A pull always refetches, even with a key. This replaces a guard that limited
+    // pulls to protect the daily search budget — that limit made the gesture a no-op
+    // and left a stale list unreplaceable, which was the worse problem.
+    func testPullToRefreshAlwaysSearchesAgain() async {
         let api = stub()
         let vm = makeVM(api)
 
         await vm.refresh()
         XCTAssertEqual(api.calls.searchQueries.count, 1)
 
-        for _ in 0..<5 { await vm.refresh(forced: true) }
+        await vm.refresh(forced: true)
+        XCTAssertEqual(api.calls.searchQueries.count, 2)
 
-        XCTAssertEqual(api.calls.searchQueries.count, 1,
-                       "five pulls must not mean five 100-unit searches")
-        XCTAssertFalse(vm.coldStartCards.isEmpty, "and the cached result still shows")
+        await vm.refresh(forced: true)
+        XCTAssertEqual(api.calls.searchQueries.count, 3, "every pull refetches")
+    }
+
+    // An ordinary launch still reads the cache rather than searching again, so opening
+    // the app repeatedly does not refetch — only pulling does.
+    func testOrdinaryRefreshStillUsesTodaysCache() async {
+        let api = stub()
+        let vm = makeVM(api)
+
+        await vm.refresh()
+        await vm.refresh()
+        await vm.refresh()
+
+        XCTAssertEqual(api.calls.searchQueries.count, 1)
     }
 
     // Cold start and topic exploration share the cache type; they must not share a

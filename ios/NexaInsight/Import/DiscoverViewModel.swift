@@ -333,11 +333,20 @@ final class DiscoverViewModel: ObservableObject {
     private func loadColdStart(forced: Bool = false) async {
         guard forced || coldStart.isEmpty else { return }
 
-        // A forced refresh skips the cache — but only where refetching is free. See
-        // the api branch below: search.list has 100 calls a DAY, so letting a gesture
-        // spend one each time would exhaust it in a couple of minutes of pulling.
-        let mayRefetch = forced && api == nil
-        if !mayRefetch, coldStartCache.isFresh() {
+        // The scraped path is free, so a pull always refetches there. The keyed path
+        // spends 1 of 100 daily searches, so it refetches only if today's has not been
+        // spent yet.
+        //
+        // My first attempt at this guard was `forced && api == nil`, which read as
+        // "protect the quota" and behaved as "a pull can never refresh once a key
+        // exists" — including when the cached result came from a query we have since
+        // fixed. Whether the budget is already spent is the actual question.
+        // A pull refetches, full stop. The daily cache is only a warm start when the
+        // app launches, not a spending limit — an earlier version made the gesture a
+        // no-op to protect the 100-per-day search budget, which meant a stale list
+        // could not be replaced at all.
+        let alreadySearchedToday = coldStartCache.isFresh()
+        if !forced, alreadySearchedToday {
             coldStart = coldStartCache.videos()
             return
         }
@@ -350,12 +359,6 @@ final class DiscoverViewModel: ObservableObject {
 
         let found: [ChannelVideo]
         if let api {
-            // Still once a day even when forced: this is the expensive path, and a
-            // gesture must not be able to drain the day's budget.
-            if coldStartCache.isFresh() {
-                coldStart = coldStartCache.videos()
-                return
-            }
             // Marked before the request so a failure cannot retry and drain the
             // day's 100-unit search budget.
             coldStartCache.markAttempted(topic: query)
@@ -371,9 +374,20 @@ final class DiscoverViewModel: ObservableObject {
             }
         }
 
-        coldStart = Array(found.prefix(10))
-        if !coldStart.isEmpty, api != nil {
-            coldStartCache.store(topic: query, videos: coldStart)
+        // An empty result must not wipe what is on screen. A pull that fails — the
+        // scrape breaking, the network dropping — should leave the previous
+        // suggestions rather than clearing the feed, which would make refreshing
+        // riskier than not refreshing.
+        let fresh = Array(found.prefix(10))
+        if !fresh.isEmpty {
+            coldStart = fresh
+        } else if coldStart.isEmpty, alreadySearchedToday {
+            // Nothing new and nothing showing: fall back to whatever was cached.
+            coldStart = coldStartCache.videos()
+        }
+
+        if !fresh.isEmpty, api != nil {
+            coldStartCache.store(topic: query, videos: fresh)
         }
     }
 
