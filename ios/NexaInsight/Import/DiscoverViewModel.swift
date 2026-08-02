@@ -57,6 +57,11 @@ final class DiscoverViewModel: ObservableObject {
     // being indistinguishable from a subscription.
     @Published var exploration: [ChannelVideo] = []
     @Published var explorationTopic: String?
+    // Shown only when nothing is followed yet. Kept separate from `exploration`
+    // because it answers a different question — "what could I study at all?" rather
+    // than "what is next to what I already study".
+    @Published var coldStart: [ChannelVideo] = []
+    @Published var coldStartLoading = false
     // Engagement per channel, from local playback data. No network cost.
     private var engagement: [String: ChannelEngagement] = [:]
     // How the app learns what a channel is about, so it knows what is adjacent.
@@ -74,19 +79,23 @@ final class DiscoverViewModel: ObservableObject {
     // A closure, not a stored value: the Settings toggle can change while Discover
     // is on screen, and a captured Locale would keep the old language until relaunch.
     private let bylineLocale: () -> Locale
+    private let coldStartCache: ExplorationCache
 
     init(store: SubscriptionStore,
          service: DiscoverFeedFetching,
          api: YouTubeAPIFetching? = nil,
          episodesProvider: @escaping () -> [EpisodeDTO] = { [] },
          explorationCache: ExplorationCache = ExplorationCache(),
-         bylineLocale: @escaping () -> Locale = { DiscoverFormat.defaultLocale }) {
+         bylineLocale: @escaping () -> Locale = { DiscoverFormat.defaultLocale },
+         coldStartCache: ExplorationCache? = nil) {
         self.store = store
         self.service = service
         self.api = api
         self.episodesProvider = episodesProvider
         self.explorationCache = explorationCache
         self.bylineLocale = bylineLocale
+        self.coldStartCache = coldStartCache
+            ?? ExplorationCache(namespace: "coldStart")
     }
 
     var subscriptions: [Subscription] { store.subscriptions }
@@ -117,6 +126,8 @@ final class DiscoverViewModel: ObservableObject {
         copy.channelAvatarURL = subscription.avatarURL
         return copy
     }
+
+    var coldStartCards: [VideoCardItem] { coldStart.compactMap { VideoCardItem($0) } }
 
     // Which cards came from outside the followed set, so the view can mark them.
     var explorationIds: Set<String> { Set(exploration.map(\.videoId)) }
@@ -168,6 +179,9 @@ final class DiscoverViewModel: ObservableObject {
             apiEntries = []
             failedChannelIds = []
             feedError = nil
+            // Nothing to build a feed from, so offer something to start with rather
+            // than an empty screen and an instruction.
+            await loadColdStart()
             return
         }
 
@@ -181,7 +195,9 @@ final class DiscoverViewModel: ObservableObject {
         apiEntries = []
         let result = await service.fetchFeeds(channelIds: channelIds)
         engagement = localEngagement()
-        entries = Recommend.rankedFeed(result.entries, engagement: engagement)
+        entries = Recommend.rankedFeed(result.entries,
+                                       engagement: aliasedEngagement(result.entries),
+                                       topics: topicProfile)
         failedChannelIds = result.failedChannelIds
         // Page-level error only when nothing at all came back.
         feedError = result.failedChannelIds.count == channelIds.count
@@ -225,6 +241,9 @@ final class DiscoverViewModel: ObservableObject {
         // Newest-first across channels, then engagement decides the order within a
         // recency band — see Recommend.rankedFeed for why recency stays outermost.
         engagement = localEngagement()
+        // Topics before ranking: the profile is what makes the topic factor mean
+        // anything, and it costs 1 unit for every channel at once.
+        await loadTopicProfile(channelIds: channelIds)
         apiEntries = rankByEngagement(collected)
         entries = []
         failedChannelIds = failed
@@ -236,16 +255,22 @@ final class DiscoverViewModel: ObservableObject {
     // Same banding as the RSS path, expressed over ChannelVideo (which carries
     // publishedAt only on the API path).
     private func rankByEngagement(_ videos: [ChannelVideo]) -> [ChannelVideo] {
-        videos.sorted { left, right in
-            let leftDate = left.publishedAt ?? .distantPast
-            let rightDate = right.publishedAt ?? .distantPast
-            let leftBand = Recommend.recencyBand(leftDate)
-            let rightBand = Recommend.recencyBand(rightDate)
-            if leftBand != rightBand { return leftBand < rightBand }
-            let leftScore = left.channelId.flatMap { engagement[$0]?.score } ?? 0
-            let rightScore = right.channelId.flatMap { engagement[$0]?.score } ?? 0
-            if abs(leftScore - rightScore) > 0.01 { return leftScore > rightScore }
-            return leftDate > rightDate
+        // Same three-factor blend as the RSS path. This was still on the old tiered
+        // sort, so the two feed sources ordered differently for the same library.
+        let affinity = Recommend.topicAffinity(engagement: engagement, topics: topicProfile)
+        func blended(_ video: ChannelVideo) -> Double {
+            let subscription = video.channelId
+                .map { Recommend.normalisedEngagement($0, engagement: engagement) } ?? 0
+            let topic = affinity.normalised(for: video.channelId.flatMap { topicProfile[$0] } ?? [])
+            let recency = video.publishedAt.map { Recommend.recencyScore($0) } ?? 0
+            return subscription * Recommend.subscriptionWeight
+                + topic * Recommend.topicWeight
+                + recency * Recommend.recencyWeight
+        }
+        return videos.sorted { left, right in
+            let l = blended(left), r = blended(right)
+            if abs(l - r) > 0.0001 { return l > r }
+            return (left.publishedAt ?? .distantPast) > (right.publishedAt ?? .distantPast)
         }
     }
 
@@ -255,13 +280,66 @@ final class DiscoverViewModel: ObservableObject {
     private func localEngagement() -> [String: ChannelEngagement] {
         let episodes = episodesProvider()
         guard !episodes.isEmpty else { return [:] }
-        // Episodes store a channel NAME, while subscriptions are keyed by id, so
-        // the two are matched by title here.
+        // Episodes store a channel NAME while subscriptions are keyed by id, so the
+        // two are matched by title.
         let idByTitle = Dictionary(
             store.subscriptions.map { ($0.title, $0.channelId) },
             uniquingKeysWith: { first, _ in first })
         return Recommend.engagement(from: episodes) { episode in
-            episode.channel.flatMap { idByTitle[$0] }
+            guard let channel = episode.channel else { return nil }
+            // Falls back to the NAME as the key when the channel is not followed.
+            // Studying something you never subscribed to is still evidence of what
+            // you are studying, and keying only by id discarded it — which was the
+            // gap: watch history from unfollowed channels counted for nothing.
+            return idByTitle[channel] ?? channel
+        }
+    }
+
+    // One request covers every channel for 1 unit, and the answer does not change
+    // between a refresh and the exploration step, so it is loaded at most once.
+    private func loadTopicProfile(channelIds: [String]) async {
+        guard let api, topicProfile.isEmpty else { return }
+        topicProfile = (try? await api.fetchTopics(channelIds: channelIds)) ?? [:]
+    }
+
+    // Watch history for unfollowed channels is keyed by channel NAME (there is no id
+    // on a stored episode), while feed entries are keyed by id. This maps one onto the
+    // other so a channel you have studied but not followed still scores.
+    private func aliasedEngagement(_ entries: [DiscoverEntry]) -> [String: ChannelEngagement] {
+        var result = engagement
+        for entry in entries where result[entry.channelId] == nil {
+            if let byName = engagement[entry.channelTitle] {
+                result[entry.channelId] = byName
+            }
+        }
+        return result
+    }
+
+    // Long-form videos to start from, when there is no history to personalise with.
+    //
+    // Same budget rule as exploration: search.list costs 100 units from a 100-per-day
+    // bucket, so this runs once a day and is cached. The query rotates by day so two
+    // consecutive visits are not identical without spending a second search.
+    private func loadColdStart() async {
+        guard let api, coldStart.isEmpty else { return }
+
+        if coldStartCache.isFresh() {
+            coldStart = coldStartCache.videos()
+            return
+        }
+
+        let day = Int(Date().timeIntervalSince1970 / 86_400)
+        let query = Recommend.coldStartQuery(dayIndex: day)
+        // Marked before the request so a failure cannot retry and drain the day.
+        coldStartCache.markAttempted(topic: query)
+
+        coldStartLoading = true
+        defer { coldStartLoading = false }
+
+        let found = (try? await api.searchTopic(query: query)) ?? []
+        coldStart = Array(found.prefix(10))
+        if !coldStart.isEmpty {
+            coldStartCache.store(topic: query, videos: coldStart)
         }
     }
 
@@ -278,7 +356,9 @@ final class DiscoverViewModel: ObservableObject {
 
         // Profiling is free (1 unit for every channel at once), so it happens
         // before deciding whether the expensive search is worth it.
-        topicProfile = (try? await api.fetchTopics(channelIds: channelIds)) ?? [:]
+        // Already loaded during ranking, so this reuses it rather than spending a
+        // second request for the same answer.
+        await loadTopicProfile(channelIds: channelIds)
         var covered: [String: Int] = [:]
         for labels in topicProfile.values {
             for label in labels { covered[label, default: 0] += 1 }

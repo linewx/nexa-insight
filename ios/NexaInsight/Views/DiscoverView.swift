@@ -97,11 +97,28 @@ struct DiscoverView: View {
     @ViewBuilder
     private var latestTab: some View {
         if !vm.hasSubscriptions {
-            NXEmptyState(
-                title: "Follow a channel to fill this",
-                message: "Search for a video above and tap its channel name to follow it, or paste a channel link.",
-                actionTitle: "Paste a channel link",
-                action: { showAddChannel = true })
+            // Something to start from rather than an instruction. An empty screen
+            // that tells you to go find content puts the work on someone who has not
+            // yet seen what the app is for.
+            if vm.coldStartLoading && vm.coldStartCards.isEmpty {
+                skeletons
+            } else if vm.coldStartCards.isEmpty {
+                NXEmptyState(
+                    title: "Follow a channel to fill this",
+                    message: "Search for a video above and tap its channel name to follow it, or paste a channel link.",
+                    actionTitle: "Paste a channel link",
+                    action: { showAddChannel = true })
+            } else {
+                VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                    // Says where these came from, so they are not mistaken for a
+                    // feed the user built.
+                    Text("Long-form talks and podcasts to start with. Follow a channel to replace this with its uploads.")
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                    cardList(vm.coldStartCards)
+                }
+            }
         } else if let feedError = vm.feedError {
             NXErrorState(message: feedError, retry: { Task { await vm.refresh() } })
         } else if vm.loading && vm.entries.isEmpty {

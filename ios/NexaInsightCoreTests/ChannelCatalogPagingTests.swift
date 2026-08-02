@@ -375,3 +375,100 @@ final class ExplorationQuotaTests: XCTestCase {
         XCTAssertNotNil(vm.explorationTopic)
     }
 }
+
+
+// Cold start: what Discover shows before anything is followed.
+@MainActor
+final class ColdStartTests: XCTestCase {
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "ColdStartTests")!
+        defaults.removePersistentDomain(forName: "ColdStartTests")
+    }
+
+    private func makeVM(_ api: StubAPI?) -> DiscoverViewModel {
+        DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),   // deliberately empty
+            service: StubFeed(), api: api,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+    }
+
+    private func stub() -> StubAPI {
+        var api = StubAPI()
+        api.searchResults = [video("a"), video("b"), video("c")]
+        return api
+    }
+
+    // The point of the feature: an empty follow list produces content, not an
+    // instruction telling the user to go find some.
+    func testNoSubscriptionsYieldsSuggestions() async {
+        let api = stub()
+        let vm = makeVM(api)
+        await vm.refresh()
+        XCTAssertFalse(vm.hasSubscriptions)
+        XCTAssertEqual(vm.coldStartCards.map(\.videoId), ["a", "b", "c"])
+    }
+
+    // Same quota rule as exploration: search.list draws on a 100-per-day bucket, so
+    // pulling to refresh must not spend it again.
+    func testSearchesOncePerDay() async {
+        let api = stub()
+        let vm = makeVM(api)
+        await vm.refresh()
+        await vm.refresh()
+        await vm.refresh()
+        XCTAssertEqual(api.calls.searchQueries.count, 1)
+    }
+
+    // An empty or failed result still consumed the quota.
+    func testFailedSearchDoesNotRetryToday() async {
+        var api = stub()
+        api.searchResults = []
+        let vm = makeVM(api)
+        await vm.refresh()
+        await vm.refresh()
+        XCTAssertEqual(api.calls.searchQueries.count, 1)
+    }
+
+    // Without a key there is nothing to search with, and the screen falls back to the
+    // written prompt rather than showing a spinner forever.
+    func testNoApiKeyMeansNoSuggestionsAndNoSpinner() async {
+        let vm = makeVM(nil)
+        await vm.refresh()
+        XCTAssertTrue(vm.coldStartCards.isEmpty)
+        XCTAssertFalse(vm.coldStartLoading)
+    }
+
+    // Cold start and topic exploration share the cache type; they must not share a
+    // slot, or one would be served as the other.
+    func testColdStartAndExplorationDoNotShareCacheEntries() async {
+        let cold = ExplorationCache(defaults: defaults, namespace: "cold")
+        let exp = ExplorationCache(defaults: defaults, namespace: "exp")
+        cold.store(topic: "english learning podcast", videos: [video("x")])
+        XCTAssertTrue(cold.isFresh())
+        XCTAssertFalse(exp.isFresh(), "the other namespace is untouched")
+        XCTAssertTrue(exp.videos().isEmpty)
+    }
+
+    // Once channels exist, the feed replaces the suggestions.
+    func testSubscriptionsTakeOverFromColdStart() async {
+        var api = stub()
+        api.pages = [UploadsPage(videos: [video("feed")], nextPageToken: nil, totalCount: 1)]
+        let store = SubscriptionStore(defaults: defaults)
+        store.add(Subscription(channelId: "UCSHZKyawb77ixDdsGog4iWA", title: "Ch",
+                               addedAt: Date(timeIntervalSince1970: 0)))
+        let vm = DiscoverViewModel(
+            store: store, service: StubFeed(), api: api,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+        XCTAssertTrue(vm.coldStartCards.isEmpty, "no cold start once there is a real feed")
+        XCTAssertFalse(vm.feedCards.isEmpty)
+    }
+}

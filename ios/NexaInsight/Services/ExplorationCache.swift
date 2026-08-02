@@ -8,12 +8,18 @@ import Foundation
 // (uploads, topics, durations) costs 1 unit and needs no caching.
 final class ExplorationCache {
     private let defaults: UserDefaults
-    private let dayKey = "explorationDay"
-    private let topicKey = "explorationTopic"
-    private let payloadKey = "explorationVideos"
+    private let dayKey: String
+    private let topicKey: String
+    private let payloadKey: String
 
-    init(defaults: UserDefaults = .standard) {
+    // `namespace` lets cold start and topic exploration share this type without
+    // sharing a slot: both spend the same daily search budget, but a cold-start
+    // result must not be mistaken for a topic suggestion once channels exist.
+    init(defaults: UserDefaults = .standard, namespace: String = "exploration") {
         self.defaults = defaults
+        self.dayKey = "\(namespace)Day"
+        self.topicKey = "\(namespace)Topic"
+        self.payloadKey = "\(namespace)Videos"
     }
 
     // Day granularity rather than a timestamp: the quota resets daily, so "already

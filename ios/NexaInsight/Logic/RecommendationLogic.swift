@@ -61,21 +61,97 @@ enum Recommend {
         return result
     }
 
-    // Orders the feed by engagement, then recency within a channel.
+    // What a channel is about, and how much of your attention that subject has.
     //
-    // NOT a pure score sort: that would bury a brand-new upload from a channel you
-    // have not studied yet, and this is a feed of new things. Recency stays the
-    // primary axis inside a band, engagement decides which channels lead.
+    // Separate from ChannelEngagement because a topic's weight is shared across every
+    // channel carrying it: finishing three Veritasium episodes should lift a PBS Space
+    // Time upload too, since both report "Knowledge".
+    struct TopicAffinity: Equatable {
+        // Topic label -> summed engagement score of the channels carrying it.
+        var weights: [String: Double] = [:]
+
+        var strongest: Double { weights.values.max() ?? 0 }
+
+        // 0...1, so it can be blended with the other factors on one scale. Same floor
+        // as normalisedEngagement, and for the same reason.
+        func normalised(for topics: [String]) -> Double {
+            let best = max(Recommend.engagementFloor, strongest)
+            let mine = topics.compactMap { weights[$0] }.max() ?? 0
+            return min(1, mine / best)
+        }
+    }
+
+    static func topicAffinity(engagement: [String: ChannelEngagement],
+                              topics: [String: [String]]) -> TopicAffinity {
+        var weights: [String: Double] = [:]
+        for (channelId, entry) in engagement {
+            guard entry.score > 0, let labels = topics[channelId] else { continue }
+            for label in labels { weights[label, default: 0] += entry.score }
+        }
+        return TopicAffinity(weights: weights)
+    }
+
+    // Weights for the three factors. Subscription is deliberately NOT dominant: a
+    // channel followed once and never played was outranking everything, which is the
+    // behaviour this replaces.
+    static let subscriptionWeight = 0.35
+    static let topicWeight = 0.30
+    static let recencyWeight = 0.35
+
+    // A single blended score rather than the previous hard tiers.
+    //
+    // The old version sorted into recency bands first and only compared engagement
+    // inside a band, so time always won outright and topic never entered at all. Now
+    // all three contribute on a 0...1 scale, which lets a strong subject match pull an
+    // older upload above a fresh one from a channel you ignore — while a genuinely new
+    // upload from a channel you study still leads.
+    static func score(_ entry: DiscoverEntry,
+                      engagement: [String: ChannelEngagement],
+                      affinity: TopicAffinity,
+                      topics: [String: [String]],
+                      now: Date = Date()) -> Double {
+        let subscription = normalisedEngagement(entry.channelId, engagement: engagement)
+        let topic = affinity.normalised(for: topics[entry.channelId] ?? [])
+        return subscription * subscriptionWeight
+            + topic * topicWeight
+            + recencyScore(entry.published, now: now) * recencyWeight
+    }
+
+    // Relative to the most-studied channel, so one heavy user and one light user get
+    // the same spread rather than the light user's scores all rounding to zero.
+    //
+    // The divisor has a floor, though. Without it, a user whose only history is
+    // "added two episodes and played neither" had that channel normalise to a FULL
+    // score — the weak signal became the maximum simply for being the only one, which
+    // is the same "subscription dominates" problem in a new place. The floor is the
+    // score of one finished hour, so meaningful study is what earns 1.0.
+    static let engagementFloor = 5.0   // one finished episode (3) plus an hour (2)
+
+    static func normalisedEngagement(_ channelId: String,
+                                     engagement: [String: ChannelEngagement]) -> Double {
+        let best = max(engagementFloor, engagement.values.map(\.score).max() ?? 0)
+        return min(1, (engagement[channelId]?.score ?? 0) / best)
+    }
+
+    // Decays smoothly instead of stepping between bands: a 10-day-old upload should
+    // not rank identically to a 3-day-old one just because both fall in "this month".
+    // Half-life of a week, which matches how quickly a podcast feels stale.
+    static func recencyScore(_ date: Date, now: Date = Date()) -> Double {
+        let days = max(0, now.timeIntervalSince(date) / 86_400)
+        return pow(0.5, days / 7)
+    }
+
     static func rankedFeed(_ entries: [DiscoverEntry],
                            engagement: [String: ChannelEngagement],
+                           topics: [String: [String]] = [:],
                            now: Date = Date()) -> [DiscoverEntry] {
-        entries.sorted { left, right in
-            let leftBand = recencyBand(left.published, now: now)
-            let rightBand = recencyBand(right.published, now: now)
-            if leftBand != rightBand { return leftBand < rightBand }
-            let leftScore = engagement[left.channelId]?.score ?? 0
-            let rightScore = engagement[right.channelId]?.score ?? 0
-            if abs(leftScore - rightScore) > 0.01 { return leftScore > rightScore }
+        let affinity = topicAffinity(engagement: engagement, topics: topics)
+        return entries.sorted { left, right in
+            let leftScore = score(left, engagement: engagement, affinity: affinity,
+                                  topics: topics, now: now)
+            let rightScore = score(right, engagement: engagement, affinity: affinity,
+                                   topics: topics, now: now)
+            if abs(leftScore - rightScore) > 0.0001 { return leftScore > rightScore }
             return left.published > right.published
         }
     }
@@ -120,6 +196,38 @@ enum Recommend {
         "Health":     ["Science", "Psychology", "Philosophy"],
         "Lifestyle":  ["Psychology", "Philosophy", "History"],
     ]
+
+    // MARK: - Cold start
+
+    // What to show before there is anything to personalise from.
+    //
+    // Measured against the alternatives. `videos.list?chart=mostPopular` costs only
+    // 1 unit but returned 1 long-form video out of 12 — the rest music videos, game
+    // trailers and episode clips, useless for intensive listening. Restricting it to
+    // videoCategoryId=27 (Education) returns 404, and category 28 (Science & Tech)
+    // gave 1 of 10 over twenty minutes.
+    //
+    // `search.list` with videoDuration=long enforces the twenty-minute floor
+    // server-side, which is the filter mostPopular lacks: the same measurement
+    // returned 21–122 minute talks and podcasts for both queries below. It costs 100
+    // units from a 100-per-day bucket, so it runs once a day and is cached.
+    // Both of the subjects this app is for. Measured live: every result for these
+    // two ran 21–122 minutes, against 1-of-12 long-form from mostPopular.
+    static let coldStartQueries = [
+        "english learning podcast",
+        "technology deep dive",
+        "english conversation practice",
+        "software engineering talk",
+    ]
+
+    // Rotates by day, alternating between the two subjects rather than walking the
+    // list in order — so consecutive days do not both land on English or both on
+    // tech, and variety costs no extra search.
+    static func coldStartQuery(dayIndex: Int) -> String {
+        let subjects = abs(dayIndex) % 2                    // 0 = English, 1 = tech
+        let within = (abs(dayIndex) / 2) % 2
+        return coldStartQueries[subjects + within * 2]
+    }
 
     // A search query for a topic. Plain words rather than a topicId: searching by
     // topicId returned zero results when measured, while the same word as a query
