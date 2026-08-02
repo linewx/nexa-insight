@@ -179,7 +179,10 @@ final class DiscoverViewModel: ObservableObject {
         await refresh()
     }
 
-    func refresh() async {
+    // `forced` comes from pull-to-refresh. It re-runs the cold-start search even when
+    // today's is already cached, because a user who deliberately pulls is telling us
+    // the current content is wrong — and until now they had no way to act on that.
+    func refresh(forced: Bool = false) async {
         let channelIds = store.subscriptions.map(\.channelId)
         guard !channelIds.isEmpty else {
             entries = []
@@ -188,7 +191,7 @@ final class DiscoverViewModel: ObservableObject {
             feedError = nil
             // Nothing to build a feed from, so offer something to start with rather
             // than an empty screen and an instruction.
-            await loadColdStart()
+            await loadColdStart(forced: forced)
             return
         }
 
@@ -327,10 +330,14 @@ final class DiscoverViewModel: ObservableObject {
     // Same budget rule as exploration: search.list costs 100 units from a 100-per-day
     // bucket, so this runs once a day and is cached. The query rotates by day so two
     // consecutive visits are not identical without spending a second search.
-    private func loadColdStart() async {
-        guard coldStart.isEmpty else { return }
+    private func loadColdStart(forced: Bool = false) async {
+        guard forced || coldStart.isEmpty else { return }
 
-        if coldStartCache.isFresh() {
+        // A forced refresh skips the cache — but only where refetching is free. See
+        // the api branch below: search.list has 100 calls a DAY, so letting a gesture
+        // spend one each time would exhaust it in a couple of minutes of pulling.
+        let mayRefetch = forced && api == nil
+        if !mayRefetch, coldStartCache.isFresh() {
             coldStart = coldStartCache.videos()
             return
         }
@@ -343,6 +350,12 @@ final class DiscoverViewModel: ObservableObject {
 
         let found: [ChannelVideo]
         if let api {
+            // Still once a day even when forced: this is the expensive path, and a
+            // gesture must not be able to drain the day's budget.
+            if coldStartCache.isFresh() {
+                coldStart = coldStartCache.videos()
+                return
+            }
             // Marked before the request so a failure cannot retry and drain the
             // day's 100-unit search budget.
             coldStartCache.markAttempted(topic: query)

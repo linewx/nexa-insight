@@ -8,9 +8,16 @@ import Foundation
 // (uploads, topics, durations) costs 1 unit and needs no caching.
 final class ExplorationCache {
     private let defaults: UserDefaults
+    // Bumped whenever the SEARCH ITSELF changes — new query wording, a different
+    // date bound, another sort order. Without it a cached result from the old
+    // parameters counted as "already searched today", so a fix to the query looked
+    // like no change at all until the next day.
+    private static let schema = 2
+
     private let dayKey: String
     private let topicKey: String
     private let payloadKey: String
+    private let schemaKey: String
 
     // `namespace` lets cold start and topic exploration share this type without
     // sharing a slot: both spend the same daily search budget, but a cold-start
@@ -20,6 +27,7 @@ final class ExplorationCache {
         self.dayKey = "\(namespace)Day"
         self.topicKey = "\(namespace)Topic"
         self.payloadKey = "\(namespace)Videos"
+        self.schemaKey = "\(namespace)Schema"
     }
 
     // Day granularity rather than a timestamp: the quota resets daily, so "already
@@ -29,7 +37,8 @@ final class ExplorationCache {
     }
 
     func isFresh(now: Date = Date()) -> Bool {
-        defaults.integer(forKey: dayKey) == today(now)
+        guard defaults.integer(forKey: schemaKey) == Self.schema else { return false }
+        return defaults.integer(forKey: dayKey) == today(now)
     }
 
     func topic() -> String? { defaults.string(forKey: topicKey) }
@@ -42,6 +51,7 @@ final class ExplorationCache {
     }
 
     func store(topic: String, videos: [ChannelVideo], now: Date = Date()) {
+        defaults.set(Self.schema, forKey: schemaKey)
         defaults.set(today(now), forKey: dayKey)
         defaults.set(topic, forKey: topicKey)
         if let data = try? JSONEncoder().encode(videos.map(StoredVideo.init)) {
@@ -52,6 +62,7 @@ final class ExplorationCache {
     // Records that a search happened even when it produced nothing, so a failed or
     // empty search does not retry on every refresh and burn the day's quota.
     func markAttempted(topic: String, now: Date = Date()) {
+        defaults.set(Self.schema, forKey: schemaKey)
         defaults.set(today(now), forKey: dayKey)
         defaults.set(topic, forKey: topicKey)
         defaults.removeObject(forKey: payloadKey)

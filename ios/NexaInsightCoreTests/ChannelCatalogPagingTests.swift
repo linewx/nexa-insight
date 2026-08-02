@@ -455,6 +455,23 @@ final class ColdStartTests: XCTestCase {
         XCTAssertFalse(vm.coldStartLoading)
     }
 
+    // The quota is the reason forced refresh is not unconditional: search.list allows
+    // 100 calls a DAY, so a gesture that spent one each time would exhaust it within
+    // minutes of pulling.
+    func testPullToRefreshDoesNotSpendQuotaWhenAKeyExists() async {
+        let api = stub()
+        let vm = makeVM(api)
+
+        await vm.refresh()
+        XCTAssertEqual(api.calls.searchQueries.count, 1)
+
+        for _ in 0..<5 { await vm.refresh(forced: true) }
+
+        XCTAssertEqual(api.calls.searchQueries.count, 1,
+                       "five pulls must not mean five 100-unit searches")
+        XCTAssertFalse(vm.coldStartCards.isEmpty, "and the cached result still shows")
+    }
+
     // Cold start and topic exploration share the cache type; they must not share a
     // slot, or one would be served as the other.
     func testColdStartAndExplorationDoNotShareCacheEntries() async {
@@ -636,6 +653,23 @@ final class KeylessColdStartTests: XCTestCase {
         let vm = makeVM(feed)
         await vm.runSearch("andrew strominger black holes")
         XCTAssertEqual(feed.siteWideCalls.recentFlags.last, false)
+    }
+
+    // Pulling to refresh is an explicit "this is not what I want". Before this, a
+    // cached result from earlier in the day could not be replaced at all.
+    func testPullToRefreshResearchesWithoutAKey() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a")])
+        let vm = makeVM(feed)
+
+        await vm.refresh()
+        XCTAssertEqual(feed.siteWideCalls.queries.count, 1)
+
+        await vm.refresh()                      // ordinary refresh: cached
+        XCTAssertEqual(feed.siteWideCalls.queries.count, 1)
+
+        await vm.refresh(forced: true)          // pull: searches again
+        XCTAssertEqual(feed.siteWideCalls.queries.count, 2)
     }
 
     // A broken scrape leaves the written prompt rather than a permanent spinner.

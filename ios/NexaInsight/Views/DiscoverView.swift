@@ -64,7 +64,9 @@ struct DiscoverView: View {
         // "selected" meant nothing and tapping a card appeared to do nothing.
         .frame(maxWidth: 720, alignment: .leading)
         .task { await vm.refresh() }
-        .refreshable { await vm.refresh() }
+        // Pulling is an explicit "this is not what I want" — it re-searches rather
+        // than re-reading today's cache.
+        .refreshable { await vm.refresh(forced: true) }
         // One header per screen: the brand row above. Left visible, the navigation
         // bar drew a second band behind it in a different tone.
         .toolbar(.hidden, for: .navigationBar)
