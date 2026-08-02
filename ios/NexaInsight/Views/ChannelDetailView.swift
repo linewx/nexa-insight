@@ -13,7 +13,12 @@ struct ChannelDetailView: View {
     @StateObject var vm: ChannelDetailViewModel
     let importing: Bool
     let onImport: (String) -> Void
-    @State private var searchExpanded = false
+    @State private var showSearch = false
+    // Separate history per surface: searching inside one channel is a different
+    // activity from searching all of YouTube, and mixing the two lists would offer
+    // channel-specific terms on the site-wide page.
+    @StateObject private var history = SearchHistoryStore(
+        defaults: UserDefaults(suiteName: "channelSearchHistory") ?? .standard)
     @State private var playingId: String?
     @State private var showChannelHome = false
     @Environment(\.colorScheme) private var scheme
@@ -52,13 +57,11 @@ struct ChannelDetailView: View {
             }
             .nxPlainToolbarItem()
             ToolbarItem(placement: .topBarTrailing) {
-                CollapsibleSearchField(
-                    query: $vm.query,
-                    active: vm.isSearchActive,
-                    placeholder: "Search in this channel",
-                    onSubmit: { _ in Task { await vm.runSearch() } },
-                    onClear: vm.clearSearch,
-                    expanded: $searchExpanded)
+                Button { showSearch = true } label: {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(NXColor.text(scheme))
+                }
+                .accessibilityLabel("Search in this channel")
             }
             .nxPlainToolbarItem()
         }
@@ -67,6 +70,15 @@ struct ChannelDetailView: View {
         // grouped-item capsule squeezed it to a single vertical sliver.
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
+        .fullScreenCover(isPresented: $showSearch) {
+            // No onPasteLink: importing by URL belongs on Discover, not inside one
+            // channel's catalogue.
+            SearchScreen(
+                query: $vm.query,
+                history: history,
+                onSubmit: { _ in Task { await vm.runSearch() } },
+                onDismiss: { showSearch = false })
+        }
         .sheet(isPresented: $showChannelHome) {
             if let url = YouTubeWeb.channel(channelId: vm.channelId) {
                 WebPageSheet(title: vm.title, url: url)

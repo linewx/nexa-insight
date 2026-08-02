@@ -25,7 +25,7 @@ struct BrandHeader<Actions: View>: View {
         HStack(spacing: NXSpacing.x2) {
             BrandMark()
             Text("NexaInsight")
-                .font(.system(size: 22, weight: .bold))
+                .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(NXColor.text(scheme))
                 .lineLimit(1)
                 .fixedSize()
@@ -63,7 +63,7 @@ struct BrandHeader<Actions: View>: View {
 // The real app icon, not a lookalike drawn from an SF Symbol — the point is that
 // the header matches what you tapped on the home screen.
 struct BrandMark: View {
-    var size: CGFloat = 32
+    var size: CGFloat = 28
 
     var body: some View {
         Image("BrandIcon")
@@ -76,11 +76,6 @@ struct BrandMark: View {
     }
 }
 
-// A search field that starts as an icon and expands in place.
-//
-// The field was permanently docked below the title, ~48pt of chrome for something
-// used in bursts. As an icon it costs nothing until wanted, and the transcript or
-// feed gets the space back.
 struct CollapsibleSearchField: View {
     @Binding var query: String
     let active: Bool

@@ -34,6 +34,10 @@ targets:
               NSExceptionAllowsInsecureHTTPLoads: true
             mac-mini-2.tail.ganlin1981.online:
               NSExceptionAllowsInsecureHTTPLoads: true
+            vm01.ganlin1981.online:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            8.130.166.67:
+              NSExceptionAllowsInsecureHTTPLoads: true
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -47,7 +51,7 @@ targets:
         SWIFT_VERSION: "5.9"
         # Device signing: automatic, against the one Apple Development team on
         # this machine. Team ID read from the codesigning cert (OU=CCGQFW2P89).
-        DEVELOPMENT_TEAM: CCGQFW2P89
+        DEVELOPMENT_TEAM: 45649FJLF2
         CODE_SIGN_STYLE: Automatic
 # Unit tests run via the SwiftPM package (NexaInsightCore-Package scheme),
 # which already builds+tests for both macOS and the iOS simulator. This

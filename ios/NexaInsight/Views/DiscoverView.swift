@@ -22,7 +22,8 @@ struct DiscoverView: View {
     // the view — the card said "Add to Nexa" forever before this.
     var importedVideoIds: () -> Set<String> = { [] }
     @State private var showAddChannel = false
-    @State private var searchExpanded = false
+    @State private var showSearch = false
+    @StateObject private var history = SearchHistoryStore()
     @State private var playingId: String?
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -34,24 +35,20 @@ struct DiscoverView: View {
         // the navigation bar, which collapsed it on scroll.
         VStack(alignment: .leading, spacing: 0) {
             BrandHeader {
-                CollapsibleSearchField(
-                    query: $vm.query,
-                    active: vm.isSearchActive,
-                    placeholder: "Search videos",
-                    onSubmit: { term in Task { await vm.runSearch(term) } },
-                    onClear: vm.clearSearch,
-                    onPasteLink: onAddToNexa,
-                    expanded: $searchExpanded)
-
-                // Pasting a link keeps its own button: folding it behind the search
-                // icon would add a tap to the one action that has no alternative.
-                if !searchExpanded && !vm.isSearchActive {
-                    Button { showAddChannel = true } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 19, weight: .medium))
-                    }
-                    .accessibilityLabel("Follow a channel by link")
+                // Opens the full-screen page rather than expanding here. Sharing a
+                // 44pt bar with the brand and another icon left the field cramped,
+                // and typing in it left a stale feed sitting behind.
+                Button { showSearch = true } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 19, weight: .medium))
                 }
+                .accessibilityLabel("Search")
+
+                Button { showAddChannel = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 19, weight: .medium))
+                }
+                .accessibilityLabel("Follow a channel by link")
             }
 
             // The row above stays put; only this scrolls.
@@ -73,6 +70,14 @@ struct DiscoverView: View {
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showAddChannel) {
             AddChannelSheet(vm: vm)
+        }
+        .fullScreenCover(isPresented: $showSearch) {
+            SearchScreen(
+                query: $vm.query,
+                history: history,
+                onSubmit: { term in Task { await vm.runSearch(term) } },
+                onDismiss: { showSearch = false },
+                onPasteLink: onAddToNexa)
         }
 
     }
