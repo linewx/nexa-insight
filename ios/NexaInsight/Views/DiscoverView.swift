@@ -105,6 +105,15 @@ struct DiscoverView: View {
             if vm.coldStartLoading && vm.coldStartCards.isEmpty {
                 skeletons
             } else if vm.coldStartCards.isEmpty {
+                if let diagnostic = vm.coldStartDiagnostic {
+                    // Why it is empty, rather than a generic prompt that hides the
+                    // reason. Reachable device logs would be better; this is what is
+                    // available.
+                    Text(diagnostic)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 NXEmptyState(
                     title: "Follow a channel to fill this",
                     message: "Search for a video above and tap its channel name to follow it, or paste a channel link.",

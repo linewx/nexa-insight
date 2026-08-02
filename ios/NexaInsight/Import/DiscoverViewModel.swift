@@ -1,4 +1,10 @@
 import Foundation
+import OSLog
+
+// stderr (NexaLog) is invisible on a device. os.Logger reaches the system log, which
+// `log stream` can read — the only way to see why cold start does nothing on hardware
+// when it works in the simulator.
+private let coldStartLog = Logger(subsystem: "com.nexainsight.app", category: "coldStart")
 
 // State for the Discover screen.
 //
@@ -62,6 +68,10 @@ final class DiscoverViewModel: ObservableObject {
     // than "what is next to what I already study".
     @Published var coldStart: [ChannelVideo] = []
     @Published var coldStartLoading = false
+    // Shown on screen when suggestions come back empty. Device logs are not reachable
+    // from the command line, and three rounds of guessing at why this produced nothing
+    // cost more than a visible line of text would have.
+    @Published var coldStartDiagnostic: String?
     // Engagement per channel, from local playback data. No network cost.
     private var engagement: [String: ChannelEngagement] = [:]
     // How the app learns what a channel is about, so it knows what is adjacent.
@@ -184,6 +194,7 @@ final class DiscoverViewModel: ObservableObject {
     // the current content is wrong — and until now they had no way to act on that.
     func refresh(forced: Bool = false) async {
         let channelIds = store.subscriptions.map(\.channelId)
+        coldStartLog.notice("refresh forced=\(forced) channels=\(channelIds.count)")
         guard !channelIds.isEmpty else {
             entries = []
             apiEntries = []
@@ -331,7 +342,11 @@ final class DiscoverViewModel: ObservableObject {
     // bucket, so this runs once a day and is cached. The query rotates by day so two
     // consecutive visits are not identical without spending a second search.
     private func loadColdStart(forced: Bool = false) async {
-        guard forced || coldStart.isEmpty else { return }
+        coldStartLog.notice("enter forced=\(forced) existing=\(self.coldStart.count) hasKey=\(self.api != nil)")
+        guard forced || coldStart.isEmpty else {
+            coldStartLog.notice("skipped: not forced and \(self.coldStart.count) already loaded")
+            return
+        }
 
         // The scraped path is free, so a pull always refetches there. The keyed path
         // spends 1 of 100 daily searches, so it refetches only if today's has not been
@@ -348,6 +363,7 @@ final class DiscoverViewModel: ObservableObject {
         let alreadySearchedToday = coldStartCache.isFresh()
         if !forced, alreadySearchedToday {
             coldStart = coldStartCache.videos()
+            coldStartLog.notice("served \(self.coldStart.count) from today's cache")
             return
         }
 
@@ -357,21 +373,31 @@ final class DiscoverViewModel: ObservableObject {
         coldStartLoading = true
         defer { coldStartLoading = false }
 
-        let found: [ChannelVideo]
-        if let api {
-            // Marked before the request so a failure cannot retry and drain the
-            // day's 100-unit search budget.
+        coldStartLog.notice("searching query=\(query, privacy: .public)")
+        var path = "scrape"
+        var found: [ChannelVideo] = []
+
+        // The scraped path FIRST, even when a key exists.
+        //
+        // Measured on the device: the identical request that returns 10 items from this
+        // Mac returned 0 on the phone, because googleapis.com is unreachable there
+        // while youtube.com is not — which is also why site-wide search kept working
+        // when suggestions did not. A key that cannot be reached is worse than no key,
+        // and `try?` was turning that into a silent empty list.
+        switch await service.searchVideosSiteWide(query: query, recentOnly: true) {
+        // One per channel here as well. The API path applies this inside the client,
+        // and without it the scraped results let a single prolific podcast take four
+        // of the ten slots — the same defect in the path that now runs first.
+        case .parsed(let videos): found = Recommend.diversified(videos)
+        case .structureMissing: found = []
+        }
+
+        // Only if scraping produced nothing does the API get a turn — it has better
+        // metadata when it is reachable at all.
+        if found.isEmpty, let api {
+            path = "api"
             coldStartCache.markAttempted(topic: query)
             found = (try? await api.searchTopic(query: query)) ?? []
-        } else {
-            // No key is the normal first-run state, and a first-run user is exactly
-            // who needs something to look at. The scraped search needs no key and no
-            // quota, so it is not cached by day either — falling back to a written
-            // prompt here would have made the empty screen the default experience.
-            switch await service.searchVideosSiteWide(query: query, recentOnly: true) {
-            case .parsed(let videos): found = videos
-            case .structureMissing: found = []
-            }
         }
 
         // An empty result must not wipe what is on screen. A pull that fails — the
@@ -379,6 +405,10 @@ final class DiscoverViewModel: ObservableObject {
         // suggestions rather than clearing the feed, which would make refreshing
         // riskier than not refreshing.
         let fresh = Array(found.prefix(10))
+        coldStartLog.notice("got \(found.count) results, keeping \(fresh.count)")
+        coldStartDiagnostic = fresh.isEmpty
+            ? "No results · \(path) · \"\(query)\" · \(found.count) returned"
+            : nil
         if !fresh.isEmpty {
             coldStart = fresh
         } else if coldStart.isEmpty, alreadySearchedToday {

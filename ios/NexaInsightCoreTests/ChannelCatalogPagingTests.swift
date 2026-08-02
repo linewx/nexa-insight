@@ -501,6 +501,52 @@ final class ColdStartTests: XCTestCase {
                        "an unversioned entry must not count as today's search")
     }
 
+    // The scraped path runs FIRST, even when a key is configured.
+    //
+    // Measured on the device: the identical request that returned 10 items from a Mac
+    // returned 0 on the phone, because googleapis.com is unreachable there while
+    // youtube.com is not. `try?` turned that into a silent empty list, so a key that
+    // could not be reached was worse than no key at all.
+    func testScrapedPathIsPreferredOverTheAPI() async {
+        var api = stub()
+        api.searchResults = [video("fromApi")]
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("fromScrape")])
+
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: api,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+
+        XCTAssertEqual(vm.coldStart.map(\.videoId), ["fromScrape"])
+        XCTAssertTrue(api.calls.searchQueries.isEmpty,
+                      "the API is not called when scraping succeeded")
+    }
+
+    // It still falls back, since the API has better metadata where it is reachable.
+    func testAPIIsUsedWhenScrapingFails() async {
+        var api = stub()
+        api.searchResults = [video("fromApi")]
+        var feed = StubFeed()
+        feed.siteWideOutcome = .structureMissing
+
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: api,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+
+        XCTAssertEqual(vm.coldStart.map(\.videoId), ["fromApi"])
+        XCTAssertEqual(api.calls.searchQueries.count, 1)
+    }
+
     // A pull always refetches, even with a key. This replaces a guard that limited
     // pulls to protect the daily search budget — that limit made the gesture a no-op
     // and left a stale list unreplaceable, which was the worse problem.
