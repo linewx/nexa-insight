@@ -51,7 +51,15 @@ private struct StubFeed: DiscoverFeedFetching {
     func resolveChannel(fromURL url: String) async throws -> Subscription {
         throw DiscoverFeedError.unrecognizedChannelLink
     }
-    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome { .parsed([]) }
+    var siteWideOutcome: ChannelVideoOutcome = .parsed([])
+    let siteWideCalls = SiteWideCalls()
+
+    final class SiteWideCalls { var queries: [String] = [] }
+
+    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome {
+        siteWideCalls.queries.append(query)
+        return siteWideOutcome
+    }
     func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome { .parsed([]) }
     func fetchChannelUploads(channelId: String) async -> [DiscoverEntry] { uploads }
     func fetchChannelHeader(channelId: String) async -> ChannelHeader { .empty }
@@ -550,5 +558,71 @@ final class LazyAPIResolutionTests: XCTestCase {
 
         XCTAssertEqual(vm.coldStartCards.count, 2,
                        "a key added after init must work without relaunching")
+    }
+}
+
+
+// The first-run case: no API key, which is what every new user has.
+@MainActor
+final class KeylessColdStartTests: XCTestCase {
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "KeylessColdStartTests")!
+        defaults.removePersistentDomain(forName: "KeylessColdStartTests")
+    }
+
+    private func makeVM(_ feed: StubFeed) -> DiscoverViewModel {
+        DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),   // no channels
+            service: feed,
+            api: nil,                                        // and no key
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+    }
+
+    // Without this, a brand-new install showed a prompt telling the user to go find
+    // content — the empty screen was the default first experience, even though the
+    // scraped search needs neither a key nor quota.
+    func testSuggestsWithoutAnApiKey() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a"), video("b")])
+        let vm = makeVM(feed)
+
+        await vm.refresh()
+
+        XCTAssertEqual(vm.coldStartCards.count, 2)
+        XCTAssertEqual(feed.siteWideCalls.queries.count, 1)
+        XCTAssertTrue(Recommend.coldStartQueries.contains(feed.siteWideCalls.queries[0]))
+    }
+
+    // The scraped path costs no quota, so the daily cache must not lock it out — that
+    // throttle exists only to protect the 100-per-day search.list budget.
+    func testKeylessPathIsNotRateLimitedByTheDailyCache() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a")])
+        let vm = makeVM(feed)
+
+        await vm.refresh()
+        XCTAssertFalse(vm.coldStart.isEmpty)
+
+        // A second view model on the same defaults, as a relaunch would produce.
+        let again = makeVM(feed)
+        await again.refresh()
+        XCTAssertFalse(again.coldStart.isEmpty, "no key means no quota to preserve")
+    }
+
+    // A broken scrape leaves the written prompt rather than a permanent spinner.
+    func testStructureMissingLeavesNoSuggestionsAndNoSpinner() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .structureMissing
+        let vm = makeVM(feed)
+
+        await vm.refresh()
+
+        XCTAssertTrue(vm.coldStartCards.isEmpty)
+        XCTAssertFalse(vm.coldStartLoading)
     }
 }

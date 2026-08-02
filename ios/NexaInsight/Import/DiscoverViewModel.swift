@@ -328,7 +328,7 @@ final class DiscoverViewModel: ObservableObject {
     // bucket, so this runs once a day and is cached. The query rotates by day so two
     // consecutive visits are not identical without spending a second search.
     private func loadColdStart() async {
-        guard let api, coldStart.isEmpty else { return }
+        guard coldStart.isEmpty else { return }
 
         if coldStartCache.isFresh() {
             coldStart = coldStartCache.videos()
@@ -337,15 +337,29 @@ final class DiscoverViewModel: ObservableObject {
 
         let day = Int(Date().timeIntervalSince1970 / 86_400)
         let query = Recommend.coldStartQuery(dayIndex: day)
-        // Marked before the request so a failure cannot retry and drain the day.
-        coldStartCache.markAttempted(topic: query)
 
         coldStartLoading = true
         defer { coldStartLoading = false }
 
-        let found = (try? await api.searchTopic(query: query)) ?? []
+        let found: [ChannelVideo]
+        if let api {
+            // Marked before the request so a failure cannot retry and drain the
+            // day's 100-unit search budget.
+            coldStartCache.markAttempted(topic: query)
+            found = (try? await api.searchTopic(query: query)) ?? []
+        } else {
+            // No key is the normal first-run state, and a first-run user is exactly
+            // who needs something to look at. The scraped search needs no key and no
+            // quota, so it is not cached by day either — falling back to a written
+            // prompt here would have made the empty screen the default experience.
+            switch await service.searchVideosSiteWide(query: query) {
+            case .parsed(let videos): found = videos
+            case .structureMissing: found = []
+            }
+        }
+
         coldStart = Array(found.prefix(10))
-        if !coldStart.isEmpty {
+        if !coldStart.isEmpty, api != nil {
             coldStartCache.store(topic: query, videos: coldStart)
         }
     }
