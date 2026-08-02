@@ -69,9 +69,14 @@ final class DiscoverViewModel: ObservableObject {
 
     private let store: SubscriptionStore
     private let service: DiscoverFeedFetching
-    // nil when no API key is configured, which is the normal state for a user who
-    // has not set one up. Every path degrades to RSS rather than erroring.
-    private let api: YouTubeAPIFetching?
+    // Resolved on each use, NOT captured at init.
+    //
+    // This view model is built with @StateObject, so its initialiser runs once for
+    // the lifetime of the screen. Holding the client meant a key entered in Settings
+    // did nothing until the app was relaunched — the feature looked broken for anyone
+    // who set the key up in the obvious order.
+    private let apiProvider: () -> YouTubeAPIFetching?
+    private var api: YouTubeAPIFetching? { apiProvider() }
 
     // Local engagement data, injected so this stays testable without a store.
     private let episodesProvider: () -> [EpisodeDTO]
@@ -84,13 +89,15 @@ final class DiscoverViewModel: ObservableObject {
     init(store: SubscriptionStore,
          service: DiscoverFeedFetching,
          api: YouTubeAPIFetching? = nil,
+         apiProvider: (() -> YouTubeAPIFetching?)? = nil,
          episodesProvider: @escaping () -> [EpisodeDTO] = { [] },
          explorationCache: ExplorationCache = ExplorationCache(),
          bylineLocale: @escaping () -> Locale = { DiscoverFormat.defaultLocale },
          coldStartCache: ExplorationCache? = nil) {
         self.store = store
         self.service = service
-        self.api = api
+        // The explicit `api` argument stays for tests, which inject a stub directly.
+        self.apiProvider = apiProvider ?? { api }
         self.episodesProvider = episodesProvider
         self.explorationCache = explorationCache
         self.bylineLocale = bylineLocale

@@ -472,3 +472,83 @@ final class ColdStartTests: XCTestCase {
         XCTAssertFalse(vm.feedCards.isEmpty)
     }
 }
+
+
+// The cache round-trip, which is where cold start silently produced nothing: the
+// search had succeeded and 10 videos were stored, but the screen still showed the
+// empty-state prompt.
+@MainActor
+final class ExplorationCacheRoundTripTests: XCTestCase {
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "ExplorationCacheRoundTripTests")!
+        defaults.removePersistentDomain(forName: "ExplorationCacheRoundTripTests")
+    }
+
+    func testStoredVideosSurviveAndStillBuildCards() {
+        let cache = ExplorationCache(defaults: defaults, namespace: "cold")
+        let original = ChannelVideo(
+            videoId: "XyXBwO5jYpw", title: "How to Stay Ahead as a Software Engineer",
+            durationText: "1:02:03", viewsText: "10K views", publishedText: "2 days ago",
+            summary: "a talk", thumbnailURL: URL(string: "https://i.ytimg.com/vi/x/hq.jpg"),
+            channelTitle: "Some Channel", channelId: "UCSHZKyawb77ixDdsGog4iWA")
+
+        cache.store(topic: "software engineering talk", videos: [original])
+        let restored = cache.videos()
+
+        XCTAssertEqual(restored.count, 1, "the payload decodes")
+        XCTAssertEqual(restored.first?.videoId, original.videoId)
+        XCTAssertEqual(restored.first?.durationText, "1:02:03")
+
+        // The step that actually failed: a restored video must still form a card.
+        // VideoCardItem's initialiser is failable on watchURL, so a round trip that
+        // loses videoId yields an empty list and an apparently broken feature.
+        let cards = restored.compactMap { VideoCardItem($0) }
+        XCTAssertEqual(cards.count, 1, "restored videos must still produce cards")
+        XCTAssertEqual(cards.first?.title, original.title)
+    }
+}
+
+
+// Regression lock on the reason cold start appeared broken: the client was captured
+// at init, and DiscoverViewModel is a @StateObject whose initialiser runs once for the
+// life of the screen. A key entered in Settings therefore did nothing until relaunch.
+@MainActor
+final class LazyAPIResolutionTests: XCTestCase {
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "LazyAPIResolutionTests")!
+        defaults.removePersistentDomain(forName: "LazyAPIResolutionTests")
+    }
+
+    func testKeyAddedAfterInitTakesEffectOnNextRefresh() async {
+        // Starts with no key, exactly as a first launch does.
+        final class Box { var api: YouTubeAPIFetching? }
+        let box = Box()
+
+        var stub = StubAPI()
+        stub.searchResults = [video("a"), video("b")]
+
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: StubFeed(),
+            apiProvider: { box.api },
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+        XCTAssertTrue(vm.coldStartCards.isEmpty, "no key yet, so nothing to suggest")
+
+        // The user enters a key in Settings; no relaunch.
+        box.api = stub
+        await vm.refresh()
+
+        XCTAssertEqual(vm.coldStartCards.count, 2,
+                       "a key added after init must work without relaunching")
+    }
+}

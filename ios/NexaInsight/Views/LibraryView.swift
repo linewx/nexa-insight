@@ -33,7 +33,10 @@ struct LibraryView: View {
         _discover = StateObject(wrappedValue: DiscoverViewModel(
             store: subscriptionStore,
             service: DiscoverFeedService(),
-            api: Self.youtubeAPI(),
+            // A closure, not a value: this initialiser runs once for the life of the
+            // screen, so capturing the client meant a key entered in Settings did
+            // nothing until the app was relaunched.
+            apiProvider: { Self.youtubeAPI() },
             // Ranking reads local playback data: what was finished, how long was
             // listened. No network cost, and a truer signal than the follow list.
             episodesProvider: { store.downloadedEpisodes() },
