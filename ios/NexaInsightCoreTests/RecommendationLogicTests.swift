@@ -176,22 +176,41 @@ final class RecommendationLogicTests: XCTestCase {
 
     // MARK: - Cold start
 
-    // Rotates between the two subjects rather than walking the list in order, so two
-    // consecutive days do not both land on English or both on tech.
-    func testColdStartAlternatesSubjects() {
-        let english = ["english learning podcast", "english conversation practice"]
-        XCTAssertTrue(english.contains(Recommend.coldStartQuery(dayIndex: 0)))
-        XCTAssertFalse(english.contains(Recommend.coldStartQuery(dayIndex: 1)))
-        XCTAssertTrue(english.contains(Recommend.coldStartQuery(dayIndex: 2)))
-        XCTAssertNotEqual(Recommend.coldStartQuery(dayIndex: 0),
-                          Recommend.coldStartQuery(dayIndex: 2),
-                          "and varies within a subject across days")
+    // Cycles subjects before repeating one, so consecutive days never land on the
+    // same subject.
+    func testColdStartNeverRepeatsASubjectOnConsecutiveDays() {
+        func subjectIndex(_ day: Int) -> Int {
+            let q = Recommend.coldStartQuery(dayIndex: day)
+            return Recommend.coldStartSubjects.firstIndex { $0.contains(q) } ?? -1
+        }
+        for day in 0..<9 {
+            XCTAssertNotEqual(subjectIndex(day), subjectIndex(day + 1),
+                              "day \(day) and \(day + 1) share a subject")
+        }
     }
 
-    func testColdStartCoversBothSubjects() {
-        let queries = (0..<8).map { Recommend.coldStartQuery(dayIndex: $0) }
-        XCTAssertTrue(queries.contains { $0.contains("english") })
-        XCTAssertTrue(queries.contains { $0.contains("technology") || $0.contains("software") })
+    // All three subjects appear within a week, and the wording varies across cycles
+    // so a returning user is not shown the identical query every third day.
+    func testColdStartCoversEverySubjectAndVariesWording() {
+        let week = (0..<7).map { Recommend.coldStartQuery(dayIndex: $0) }
+        for subject in Recommend.coldStartSubjects {
+            XCTAssertTrue(week.contains { subject.contains($0) },
+                          "a week should reach \(subject.first ?? "")")
+        }
+        XCTAssertNotEqual(Recommend.coldStartQuery(dayIndex: 0),
+                          Recommend.coldStartQuery(dayIndex: 3),
+                          "same subject, different wording on the next cycle")
+    }
+
+    // The queries themselves were chosen by measuring median view counts, so the
+    // list must stay the measured wording rather than drifting back to phrasing that
+    // reads well: "technology deep dive" returned a 35,627 median against 1,664,861
+    // for "ai podcast".
+    func testColdStartUsesTheMeasuredQueries() {
+        XCTAssertTrue(Recommend.coldStartQueries.contains("ai podcast"))
+        XCTAssertTrue(Recommend.coldStartQueries.contains("business podcast"))
+        XCTAssertTrue(Recommend.coldStartQueries.contains("learn english conversation"))
+        XCTAssertFalse(Recommend.coldStartQueries.contains("technology deep dive"))
     }
 
     func testEngagementOrdersWithinABand() {
@@ -250,6 +269,52 @@ final class RecommendationLogicTests: XCTestCase {
     func testQueriesAreWordsNotTopicIds() {
         XCTAssertEqual(Recommend.query(for: "History"), "history documentary")
         XCTAssertFalse(Recommend.query(for: "Philosophy").contains("/m/"))
+    }
+
+    // MARK: - Quality and diversity
+
+    private func chVideo(_ id: String, channel: String?) -> ChannelVideo {
+        ChannelVideo(videoId: id, title: "T\(id)", durationText: nil, viewsText: nil,
+                     publishedText: nil, summary: nil, thumbnailURL: nil,
+                     channelTitle: channel, channelId: channel)
+    }
+
+    // Relevance ordering let one prolific podcast take 4 of 10 slots, which is one
+    // suggestion repeated rather than a set of them.
+    func testDiversifiedKeepsOnePerChannel() {
+        let videos = [
+            chVideo("a1", channel: "UCa"), chVideo("a2", channel: "UCa"),
+            chVideo("b1", channel: "UCb"), chVideo("a3", channel: "UCa"),
+            chVideo("c1", channel: "UCc"),
+        ]
+        XCTAssertEqual(Recommend.diversified(videos).map(\.videoId), ["a1", "b1", "c1"])
+    }
+
+    func testDiversifiedPreservesOrder() {
+        let videos = [chVideo("z", channel: "UCz"), chVideo("a", channel: "UCa")]
+        XCTAssertEqual(Recommend.diversified(videos).map(\.videoId), ["z", "a"],
+                       "the view-count ordering from the search is not re-sorted")
+    }
+
+    // Dropping them would silently lose results rather than merely reordering.
+    func testVideosWithoutAChannelIdAreKept() {
+        let videos = [chVideo("x", channel: nil), chVideo("y", channel: nil)]
+        XCTAssertEqual(Recommend.diversified(videos).count, 2)
+    }
+
+    func testPerChannelLimitIsConfigurable() {
+        let videos = [
+            chVideo("a1", channel: "UCa"), chVideo("a2", channel: "UCa"),
+            chVideo("a3", channel: "UCa"),
+        ]
+        XCTAssertEqual(Recommend.diversified(videos, perChannel: 2).count, 2)
+    }
+
+    // The floor exists because the measured spread ran from 755,241 views down to
+    // 2,570 — the tail is unwatched material, not a milder version of the head.
+    func testQualityThresholdsAreSet() {
+        XCTAssertGreaterThan(Recommend.minimumViews, 0)
+        XCTAssertGreaterThan(Recommend.minimumSubscribers, 0)
     }
 
     // MARK: - Insertion

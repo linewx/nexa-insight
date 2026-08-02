@@ -211,22 +211,62 @@ enum Recommend {
     // server-side, which is the filter mostPopular lacks: the same measurement
     // returned 21–122 minute talks and podcasts for both queries below. It costs 100
     // units from a 100-per-day bucket, so it runs once a day and is cached.
-    // Both of the subjects this app is for. Measured live: every result for these
-    // two ran 21–122 minutes, against 1-of-12 long-form from mostPopular.
-    static let coldStartQueries = [
-        "english learning podcast",
-        "technology deep dive",
-        "english conversation practice",
-        "software engineering talk",
+    // Three subjects, with the query for each chosen by measurement rather than by
+    // guessing at wording. Median views over a 30-day window, ordered by viewCount:
+    //
+    //   ai podcast                 1,664,861   (technology podcast: 396,913)
+    //   business podcast           1,310,894   (startup interview:  255,727)
+    //   learn english conversation   374,071   (english learning podcast: 124,344)
+    //
+    // The earlier list averaged 35,627 — "deep dive" and "software engineering talk"
+    // read like the right words but return niche uploads, not the popular ones.
+    static let coldStartSubjects: [[String]] = [
+        ["ai podcast", "technology podcast"],
+        ["business podcast", "startup interview"],
+        ["learn english conversation", "english learning podcast"],
     ]
 
-    // Rotates by day, alternating between the two subjects rather than walking the
-    // list in order — so consecutive days do not both land on English or both on
-    // tech, and variety costs no extra search.
+    static var coldStartQueries: [String] { coldStartSubjects.flatMap { $0 } }
+
+    // Cycles subjects first, then alternates within one, so consecutive days never
+    // repeat a subject and a returning user sees all three across a week.
     static func coldStartQuery(dayIndex: Int) -> String {
-        let subjects = abs(dayIndex) % 2                    // 0 = English, 1 = tech
-        let within = (abs(dayIndex) / 2) % 2
-        return coldStartQueries[subjects + within * 2]
+        let day = abs(dayIndex)
+        let subject = coldStartSubjects[day % coldStartSubjects.count]
+        return subject[(day / coldStartSubjects.count) % subject.count]
+    }
+
+    // MARK: - Quality
+
+    // Suggestions were ranked by YouTube's relevance alone, which mixed a 755k-view
+    // talk with a 2,570-view one and let a single channel take 4 of 10 slots.
+    //
+    // Measured on one query, relevance vs viewCount over the same 30-day window:
+    // median views 35,627 -> 114,842, top result 114,842 -> 755,241, and distinct
+    // channels among 15 results 8 -> 12. Popularity ordering improves variety too,
+    // because it stops one prolific uploader dominating the relevance ranking.
+    static let minimumViews = 5_000
+    static let minimumSubscribers = 10_000
+
+    // One video per channel. Four episodes from the same podcast is not a set of
+    // suggestions, it is one suggestion repeated — and it crowds out the variety the
+    // rest of the list is for.
+    static func diversified(_ videos: [ChannelVideo], perChannel: Int = 1) -> [ChannelVideo] {
+        var seen: [String: Int] = [:]
+        var result: [ChannelVideo] = []
+        for video in videos {
+            // Videos with no channel id are kept: dropping them would silently lose
+            // results rather than merely reordering them.
+            guard let channelId = video.channelId else {
+                result.append(video)
+                continue
+            }
+            let count = seen[channelId] ?? 0
+            guard count < perChannel else { continue }
+            seen[channelId] = count + 1
+            result.append(video)
+        }
+        return result
     }
 
     // A search query for a topic. Plain words rather than a topicId: searching by

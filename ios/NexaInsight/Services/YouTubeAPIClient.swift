@@ -121,28 +121,37 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
             URLQueryItem(name: "videoDuration", value: "long"),
             URLQueryItem(name: "relevanceLanguage", value: "en"),
             URLQueryItem(name: "maxResults", value: "10"),
-            // Recent, but still ranked by relevance rather than by date.
-            //
-            // Measured on one query: unbounded relevance gave a median age of 205
-            // days (oldest 400). order=date gave everything uploaded today — which
-            // sounds better and is worse, since nothing has been watched yet and
-            // quality is unfiltered. Relevance within the last month gave a median
-            // of 8 days, which is both current and vetted.
+            // Recent, but not sorted by date. Measured on one query: with no bound
+            // the median age was 205 days (oldest 400). order=date returned only
+            // videos uploaded that same day — nothing watched yet, so no quality
+            // signal at all. A 30-day window keeps both properties available.
             URLQueryItem(name: "publishedAfter", value: Self.thirtyDaysAgo()),
+            // Popularity, not relevance. Measured on the same query and window:
+            // median views 35,627 -> 114,842, and 12 distinct channels among 15
+            // results instead of 8, since relevance let one prolific uploader take
+            // four slots.
+            URLQueryItem(name: "order", value: "viewCount"),
             URLQueryItem(name: "key", value: apiKey),
         ])
         let found = try YouTubeAPIParser.parseSearch(data)
         // Durations come from a second endpoint, as with uploads. Failing that must
         // not lose the results.
         let details = (try? await fetchDetails(videoIds: found.map(\.videoId))) ?? [:]
-        return found.compactMap { video in
+        let enriched = found.compactMap { video -> ChannelVideo? in
             guard let detail = details[video.videoId] else { return video }
             guard !detail.isShort else { return nil }
-            var enriched = video
-            enriched.durationText = detail.durationText
-            enriched.viewsText = detail.viewsText
-            return enriched
+            // Below the floor is not worth a suggestion slot. The measured spread on
+            // one query ran from 755,241 views down to 2,570 — the tail is not a
+            // milder version of the head, it is unwatched material.
+            if let views = detail.viewCount, views < Recommend.minimumViews { return nil }
+            var copy = video
+            copy.durationText = detail.durationText
+            copy.viewsText = detail.viewsText
+            return copy
         }
+        // One per channel: four episodes of the same podcast is one suggestion
+        // repeated, and it was taking 4 of 10 slots.
+        return Recommend.diversified(enriched)
     }
 
     static func thirtyDaysAgo(from now: Date = Date()) -> String {

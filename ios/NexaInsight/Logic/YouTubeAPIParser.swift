@@ -127,6 +127,10 @@ enum YouTubeAPIParser {
     struct VideoDetail: Equatable {
         let durationText: String?   // "3:46:18"
         let viewsText: String?      // "220,947 views"
+        // The number as well as the string: quality filtering has to compare against
+        // a threshold, and re-parsing "220,947 views" back into an Int would be
+        // undoing work this type already did.
+        let viewCount: Int?
         let isShort: Bool
     }
 
@@ -140,9 +144,11 @@ enum YouTubeAPIParser {
         var details: [String: VideoDetail] = [:]
         for item in response.items {
             let duration = item.contentDetails?.duration
+            let rawViews = item.statistics?.viewCount.flatMap { Int($0) }
             details[item.id] = VideoDetail(
                 durationText: ISO8601Duration.displayText(duration),
                 viewsText: item.statistics?.viewCount.flatMap(formattedViews),
+                viewCount: rawViews,
                 isShort: ISO8601Duration.isShort(duration))
         }
         return details
