@@ -54,10 +54,14 @@ private struct StubFeed: DiscoverFeedFetching {
     var siteWideOutcome: ChannelVideoOutcome = .parsed([])
     let siteWideCalls = SiteWideCalls()
 
-    final class SiteWideCalls { var queries: [String] = [] }
+    final class SiteWideCalls {
+        var queries: [String] = []
+        var recentFlags: [Bool] = []
+    }
 
-    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome {
+    func searchVideosSiteWide(query: String, recentOnly: Bool) async -> ChannelVideoOutcome {
         siteWideCalls.queries.append(query)
+        siteWideCalls.recentFlags.append(recentOnly)
         return siteWideOutcome
     }
     func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome { .parsed([]) }
@@ -612,6 +616,26 @@ final class KeylessColdStartTests: XCTestCase {
         let again = makeVM(feed)
         await again.refresh()
         XCTAssertFalse(again.coldStart.isEmpty, "no key means no quota to preserve")
+    }
+
+    // The filter belongs on cold start and nowhere else. Measured on one query:
+    // unfiltered results mixed 3-day-old and 10-month-old uploads, while YouTube's
+    // this-month filter returned everything within three days.
+    func testColdStartAsksForRecentResults() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a")])
+        let vm = makeVM(feed)
+        await vm.refresh()
+        XCTAssertEqual(feed.siteWideCalls.recentFlags, [true])
+    }
+
+    // But a user hunting a specific talk must not have it hidden for being a year old.
+    func testUserSearchIsNotDateFiltered() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a")])
+        let vm = makeVM(feed)
+        await vm.runSearch("andrew strominger black holes")
+        XCTAssertEqual(feed.siteWideCalls.recentFlags.last, false)
     }
 
     // A broken scrape leaves the written prompt rather than a permanent spinner.

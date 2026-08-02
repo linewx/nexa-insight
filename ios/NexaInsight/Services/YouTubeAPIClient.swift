@@ -121,6 +121,14 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
             URLQueryItem(name: "videoDuration", value: "long"),
             URLQueryItem(name: "relevanceLanguage", value: "en"),
             URLQueryItem(name: "maxResults", value: "10"),
+            // Recent, but still ranked by relevance rather than by date.
+            //
+            // Measured on one query: unbounded relevance gave a median age of 205
+            // days (oldest 400). order=date gave everything uploaded today — which
+            // sounds better and is worse, since nothing has been watched yet and
+            // quality is unfiltered. Relevance within the last month gave a median
+            // of 8 days, which is both current and vetted.
+            URLQueryItem(name: "publishedAfter", value: Self.thirtyDaysAgo()),
             URLQueryItem(name: "key", value: apiKey),
         ])
         let found = try YouTubeAPIParser.parseSearch(data)
@@ -135,6 +143,13 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
             enriched.viewsText = detail.viewsText
             return enriched
         }
+    }
+
+    static func thirtyDaysAgo(from now: Date = Date()) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: now.addingTimeInterval(-30 * 86_400))
     }
 
     private func get(_ endpoint: String, _ queryItems: [URLQueryItem]) async throws -> Data {

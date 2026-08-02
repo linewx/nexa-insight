@@ -15,7 +15,7 @@ private struct StubService: DiscoverFeedFetching {
     func resolveChannel(fromURL url: String) async throws -> Subscription {
         throw DiscoverFeedError.unrecognizedChannelLink
     }
-    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome { .parsed([]) }
+    func searchVideosSiteWide(query: String, recentOnly: Bool) async -> ChannelVideoOutcome { .parsed([]) }
     func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome {
         capturedQueries.queries.append(query)
         return videoOutcome

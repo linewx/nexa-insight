@@ -13,6 +13,7 @@ private struct StubFeedService: DiscoverFeedFetching {
 
     final class Captured {
         var siteWideQueries: [String] = []
+        var recentFlags: [Bool] = []
         var feedRequests = 0
     }
 
@@ -21,8 +22,9 @@ private struct StubFeedService: DiscoverFeedFetching {
         return result
     }
 
-    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome {
+    func searchVideosSiteWide(query: String, recentOnly: Bool) async -> ChannelVideoOutcome {
         captured.siteWideQueries.append(query)
+        captured.recentFlags.append(recentOnly)
         return siteWideOutcome
     }
 

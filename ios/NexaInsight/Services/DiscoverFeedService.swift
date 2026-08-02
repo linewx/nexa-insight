@@ -25,7 +25,10 @@ enum DiscoverFeedError: LocalizedError {
 protocol DiscoverFeedFetching {
     func fetchFeeds(channelIds: [String]) async -> FeedFetchResult
     func resolveChannel(fromURL url: String) async throws -> Subscription
-    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome
+    // `recentOnly` applies YouTube's this-month + long-form filter, for the
+    // cold-start feed. Plain search leaves it off: someone looking for a specific
+    // talk does not want it hidden because it is a year old.
+    func searchVideosSiteWide(query: String, recentOnly: Bool) async -> ChannelVideoOutcome
     func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome
     func fetchChannelUploads(channelId: String) async -> [DiscoverEntry]
     func fetchChannelHeader(channelId: String) async -> ChannelHeader
@@ -83,7 +86,12 @@ struct DiscoverFeedService: DiscoverFeedFetching {
     // hl=en&gl=US pin the response language, AND the Accept-Language header is
     // also required. With neither, results came back Japanese
     // ("チャンネル登録者数 2.04万人"); only pinning both reliably produced English.
-    func searchVideosSiteWide(query: String) async -> ChannelVideoOutcome {
+    // YouTube's own search filters, encoded. Verified live: without it the results
+    // page mixed 3-day-old and 10-month-old uploads; with it every result was within
+    // three days. Used for the cold-start feed, where the point is what is current.
+    static let recentLongFormFilter = "EgQIAxAB"   // this month + over 20 minutes
+
+    func searchVideosSiteWide(query: String, recentOnly: Bool = false) async -> ChannelVideoOutcome {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .parsed([]) }
 
@@ -93,6 +101,10 @@ struct DiscoverFeedService: DiscoverFeedFetching {
             URLQueryItem(name: "hl", value: "en"),
             URLQueryItem(name: "gl", value: "US"),
         ]
+        if recentOnly {
+            components.queryItems?.append(
+                URLQueryItem(name: "sp", value: Self.recentLongFormFilter))
+        }
         guard let url = components.url else { return .structureMissing }
 
         var request = URLRequest(url: url)

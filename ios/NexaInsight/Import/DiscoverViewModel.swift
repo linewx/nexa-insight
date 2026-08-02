@@ -352,7 +352,7 @@ final class DiscoverViewModel: ObservableObject {
             // who needs something to look at. The scraped search needs no key and no
             // quota, so it is not cached by day either — falling back to a written
             // prompt here would have made the empty screen the default experience.
-            switch await service.searchVideosSiteWide(query: query) {
+            switch await service.searchVideosSiteWide(query: query, recentOnly: true) {
             case .parsed(let videos): found = videos
             case .structureMissing: found = []
             }
@@ -414,7 +414,7 @@ final class DiscoverViewModel: ObservableObject {
         searchedTerm = trimmed
         defer { searching = false }
 
-        switch await service.searchVideosSiteWide(query: trimmed) {
+        switch await service.searchVideosSiteWide(query: trimmed, recentOnly: false) {
         case .parsed(let videos):
             // Keep YouTube's relevance order; do not sort by date.
             results = videos
