@@ -22,7 +22,11 @@ struct StudyView: View {
     @State private var loop: SentenceLoop = .off
     @State private var speed: Double = 1
     @State private var savedPositionMs: Int?
+    @State private var studyMode: StudyMode = .listening
+    @State private var expandedExpressionID: Int?
+    @State private var practiceExpression: LearningExpressionDTO?
     private let sentences: [SentenceDTO]
+    private let learningExpressions: [LearningExpressionDTO]
     private let episode: EpisodeDTO?
 
     init(episodeId: Int, store: EpisodeStore, backendBaseURL: URL) {
@@ -30,6 +34,7 @@ struct StudyView: View {
         self.store = store
         self.backendBaseURL = backendBaseURL
         self.sentences = store.sentences(for: episodeId)
+        self.learningExpressions = store.learningExpressions(for: episodeId)
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
         let relative = store.localAudioPath(for: episodeId) ?? "audio/\(episodeId).mp3"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -72,6 +77,10 @@ struct StudyView: View {
                 speed = IntensiveListening.cycledSpeed(after: speed)
                 player.speed(speed)
             },
+            studyMode: $studyMode,
+            learningExpressions: learningExpressions,
+            expandedExpressionID: $expandedExpressionID,
+            onPracticeExpression: { practiceExpression = $0 },
             discussionSession: liveSession,
             onEndDiscussion: endDiscussion
         )
@@ -96,6 +105,9 @@ struct StudyView: View {
                 store.savePlaybackPosition(player.currentMs, for: episodeId)
             }
         }
+        .onChange(of: studyMode) { _, mode in
+            if mode == .listening { expandedExpressionID = nil }
+        }
         .navigationBarTitleDisplayMode(.inline)
         // Hidden, not merely transparent. Every attempt to keep the bar present for
         // the sake of the system pop gesture cost more than it bought: transparent
@@ -103,6 +115,9 @@ struct StudyView: View {
         // and reclaiming that height via .ignoresSafeArea pulled content under the
         // notch instead. The bar is hidden and back-swipe is handled below.
         .toolbar(.hidden, for: .navigationBar)
+        // Study is pushed from the Library tab, so it owns the whole screen until
+        // back navigation restores Library and its tab bar.
+        .toolbar(.hidden, for: .tabBar)
         .task { startDiscussion() }
         // Hiding the bar also disables interactivePopGestureRecognizer, so the
         // back-swipe is re-implemented here. Interactive (tracks the finger, snaps
@@ -113,6 +128,15 @@ struct StudyView: View {
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
                 ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
+            }
+        }
+        .sheet(item: $practiceExpression) { expression in
+            NavigationStack {
+                ExamplePracticeView(episodeId: episodeId, expression: expression, store: store, onStartRecording: {
+                    // Practice the example against silence; the source remains paused
+                    // afterwards so the learner chooses when to resume listening.
+                    player.pause()
+                })
             }
         }
     }
@@ -253,6 +277,11 @@ private enum AudioRefreshState: Equatable {
     case failed(String)
 }
 
+private enum StudyMode: Hashable {
+    case listening
+    case reading
+}
+
 private struct StudyWorkspace: View {
     let episode: EpisodeDTO?
     let visible: [SentenceDTO]
@@ -277,6 +306,10 @@ private struct StudyWorkspace: View {
     var onToggleLoop: (SentenceDTO) -> Void = { _ in }
     var onStep: (SentenceDTO) -> Void = { _ in }
     var onCycleSpeed: () -> Void = {}
+    @Binding var studyMode: StudyMode
+    let learningExpressions: [LearningExpressionDTO]
+    @Binding var expandedExpressionID: Int?
+    let onPracticeExpression: (LearningExpressionDTO) -> Void
     let discussionSession: LiveClassSession?
     let onEndDiscussion: () -> Void
     @Environment(\.colorScheme) private var scheme
@@ -294,7 +327,8 @@ private struct StudyWorkspace: View {
                 audioRefreshState: audioRefreshState,
                 onRefreshAudio: onRefreshAudio,
                 onSeekIntent: onSeekIntent,
-                speed: speed
+                speed: speed,
+                studyMode: $studyMode
             )
             studySurface
         }
@@ -393,7 +427,11 @@ private struct StudyWorkspace: View {
                 onReplay: onReplay,
                 onToggleLoop: onToggleLoop,
                 onStep: onStep,
-                onCycleSpeed: onCycleSpeed
+                onCycleSpeed: onCycleSpeed,
+                studyMode: studyMode,
+                learningExpressions: learningExpressions,
+                expandedExpressionID: $expandedExpressionID,
+                onPracticeExpression: onPracticeExpression
             )
         }
     }
@@ -411,6 +449,7 @@ private struct WorkspaceTopBar: View {
     // intent rather than the player so a connected class moves the floor.
     var onSeekIntent: (Int) -> Void = { _ in }
     var speed: Double = 1
+    @Binding var studyMode: StudyMode
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -475,6 +514,12 @@ private struct WorkspaceTopBar: View {
             if shouldShowCompactStatus {
                 CompactAudioStatus(audioRefreshState: audioRefreshState, player: player, onRefreshAudio: onRefreshAudio)
             }
+
+            Picker("学习模式", selection: $studyMode) {
+                Text("精听").tag(StudyMode.listening)
+                Text("精读").tag(StudyMode.reading)
+            }
+            .pickerStyle(.segmented)
         }
         .padding(.horizontal, compact ? NXSpacing.x4 : NXSpacing.x6)
         .padding(.top, compact ? NXSpacing.x3 : NXSpacing.x4)
@@ -1166,11 +1211,21 @@ private struct TranscriptBlock: View {
     var onToggleLoop: (SentenceDTO) -> Void = { _ in }
     var onStep: (SentenceDTO) -> Void = { _ in }
     var onCycleSpeed: () -> Void = {}
+    let studyMode: StudyMode
+    let learningExpressions: [LearningExpressionDTO]
+    @Binding var expandedExpressionID: Int?
+    let onPracticeExpression: (LearningExpressionDTO) -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
             NXSectionHeader(title: "Transcript")
+            if studyMode == .reading && learningExpressions.isEmpty {
+                Text("精读内容会在新导入或重新解析的视频中生成。当前内容仍可正常精听。")
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .padding(.bottom, NXSpacing.x2)
+            }
             if sentences.isEmpty {
                 Text("No transcript matches this search.")
                     .font(NXFont.body)
@@ -1194,7 +1249,15 @@ private struct TranscriptBlock: View {
                             onToggleLoop: { onToggleLoop(sentence) },
                             onPrevious: { if let previous { onStep(previous) } },
                             onNext: { if let next { onStep(next) } },
-                            onCycleSpeed: onCycleSpeed
+                            onCycleSpeed: onCycleSpeed,
+                            studyMode: studyMode,
+                            expressionSegments: LearningExpressionLogic.segments(
+                                for: sentence.sourceText, sentenceId: sentence.id, expressions: learningExpressions),
+                            expandedExpression: learningExpressions.first { $0.id == expandedExpressionID },
+                            onSelectExpression: { id in
+                                expandedExpressionID = expandedExpressionID == id ? nil : id
+                            },
+                            onPracticeExpression: onPracticeExpression
                         )
                         .id(sentence.id)
                         if sentence.id != sentences.last?.id {
@@ -1222,41 +1285,29 @@ private struct TranscriptRow: View {
     var onPrevious: () -> Void = {}
     var onNext: () -> Void = {}
     var onCycleSpeed: () -> Void = {}
+    let studyMode: StudyMode
+    let expressionSegments: [LearningExpressionLogic.Segment]
+    let expandedExpression: LearningExpressionDTO?
+    let onSelectExpression: (Int) -> Void
+    let onPracticeExpression: (LearningExpressionDTO) -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: onTap) {
-                VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    HStack(spacing: NXSpacing.x2) {
-                        Text(formatTime(sentence.startMs))
-                            .font(NXFont.auxiliary)
-                            .foregroundStyle(selected ? NXColor.primary : NXColor.textTertiary(scheme))
-                            .monospacedDigit()
-                            .frame(width: 52, alignment: .leading)
-                    }
-                    VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                        Text(sentence.sourceText)
-                            .font(NXFont.body)
-                            .fontWeight(selected ? .medium : .regular)
-                            .foregroundStyle(NXColor.text(scheme))
-                            .lineSpacing(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !sentence.chinese.isEmpty {
-                            Text(sentence.chinese)
-                                .font(NXFont.body)
-                                .foregroundStyle(NXColor.textSecondary(scheme))
-                                .lineSpacing(2)
-                        }
-                    }
-                }
-                .padding(.top, NXSpacing.x4)
-                .padding(.bottom, selected ? NXSpacing.x2 : NXSpacing.x4)
-                .padding(.leading, NXSpacing.x4)
-                .padding(.trailing, NXSpacing.x2)
-                .contentShape(Rectangle())
+            if studyMode == .reading {
+                readingContent
+            } else {
+                Button(action: onTap) { listeningContent }
+                    .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+
+            if studyMode == .reading,
+               let expandedExpression,
+               expressionSegments.contains(where: { $0.expressionID == expandedExpression.id }) {
+                ExpressionInlineCard(expression: expandedExpression, onPractice: { onPracticeExpression(expandedExpression) })
+                    .padding(.horizontal, NXSpacing.x4)
+                    .padding(.bottom, NXSpacing.x4)
+            }
 
             // One row, on one sentence. Putting these in the bottom bar would mean
             // seven controls in a 50pt capsule; putting them on every row would
@@ -1271,6 +1322,47 @@ private struct TranscriptRow: View {
             Rectangle()
                 .fill(selected ? NXColor.primary : Color.clear)
                 .frame(width: 2)
+        }
+    }
+
+    private var timestamp: some View {
+        Text(formatTime(sentence.startMs))
+            .font(NXFont.auxiliary)
+            .foregroundStyle(selected ? NXColor.primary : NXColor.textTertiary(scheme))
+            .monospacedDigit()
+            .frame(width: 52, alignment: .leading)
+    }
+
+    private var listeningContent: some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x2) {
+            HStack(spacing: NXSpacing.x2) { timestamp }
+            VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                Text(sentence.sourceText)
+                    .font(NXFont.body).fontWeight(selected ? .medium : .regular)
+                    .foregroundStyle(NXColor.text(scheme)).lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                chineseText
+            }
+        }
+        .padding(.top, NXSpacing.x4).padding(.bottom, selected ? NXSpacing.x2 : NXSpacing.x4)
+        .padding(.leading, NXSpacing.x4).padding(.trailing, NXSpacing.x2).contentShape(Rectangle())
+    }
+
+    private var readingContent: some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x2) {
+            HStack(spacing: NXSpacing.x2) { timestamp }
+            VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                InlineExpressionText(segments: expressionSegments, onSelect: onSelectExpression)
+                chineseText
+            }
+        }
+        .padding(.top, NXSpacing.x4).padding(.bottom, NXSpacing.x4)
+        .padding(.leading, NXSpacing.x4).padding(.trailing, NXSpacing.x2)
+    }
+
+    @ViewBuilder private var chineseText: some View {
+        if !sentence.chinese.isEmpty {
+            Text(sentence.chinese).font(NXFont.body).foregroundStyle(NXColor.textSecondary(scheme)).lineSpacing(2)
         }
     }
 
@@ -1336,6 +1428,87 @@ private struct TranscriptRow: View {
     private func tint(on: Bool, enabled: Bool) -> Color {
         if !enabled { return NXColor.textTertiary(scheme).opacity(0.4) }
         return on ? NXColor.primary : NXColor.textSecondary(scheme)
+    }
+}
+
+private struct InlineExpressionText: View {
+    let segments: [LearningExpressionLogic.Segment]
+    let onSelect: (Int) -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        InlineTextFlow(spacing: 0) {
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                if let expressionID = segment.expressionID {
+                    Button(action: { onSelect(expressionID) }) {
+                        Text(segment.text).font(NXFont.body).fontWeight(.semibold).foregroundStyle(NXColor.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("展开 \(segment.text) 的释义")
+                } else {
+                    Text(segment.text).font(NXFont.body).foregroundStyle(NXColor.text(scheme))
+                }
+            }
+        }
+        .lineSpacing(2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct InlineTextFlow: Layout {
+    var spacing: CGFloat
+
+    init(spacing: CGFloat = 0) { self.spacing = spacing }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .greatestFiniteMagnitude
+        var x: CGFloat = 0; var y: CGFloat = 0; var lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > width { x = 0; y += lineHeight; lineHeight = 0 }
+            x += size.width + spacing; lineHeight = max(lineHeight, size.height)
+        }
+        return CGSize(width: proposal.width ?? x, height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX; var y = bounds.minY; var lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + size.width > bounds.maxX { x = bounds.minX; y += lineHeight; lineHeight = 0 }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing; lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+
+private struct ExpressionInlineCard: View {
+    let expression: LearningExpressionDTO
+    let onPractice: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(expression.text).font(NXFont.bodyMedium).foregroundStyle(NXColor.text(scheme))
+                if let pronunciation = expression.pronunciation, !pronunciation.isEmpty {
+                    Text("/\(pronunciation)/").font(NXFont.auxiliary).foregroundStyle(NXColor.textTertiary(scheme))
+                }
+                Spacer()
+                Text(expression.kind == .word ? "词汇" : expression.kind == .phrase ? "短语" : "句式")
+                    .font(NXFont.auxiliary).foregroundStyle(NXColor.primary)
+            }
+            Text(expression.chinese).font(NXFont.body).foregroundStyle(NXColor.textSecondary(scheme))
+            VStack(alignment: .leading, spacing: NXSpacing.x1) {
+                Text(expression.example).font(NXFont.bodyMedium).foregroundStyle(NXColor.text(scheme))
+                Text(expression.exampleChinese).font(NXFont.auxiliary).foregroundStyle(NXColor.textSecondary(scheme))
+            }
+            Button("跟读例句并评测", action: onPractice)
+                .font(NXFont.control).foregroundStyle(NXColor.primary).buttonStyle(.plain)
+        }
+        .padding(NXSpacing.x4)
+        .background(NXColor.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: NXRadius.surface))
+        .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.primary.opacity(0.16), lineWidth: 1))
     }
 }
 

@@ -49,6 +49,7 @@ class AIAdapter(Protocol):
     def transcribe(self, path: Path, offset_ms: int) -> list[TranscriptSegment]: ...
     def translate(self, texts: list[str]) -> list[str]: ...
     def chapters(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
+    def learning_expressions(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
 
 
 class YtDlpMediaAdapter:
@@ -289,6 +290,14 @@ class OpenAIAdapter:
         result = self._json("Group this podcast transcript into coherent chapters. Return JSON with key chapters containing an array. Each chapter must have title, summary, start_ms and end_ms. Cover the full timeline without gaps.", {"sentences": payload})
         return list(result["chapters"])
 
+    def learning_expressions(self, sentences: list[TranscriptSegment]) -> list[dict]:
+        payload = [{"position": index, "text": sentence.text} for index, sentence in enumerate(sentences)]
+        result = self._json(
+            "Extract useful English words, phrasal verbs, collocations, fixed expressions and transferable sentence patterns from this transcript. Exclude basic function words. Return JSON with key expressions. Each expression has text, kind (word, phrase, or pattern), chinese, pronunciation (IPA only for a single word, else null), example, example_chinese, and occurrences. Each occurrence has sentence_position, start_offset and end_offset as Python string character offsets. Merge duplicate expressions. Do not emit overlapping ranges within one sentence.",
+            {"sentences": payload},
+        )
+        return list(result["expressions"])
+
 
 class ImportPipeline:
     CHUNK_MS = 900_000
@@ -352,10 +361,12 @@ class ImportPipeline:
             # diverge over the episode). AI per-sentence translation is 1:1 by
             # construction — no duplication, no drift.
             translations = self._translate(all_segments, root / "translations", job_id)
-            self.repo.upsert_job(job_id, stage="indexing", progress=90)
+            self.repo.upsert_job(job_id, stage="indexing", progress=88)
             chapters = self._chapters(all_segments)
+            self.repo.upsert_job(job_id, stage="learning", progress=94)
+            expressions = self.ai.learning_expressions(all_segments)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
-            self.repo.replace_learning_content(episode.id, chapters, sentences)
+            self.repo.replace_learning_content(episode.id, chapters, sentences, expressions)
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
         except Exception as exc:
             self.repo.upsert_job(job_id, stage=self.repo.get_job(job_id).stage, progress=self.repo.get_job(job_id).progress, status="failed", error=str(exc))

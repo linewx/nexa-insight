@@ -49,6 +49,17 @@ class FakeAI:
     def chapters(self, sentences):
         return [{"title": "All", "summary": "whole", "start_ms": 0, "end_ms": 4000}]
 
+    def learning_expressions(self, sentences):
+        return [{
+            "text": "Hello world",
+            "kind": "phrase",
+            "chinese": "你好，世界",
+            "pronunciation": None,
+            "example": "Hello world, again.",
+            "example_chinese": "再次向世界问好。",
+            "occurrences": [{"sentence_position": 0, "start_offset": 0, "end_offset": 11}],
+        }]
+
 
 class FlakyAI(FakeAI):
     def translate(self, texts):
@@ -124,6 +135,9 @@ def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     assert repo.get_episode(episode_id).status == "ready"
     assert repo.get_episode(episode_id).audio_path == f"episodes/{episode_id}/source.mp3"
     assert repo.get_job(job_id).status == "complete"
+    expressions = repo.list_learning_expressions(episode_id)
+    assert [(item.text, item.kind) for item in expressions] == [("Hello world", "phrase")]
+    assert [(item.sentence.position, item.start_offset, item.end_offset) for item in expressions[0].occurrences] == [(0, 0, 11)]
 
 
 def test_pipeline_audio_backfill_downloads_audio_without_reprocessing(repo, tmp_path):

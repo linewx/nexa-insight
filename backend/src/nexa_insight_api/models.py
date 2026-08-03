@@ -34,6 +34,7 @@ class Episode(Base):
     chapters: Mapped[list[Chapter]] = relationship(cascade="all, delete-orphan")
     sentences: Mapped[list[Sentence]] = relationship(cascade="all, delete-orphan")
     jobs: Mapped[list[ImportJob]] = relationship(cascade="all, delete-orphan")
+    learning_expressions: Mapped[list[LearningExpression]] = relationship(cascade="all, delete-orphan")
 
 
 class ImportJob(Base):
@@ -87,3 +88,28 @@ class Sentence(Base):
     speaker: Mapped[str | None] = mapped_column(String(100))
     source_text: Mapped[str] = mapped_column(Text)
     chinese: Mapped[str] = mapped_column(Text)
+
+
+class LearningExpression(Base):
+    __tablename__ = "learning_expressions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    episode_id: Mapped[int] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), index=True)
+    text: Mapped[str] = mapped_column(String(500))
+    kind: Mapped[str] = mapped_column(String(32))
+    chinese: Mapped[str] = mapped_column(Text)
+    pronunciation: Mapped[str | None] = mapped_column(String(500))
+    example: Mapped[str] = mapped_column(Text)
+    example_chinese: Mapped[str] = mapped_column(Text)
+    occurrences: Mapped[list[ExpressionOccurrence]] = relationship(cascade="all, delete-orphan", order_by="ExpressionOccurrence.id")
+
+
+class ExpressionOccurrence(Base):
+    __tablename__ = "expression_occurrences"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    expression_id: Mapped[int] = mapped_column(ForeignKey("learning_expressions.id", ondelete="CASCADE"), index=True)
+    sentence_id: Mapped[int] = mapped_column(ForeignKey("sentences.id", ondelete="CASCADE"), index=True)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    sentence: Mapped[Sentence] = relationship()

@@ -33,6 +33,71 @@ def test_bundle_returns_content_and_no_audio(client):
     assert len(body["chapters"]) == 1
     assert len(body["sentences"]) == 1
     assert body["has_audio"] is False
+    assert body["has_learning_pack"] is False
+    assert body["learning_expressions"] == []
+
+
+def test_bundle_includes_learning_expressions(client):
+    episode_id = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()["episode"]["id"]
+    client.repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 2000}],
+        [{"start_ms": 0, "end_ms": 1000, "speaker": None, "source_text": "Hello world", "chinese": "你好世界"}],
+        [{
+            "text": "Hello world", "kind": "phrase", "chinese": "你好世界", "pronunciation": None,
+            "example": "Hello world again.", "example_chinese": "再次你好世界。",
+            "occurrences": [{"sentence_position": 0, "start_offset": 0, "end_offset": 11}],
+        }],
+    )
+
+    body = client.get(f"/api/episodes/{episode_id}/bundle").json()
+
+    assert body["has_learning_pack"] is True
+    assert body["learning_expressions"][0]["text"] == "Hello world"
+    assert body["learning_expressions"][0]["occurrences"] == [{"sentence_id": body["sentences"][0]["id"], "start_offset": 0, "end_offset": 11}]
+
+
+def test_bundle_deduplicates_repeated_expression(client):
+    episode_id = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()["episode"]["id"]
+    client.repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 2000}],
+        [
+            {"start_ms": 0, "end_ms": 1000, "speaker": None, "source_text": "Work out the plan.", "chinese": "制定计划。"},
+            {"start_ms": 1000, "end_ms": 2000, "speaker": None, "source_text": "We worked out a solution.", "chinese": "我们想出了解决方案。"},
+        ],
+        [
+            {"text": "work out", "kind": "phrase", "chinese": "制定；想出", "pronunciation": None, "example": "Work it out.", "example_chinese": "把它想出来。", "occurrences": [{"sentence_position": 0, "start_offset": 0, "end_offset": 8}]},
+            {"text": "Work Out", "kind": "phrase", "chinese": "制定；想出", "pronunciation": None, "example": "Work it out.", "example_chinese": "把它想出来。", "occurrences": [{"sentence_position": 1, "start_offset": 3, "end_offset": 13}]},
+        ],
+    )
+
+    expressions = client.get(f"/api/episodes/{episode_id}/bundle").json()["learning_expressions"]
+
+    assert len(expressions) == 1
+    assert len(expressions[0]["occurrences"]) == 2
+
+
+def test_bundle_ignores_invalid_expression_occurrence(client):
+    episode_id = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()["episode"]["id"]
+    client.repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 1000, "speaker": None, "source_text": "Hello world", "chinese": "你好世界"}],
+        [{
+            "text": "world", "kind": "word", "chinese": "世界", "pronunciation": "wɜːrld",
+            "example": "A new world.", "example_chinese": "一个新世界。",
+            "occurrences": [
+                {"sentence_position": 0, "start_offset": 6, "end_offset": 11},
+                {"sentence_position": 0, "start_offset": 6, "end_offset": 99},
+            ],
+        }],
+    )
+
+    expressions = client.get(f"/api/episodes/{episode_id}/bundle").json()["learning_expressions"]
+
+    assert len(expressions) == 1
+    assert [(item["start_offset"], item["end_offset"]) for item in expressions[0]["occurrences"]] == [(6, 11)]
 
 
 def test_audio_404_when_absent(client):

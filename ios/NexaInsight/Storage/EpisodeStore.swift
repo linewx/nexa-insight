@@ -8,7 +8,7 @@ final class EpisodeStore {
 
     init(inMemory: Bool = false) throws {
         let config = ModelConfiguration(isStoredInMemoryOnly: inMemory)
-        container = try ModelContainer(for: StoredEpisode.self, StoredChapter.self, StoredSentence.self, StoredRecording.self, StoredInsight.self, configurations: config)
+        container = try ModelContainer(for: StoredEpisode.self, StoredChapter.self, StoredSentence.self, StoredRecording.self, StoredInsight.self, StoredLearningExpression.self, StoredExpressionOccurrence.self, StoredExamplePractice.self, configurations: config)
     }
 
     private func episode(_ id: Int) -> StoredEpisode? {
@@ -21,7 +21,8 @@ final class EpisodeStore {
         if let existing = episode(e.id) {
             existing.sentences.forEach(context.delete)
             existing.chapters.forEach(context.delete)
-            existing.sentences = []; existing.chapters = []
+            existing.learningExpressions.forEach(context.delete)
+            existing.sentences = []; existing.chapters = []; existing.learningExpressions = []
             existing.title = e.title; existing.channel = e.channel; existing.status = e.status
             if let localAudioPath { existing.localAudioPath = localAudioPath }
             try attach(bundle, to: existing)
@@ -44,6 +45,20 @@ final class EpisodeStore {
             let sentence = StoredSentence(sentenceId: s.id, episodeId: bundle.episode.id, chapterId: s.chapterId, position: s.position, startMs: s.startMs, endMs: s.endMs, speaker: s.speaker, sourceText: s.sourceText, chinese: s.chinese)
             context.insert(sentence); stored.sentences.append(sentence)
         }
+        for item in bundle.learningExpressions {
+            let expression = StoredLearningExpression(
+                expressionId: item.id, episodeId: bundle.episode.id, text: item.text,
+                kind: item.kind.rawValue, chinese: item.chinese, pronunciation: item.pronunciation,
+                example: item.example, exampleChinese: item.exampleChinese)
+            context.insert(expression)
+            for item in item.occurrences {
+                let occurrence = StoredExpressionOccurrence(
+                    sentenceId: item.sentenceId, startOffset: item.startOffset, endOffset: item.endOffset)
+                context.insert(occurrence)
+                expression.occurrences.append(occurrence)
+            }
+            stored.learningExpressions.append(expression)
+        }
     }
 
     func sentences(for episodeId: Int) -> [SentenceDTO] {
@@ -57,6 +72,19 @@ final class EpisodeStore {
         guard let e = episode(episodeId) else { return [] }
         return e.chapters.sorted { $0.startMs < $1.startMs }.map {
             ChapterDTO(id: $0.chapterId, title: $0.title, summary: $0.summary, startMs: $0.startMs, endMs: $0.endMs)
+        }
+    }
+
+    func learningExpressions(for episodeId: Int) -> [LearningExpressionDTO] {
+        guard let e = episode(episodeId) else { return [] }
+        return e.learningExpressions.sorted { $0.expressionId < $1.expressionId }.compactMap { item in
+            guard let kind = LearningExpressionKind(rawValue: item.kind) else { return nil }
+            return LearningExpressionDTO(
+                id: item.expressionId, text: item.text, kind: kind, chinese: item.chinese,
+                pronunciation: item.pronunciation, example: item.example, exampleChinese: item.exampleChinese,
+                occurrences: item.occurrences.map {
+                    ExpressionOccurrenceDTO(sentenceId: $0.sentenceId, startOffset: $0.startOffset, endOffset: $0.endOffset)
+                })
         }
     }
 
@@ -104,6 +132,24 @@ final class EpisodeStore {
         guard let target = context.model(for: recordingId) as? StoredRecording else { return }
         target.feedback = feedback
         try context.save()
+    }
+
+    @discardableResult
+    func addExamplePractice(episodeId: Int, expressionId: Int, localFilePath: String, overall: Int, clarity: Int, stressRhythm: Int, completeness: Int, advice: String) throws -> StoredExamplePractice {
+        let practice = StoredExamplePractice(
+            episodeId: episodeId, expressionId: expressionId, localFilePath: localFilePath,
+            overall: overall, clarity: clarity, stressRhythm: stressRhythm,
+            completeness: completeness, advice: advice)
+        context.insert(practice)
+        if let episode = episode(episodeId) { episode.examplePractices.append(practice) }
+        try context.save()
+        return practice
+    }
+
+    func examplePractices(episodeId: Int, expressionId: Int) -> [StoredExamplePractice] {
+        (try? context.fetch(FetchDescriptor<StoredExamplePractice>(
+            predicate: #Predicate { $0.episodeId == episodeId && $0.expressionId == expressionId },
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
     }
 
     @discardableResult

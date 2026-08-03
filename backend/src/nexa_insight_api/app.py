@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .models import Episode, ImportJob
 from .pipeline import YtDlpMediaAdapter
 from .repositories import Repository
-from .schemas import ChapterView, EpisodeBundle, EpisodeView, ImportRequest, ImportView, JobView, SentenceView
+from .schemas import ChapterView, EpisodeBundle, EpisodeView, ImportRequest, ImportView, JobView, LearningExpressionView, SentenceView
 from .settings import Settings
 
 
@@ -134,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Episode not found")
         chapters = repo.list_chapters(episode_id)
         sentences = repo.list_sentences(episode_id)
+        expressions = repo.list_learning_expressions(episode_id)
         has_audio = bool(episode.audio_path) and (settings.data_dir / episode.audio_path).exists()
         return EpisodeBundle(
             episode=EpisodeView.model_validate(episode),
@@ -141,6 +142,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             sentences=[SentenceView.model_validate(s) for s in sentences],
             has_audio=has_audio,
             has_stream=bool(episode.stream_url),
+            has_learning_pack=bool(expressions),
+            learning_expressions=[LearningExpressionView.model_validate(item) for item in expressions],
         )
 
     @app.post("/api/episodes/{episode_id}/stream", response_model=EpisodeView)

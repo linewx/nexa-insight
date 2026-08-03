@@ -16,7 +16,13 @@ final class EpisodeStoreTests: XCTestCase {
                 SentenceDTO(id: 10, episodeId: 1, chapterId: 1, position: 0, startMs: 0, endMs: 500, speaker: nil, sourceText: "Hi", chinese: "嗨"),
                 SentenceDTO(id: 11, episodeId: 1, chapterId: 1, position: 1, startMs: 500, endMs: 1000, speaker: nil, sourceText: "Bye", chinese: "拜"),
             ],
-            hasAudio: true)
+            hasAudio: true,
+            hasLearningPack: true,
+            learningExpressions: [
+                LearningExpressionDTO(id: 1, text: "Hello", kind: .word, chinese: "你好", pronunciation: "həˈloʊ", example: "Hello again.", exampleChinese: "再次你好。", occurrences: [
+                    ExpressionOccurrenceDTO(sentenceId: 10, startOffset: 0, endOffset: 2),
+                ])
+            ])
     }
 
     func testSaveAndReadBundle() throws {
@@ -26,6 +32,8 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(store.chapters(for: 1).count, 1)
         XCTAssertEqual(store.downloadedEpisodes().first?.title, "T")
         XCTAssertEqual(store.localAudioPath(for: 1), "audio/1.mp3")
+        XCTAssertEqual(store.learningExpressions(for: 1).first?.text, "Hello")
+        XCTAssertEqual(store.learningExpressions(for: 1).first?.occurrences.first?.sentenceId, 10)
     }
 
     func testSaveBundleUpsertsReplacingSentences() throws {
@@ -67,5 +75,22 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(insight.sourceText, "Hi")
         XCTAssertEqual(insight.startMs, 0)
         XCTAssertEqual(insight.endMs, 500)
+    }
+
+    func testExamplePracticePersistsItsEvaluation() throws {
+        let store = try makeStore()
+        _ = try store.saveBundle(bundle(), localAudioPath: nil)
+
+        _ = try store.addExamplePractice(
+            episodeId: 1, expressionId: 1, localFilePath: "practice/1.wav",
+            overall: 86, clarity: 88, stressRhythm: 82, completeness: 90,
+            advice: "注意 how 的重音。")
+
+        let result = store.examplePractices(episodeId: 1, expressionId: 1).first
+        XCTAssertEqual(result?.overall, 86)
+        XCTAssertEqual(result?.clarity, 88)
+        XCTAssertEqual(result?.stressRhythm, 82)
+        XCTAssertEqual(result?.completeness, 90)
+        XCTAssertEqual(result?.advice, "注意 how 的重音。")
     }
 }

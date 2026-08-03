@@ -62,9 +62,28 @@ class SentenceView(ORMModel):
     chinese: str
 
 
+class ExpressionOccurrenceView(ORMModel):
+    sentence_id: int
+    start_offset: int
+    end_offset: int
+
+
+class LearningExpressionView(ORMModel):
+    id: int
+    text: str
+    kind: str
+    chinese: str
+    pronunciation: str | None
+    example: str
+    example_chinese: str
+    occurrences: list[ExpressionOccurrenceView]
+
+
 class EpisodeBundle(BaseModel):
     episode: EpisodeView
     chapters: list[ChapterView]
     sentences: list[SentenceView]
     has_audio: bool
     has_stream: bool
+    has_learning_pack: bool = False
+    learning_expressions: list[LearningExpressionView] = []
