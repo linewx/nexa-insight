@@ -162,7 +162,7 @@ struct LibraryView: View {
     }
 
     // nil when no key is stored, which is the normal state for a user who has not
-    // set one up — every caller degrades to the RSS feed rather than erroring.
+    // set one up. Callers decide whether to stay API-only or use another source.
     private static func youtubeAPI() -> YouTubeAPIFetching? {
         guard let key = KeychainStore().get(.youtubeAPIKey),
               !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -258,13 +258,13 @@ private struct LibraryMain: View {
         }
     }
 
-    // Long-press to re-pull corrected content and re-download the audio. Lives
+    // Long-press to rebuild the backend parse and replace the local copy. Lives
     // here rather than on the study screen, which has no room for maintenance.
     @ViewBuilder private func resyncButton(_ episodeId: Int) -> some View {
         Button {
             onResync(episodeId)
         } label: {
-            Label("重新同步内容和音频", systemImage: "arrow.triangle.2.circlepath")
+            Label("重新解析内容", systemImage: "arrow.triangle.2.circlepath")
         }
     }
 }

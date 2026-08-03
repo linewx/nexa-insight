@@ -1,7 +1,7 @@
 #if os(iOS)
 import SwiftUI
 
-// One channel: follow it, search inside it, or browse its recent uploads.
+// One channel: follow it, search inside it, or browse its long-form catalogue.
 //
 // Search is the primary surface because it is the only path that reaches the back
 // catalog — a channel with years of history cannot be served by a "latest N" list.
@@ -28,11 +28,11 @@ struct ChannelDetailView: View {
             VStack(alignment: .leading, spacing: NXSpacing.x4) {
                 header
 
-                if vm.isSearchActive {
-                    searchSection
-                } else {
-                    uploadsSection
-                }
+            if vm.isSearchActive {
+                searchSection
+            } else {
+                catalogSection
+            }
             }
             .frame(maxWidth: 720, alignment: .leading)
             .padding(.horizontal, NXSpacing.x4)
@@ -160,18 +160,17 @@ struct ChannelDetailView: View {
     }
 
     @ViewBuilder
-    private var uploadsSection: some View {
+    private var catalogSection: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            // The title states which source you are looking at, because the two
-            // have very different ceilings — 865 versus 15 for the same channel.
-            NXSectionHeader(title: vm.catalog.isEmpty ? "Recent uploads" : "All videos")
+            NXSectionHeader(title: "Long-form videos")
 
             if vm.loadingUploads && vm.uploadCards.isEmpty {
                 skeletons
             } else if vm.uploadCards.isEmpty {
-                Text("Could not load this channel's uploads. Try searching instead.")
+                Text(vm.catalogError ?? "No long-form videos found.")
                     .font(NXFont.body)
                     .foregroundStyle(NXColor.textSecondary(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 cardList(vm.uploadCards)
                 footer
@@ -216,14 +215,12 @@ struct ChannelDetailView: View {
     private var countText: String {
         let shown = vm.uploadCards.count
         if vm.catalog.isEmpty {
-            return vm.hasCatalog
-                ? "Showing \(shown) recent uploads. The full catalog needs a working YouTube API key."
-                : "Showing this channel's \(shown) most recent uploads. Add a YouTube API key in Settings to browse the full catalog, or search to find older videos."
+            return vm.catalogError ?? "No long-form videos found."
         }
         if let total = vm.catalogTotal, total > shown {
-            return "Showing \(shown) of \(total) videos."
+            return "Showing \(shown) of \(total) long-form videos."
         }
-        return "Showing all \(shown) videos."
+        return "Showing all \(shown) long-form videos."
     }
 
     @ViewBuilder

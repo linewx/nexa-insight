@@ -32,20 +32,18 @@ enum YouTubeChannelLogic {
         link.contains("/shorts/")
     }
 
-    // Whether a duration string is short enough to be a Short.
+    // Whether a duration string is too short for Nexa's study surfaces.
     //
     // The RSS path tests the link form instead (`isShortsLink`), because the feed
     // carries no duration at all. Site-wide search results have the reverse
     // problem: a duration is present but there is no link to inspect. So the
     // signal has to be the duration itself.
     //
-    // 60 seconds is YouTube's own Shorts ceiling at the time of writing. Anything
-    // that fails to parse is treated as NOT a Short — dropping a real episode
-    // because its duration string was unfamiliar is the worse error, since a
-    // stray Short is merely noise while a missing episode is unfindable.
-    static func isShortDuration(_ text: String?, maxSeconds: Int = 60) -> Bool {
+    // Anything below ten minutes is hidden. A value that fails to parse is kept:
+    // a dropped 4-hour episode is harder to recover from than one noisy short row.
+    static func isShortDuration(_ text: String?, minimumSeconds: Int = 600) -> Bool {
         guard let seconds = durationSeconds(text) else { return false }
-        return seconds <= maxSeconds
+        return seconds < minimumSeconds
     }
 
     // Parses "2:19:34", "18:42", or "0:45" into seconds. Returns nil for anything

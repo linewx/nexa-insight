@@ -97,6 +97,11 @@ enum Recommend {
     static let subscriptionWeight = 0.35
     static let topicWeight = 0.30
     static let recencyWeight = 0.35
+    static let followedChannelWeight = 0.24
+    static let watchedChannelWeight = 0.30
+    static let relatedTopicWeight = 0.20
+    static let popularityWeight = 0.12
+    static let videoRecencyWeight = 0.14
 
     // A single blended score rather than the previous hard tiers.
     //
@@ -156,6 +161,72 @@ enum Recommend {
         }
     }
 
+    // Ranking for video search/recommendation results once the app has signals.
+    //
+    // This is intentionally separate from cold start. First-run suggestions should
+    // be broad and plentiful; after playback/subscription data exists, ranking
+    // should tilt toward followed channels, channels the user actually played,
+    // adjacent topics, popular items in that neighborhood, and freshness.
+    static func rankedVideos(_ videos: [ChannelVideo],
+                             followedChannelIds: Set<String>,
+                             engagement: [String: ChannelEngagement],
+                             topics: [String: [String]] = [:],
+                             now: Date = Date()) -> [ChannelVideo] {
+        let affinity = topicAffinity(engagement: engagement, topics: topics)
+        return videos.sorted { left, right in
+            let l = videoScore(left, followedChannelIds: followedChannelIds,
+                               engagement: engagement, affinity: affinity,
+                               topics: topics, now: now)
+            let r = videoScore(right, followedChannelIds: followedChannelIds,
+                               engagement: engagement, affinity: affinity,
+                               topics: topics, now: now)
+            if abs(l - r) > 0.0001 { return l > r }
+            return videoPublishedDate(left, now: now) > videoPublishedDate(right, now: now)
+        }
+    }
+
+    static func videoScore(_ video: ChannelVideo,
+                           followedChannelIds: Set<String>,
+                           engagement: [String: ChannelEngagement],
+                           affinity: TopicAffinity,
+                           topics: [String: [String]],
+                           now: Date = Date()) -> Double {
+        let followed = video.channelId.map { followedChannelIds.contains($0) } == true ? 1.0 : 0.0
+        let watched = normalisedVideoEngagement(video, engagement: engagement)
+        let related = affinity.normalised(for: video.channelId.flatMap { topics[$0] } ?? [])
+        let popular = popularityScore(video.viewsText)
+        let fresh = videoRecencyScore(video, now: now)
+        return followed * followedChannelWeight
+            + watched * watchedChannelWeight
+            + related * relatedTopicWeight
+            + popular * popularityWeight
+            + fresh * videoRecencyWeight
+    }
+
+    static func normalisedVideoEngagement(_ video: ChannelVideo,
+                                          engagement: [String: ChannelEngagement]) -> Double {
+        let keys = [video.channelId, video.channelTitle].compactMap { $0 }
+        let best = max(engagementFloor, engagement.values.map(\.score).max() ?? 0)
+        let score = keys.compactMap { engagement[$0]?.score }.max() ?? 0
+        return min(1, score / best)
+    }
+
+    static func popularityScore(_ viewsText: String?) -> Double {
+        guard let views = parseViewCount(viewsText), views > 0 else { return 0 }
+        // 1M views is "very popular" for the long-form material Discover prefers;
+        // log scaling keeps a 20M upload from flattening everything else.
+        return min(1, log10(Double(views)) / 6)
+    }
+
+    static func videoRecencyScore(_ video: ChannelVideo, now: Date = Date()) -> Double {
+        recencyScore(videoPublishedDate(video, now: now), now: now)
+    }
+
+    static func videoPublishedDate(_ video: ChannelVideo, now: Date = Date()) -> Date {
+        if let publishedAt = video.publishedAt { return publishedAt }
+        return parsePublishedText(video.publishedText, now: now) ?? .distantPast
+    }
+
     // Coarse buckets, not exact timestamps: within "this week" it is engagement
     // that should decide the order, not which upload landed six hours earlier.
     static func recencyBand(_ date: Date, now: Date = Date()) -> Int {
@@ -174,6 +245,10 @@ enum Recommend {
     // a physics listener is far likelier to follow a history recommendation than a
     // cooking one, and an exploration nobody takes is wasted quota.
     static func explorationTopic(covered: [String: Int]) -> String? {
+        recommendationTopic(covered: covered)
+    }
+
+    static func recommendationTopic(covered: [String: Int]) -> String? {
         guard !covered.isEmpty else { return nil }
         let strongest = covered.max { $0.value < $1.value }?.key
         guard let strongest, let neighbours = adjacency[strongest] else { return nil }
@@ -236,6 +311,14 @@ enum Recommend {
         return subject[(day / coldStartSubjects.count) % subject.count]
     }
 
+    static func coldStartFallbackQueries(startingWith query: String) -> [String] {
+        var result = [query]
+        for candidate in coldStartQueries where !result.contains(candidate) {
+            result.append(candidate)
+        }
+        return result
+    }
+
     // MARK: - Quality
 
     // Suggestions were ranked by YouTube's relevance alone, which mixed a 755k-view
@@ -252,9 +335,11 @@ enum Recommend {
     // suggestions, it is one suggestion repeated — and it crowds out the variety the
     // rest of the list is for.
     static func diversified(_ videos: [ChannelVideo], perChannel: Int = 1) -> [ChannelVideo] {
+        var seenVideos: Set<String> = []
         var seen: [String: Int] = [:]
         var result: [ChannelVideo] = []
         for video in videos {
+            guard seenVideos.insert(video.videoId).inserted else { continue }
             // Videos with no channel id are kept: dropping them would silently lose
             // results rather than merely reordering them.
             guard let channelId = video.channelId else {
@@ -267,6 +352,66 @@ enum Recommend {
             result.append(video)
         }
         return result
+    }
+
+    static func parseViewCount(_ text: String?) -> Int? {
+        guard let text else { return nil }
+        let lower = text.lowercased()
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "views", with: "")
+            .replacingOccurrences(of: "view", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = lower.last
+        let multiplier: Double
+        let numberText: String
+        switch suffix {
+        case "k":
+            multiplier = 1_000
+            numberText = String(lower.dropLast())
+        case "m":
+            multiplier = 1_000_000
+            numberText = String(lower.dropLast())
+        case "b":
+            multiplier = 1_000_000_000
+            numberText = String(lower.dropLast())
+        default:
+            multiplier = 1
+            numberText = lower
+        }
+        guard let value = Double(numberText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return Int(value * multiplier)
+    }
+
+    static func parsePublishedText(_ text: String?, now: Date = Date()) -> Date? {
+        guard let text else { return nil }
+        let lower = text.lowercased()
+        guard !lower.contains("premiere") else { return nil }
+        let parts = lower.split(separator: " ")
+        guard let amountText = parts.first else { return nil }
+        let amount = amountText == "a" || amountText == "an"
+            ? 1
+            : Int(amountText)
+        guard let amount,
+              let unit = parts.dropFirst().first
+        else { return nil }
+
+        let days: Int
+        if unit.hasPrefix("minute") || unit.hasPrefix("hour") {
+            days = 0
+        } else if unit.hasPrefix("day") {
+            days = amount
+        } else if unit.hasPrefix("week") {
+            days = amount * 7
+        } else if unit.hasPrefix("month") {
+            days = amount * 30
+        } else if unit.hasPrefix("year") {
+            days = amount * 365
+        } else {
+            return nil
+        }
+        return now.addingTimeInterval(-Double(days) * 86_400)
     }
 
     // A search query for a topic. Plain words rather than a topicId: searching by

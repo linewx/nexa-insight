@@ -187,9 +187,14 @@ final class YouTubeAPIParserTests: XCTestCase {
                       "matches the scraped pages' en-US form: \(views)")
     }
 
-    func testFlagsShortsByDuration() throws {
+    func testFlagsVideosBelowTenMinutesByDuration() throws {
         let details = try YouTubeAPIParser.parseVideoDetails(Data(videosJSON.utf8))
-        XCTAssertTrue(details["3HQkVfZ4DNY"]?.isShort ?? false, "PT1M is exactly the ceiling")
+        XCTAssertTrue(details["3HQkVfZ4DNY"]?.isShort ?? false)
+        let json = """
+        {"items": [{"id": "ten", "contentDetails": {"duration": "PT10M"}}]}
+        """
+        let tenMinute = try YouTubeAPIParser.parseVideoDetails(Data(json.utf8))
+        XCTAssertFalse(tenMinute["ten"]?.isShort ?? true, "exactly ten minutes is kept")
     }
 
     // Keyed by id because the API does not promise to return ids in the order

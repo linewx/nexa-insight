@@ -50,17 +50,15 @@ final class ISO8601DurationTests: XCTestCase {
         XCTAssertNil(ISO8601Duration.displayText("PT0S"), "a zero-length video is unknown, not 0:00")
     }
 
-    // 60s is YouTube's own ceiling. Verified against Veritasium: 6 of 50 uploads
-    // were at or under it, including two at exactly PT1M.
-    func testIsShortUsesTheSixtySecondCeiling() {
+    func testIsShortUsesTheTenMinuteStudyFloor() {
         XCTAssertTrue(ISO8601Duration.isShort("PT42S"))
-        XCTAssertTrue(ISO8601Duration.isShort("PT1M"), "exactly 60s is a Short")
-        XCTAssertFalse(ISO8601Duration.isShort("PT1M1S"))
+        XCTAssertTrue(ISO8601Duration.isShort("PT9M59S"))
+        XCTAssertFalse(ISO8601Duration.isShort("PT10M"), "exactly ten minutes is kept")
         XCTAssertFalse(ISO8601Duration.isShort("PT3H46M18S"))
     }
 
     // Deliberate asymmetry, same as the scraped path: an unknown duration is kept.
-    // A stray Short is noise; a dropped episode is unfindable.
+    // One noisy short item is less costly than hiding a real episode.
     func testUnknownDurationIsNotAShort() {
         XCTAssertFalse(ISO8601Duration.isShort(nil))
         XCTAssertFalse(ISO8601Duration.isShort("garbage"))

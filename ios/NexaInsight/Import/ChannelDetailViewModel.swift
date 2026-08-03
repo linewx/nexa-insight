@@ -2,9 +2,8 @@ import Foundation
 
 // State for one channel's detail screen.
 //
-// Search is the primary surface — it is the only measured path that reaches a
-// channel's back catalog. The uploads list is a secondary convenience for when
-// the user has no particular query in mind.
+// Search is the primary surface — it reaches the back catalog while preserving
+// the same long-form filter as the channel catalogue.
 //
 // This screen is also where following happens, so it must work for channels the
 // user does NOT follow: it is reached by tapping a channel name on any video
@@ -14,22 +13,17 @@ import Foundation
 final class ChannelDetailViewModel: ObservableObject {
     @Published var query = ""
     @Published var results: [ChannelVideo] = []
-    @Published var uploads: [DiscoverEntry] = []
     @Published var searching = false
     @Published var loadingUploads = false
     // True only when the page could not be read; never for an empty result set.
     @Published var searchUnavailable = false
     @Published var searchedTerm: String?
     // Decoration. A failed header parse leaves this empty and the screen falls
-    // back to the title the video card already supplied — never an error state,
-    // because the content below comes from RSS and in-channel search.
+    // back to the title the video card already supplied.
     @Published var header: ChannelHeader = .empty
     @Published private(set) var following: Bool
 
-    // The full catalog, when an API key is configured. Separate from `uploads`
-    // (RSS) rather than merged into it, because the two have different ceilings
-    // and only one can page — collapsing them would hide which one you are
-    // looking at.
+    // The full long-form catalog, when an API key is configured.
     @Published var catalog: [ChannelVideo] = []
     @Published var catalogTotal: Int?
     @Published var loadingMore = false
@@ -41,9 +35,8 @@ final class ChannelDetailViewModel: ObservableObject {
     private let fallbackTitle: String
     private let store: SubscriptionStore
     private let service: DiscoverFeedFetching
-    // nil when no API key is configured, which is the normal state for a user who
-    // has not set one up. That is why every catalog path degrades to RSS instead
-    // of erroring.
+    // nil when no API key is configured. Channel detail intentionally stays
+    // API-only so the long-form floor can be enforced from duration metadata.
     private let api: YouTubeAPIFetching?
     private let importedVideoIds: () -> Set<String>
 
@@ -75,13 +68,8 @@ final class ChannelDetailViewModel: ObservableObject {
     // On this screen the channel is already known, so the attribution is dropped
     // from both lists — a tappable name here would navigate back to this screen.
     //
-    // The catalog wins when available: it is the whole channel, newest-first, with
-    // durations. RSS is the fallback for users with no API key, capped at 15.
     var uploadCards: [VideoCardItem] {
-        let source = catalog.isEmpty
-            ? uploads.map { VideoCardItem($0) }
-            : catalog.compactMap { VideoCardItem($0) }
-        return source.map { $0.withoutChannel() }
+        catalog.compactMap { VideoCardItem($0)?.withoutChannel() }
     }
 
     // True once there is another page to fetch. Drives the scroll trigger, so it
@@ -100,16 +88,15 @@ final class ChannelDetailViewModel: ObservableObject {
         _ = await (headerTask, contentTask)
     }
 
-    // The API when a key is configured, RSS otherwise. A key that turns out to be
-    // invalid also falls back, so a bad key degrades to a shorter list with an
-    // explanation rather than an empty screen.
+    // Channel browsing uses the API only. The RSS feed has no duration metadata,
+    // which means it cannot enforce Nexa's long-form floor and short uploads leak
+    // into a screen meant for study.
     private func loadContent() async {
         guard api != nil else {
-            await loadUploads()
+            catalogError = "Add a YouTube API key in Settings to browse this channel's long-form videos."
             return
         }
         await loadFirstPage()
-        if catalog.isEmpty { await loadUploads() }
     }
 
     // Pull-to-refresh. Resets paging state so a refresh cannot append page 2 of
@@ -176,12 +163,6 @@ final class ChannelDetailViewModel: ObservableObject {
         if following, !fetched.isEmpty { persistHeaderFields() }
     }
 
-    func loadUploads() async {
-        loadingUploads = true
-        defer { loadingUploads = false }
-        uploads = await service.fetchChannelUploads(channelId: channelId)
-    }
-
     func runSearch() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         // An empty query was measured to return zero results, so skip the request.
@@ -195,7 +176,7 @@ final class ChannelDetailViewModel: ObservableObject {
         switch await service.searchVideos(channelId: channelId, query: trimmed) {
         case .parsed(let videos):
             // Keep YouTube's relevance order; do not sort by date.
-            results = videos
+            results = videos.filter { !YouTubeChannelLogic.isShortDuration($0.durationText) }
         case .structureMissing:
             results = []
             searchUnavailable = true

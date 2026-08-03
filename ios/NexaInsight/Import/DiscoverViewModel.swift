@@ -68,6 +68,7 @@ final class DiscoverViewModel: ObservableObject {
     // than "what is next to what I already study".
     @Published var coldStart: [ChannelVideo] = []
     @Published var coldStartLoading = false
+    @Published private(set) var coldStartVisibleCount = 10
     // Shown on screen when suggestions come back empty. Device logs are not reachable
     // from the command line, and three rounds of guessing at why this produced nothing
     // cost more than a visible line of text would have.
@@ -95,6 +96,9 @@ final class DiscoverViewModel: ObservableObject {
     // is on screen, and a captured Locale would keep the old language until relaunch.
     private let bylineLocale: () -> Locale
     private let coldStartCache: ExplorationCache
+
+    private static let coldStartPageSize = 10
+    private static let coldStartPoolLimit = 40
 
     init(store: SubscriptionStore,
          service: DiscoverFeedFetching,
@@ -144,7 +148,11 @@ final class DiscoverViewModel: ObservableObject {
         return copy
     }
 
-    var coldStartCards: [VideoCardItem] { coldStart.compactMap { VideoCardItem($0) } }
+    var coldStartCards: [VideoCardItem] {
+        Array(coldStart.prefix(coldStartVisibleCount)).compactMap { VideoCardItem($0) }
+    }
+
+    var hasMoreColdStartCards: Bool { coldStartVisibleCount < coldStart.count }
 
     // Which cards came from outside the followed set, so the view can mark them.
     var explorationIds: Set<String> { Set(exploration.map(\.videoId)) }
@@ -276,23 +284,10 @@ final class DiscoverViewModel: ObservableObject {
     // Same banding as the RSS path, expressed over ChannelVideo (which carries
     // publishedAt only on the API path).
     private func rankByEngagement(_ videos: [ChannelVideo]) -> [ChannelVideo] {
-        // Same three-factor blend as the RSS path. This was still on the old tiered
-        // sort, so the two feed sources ordered differently for the same library.
-        let affinity = Recommend.topicAffinity(engagement: engagement, topics: topicProfile)
-        func blended(_ video: ChannelVideo) -> Double {
-            let subscription = video.channelId
-                .map { Recommend.normalisedEngagement($0, engagement: engagement) } ?? 0
-            let topic = affinity.normalised(for: video.channelId.flatMap { topicProfile[$0] } ?? [])
-            let recency = video.publishedAt.map { Recommend.recencyScore($0) } ?? 0
-            return subscription * Recommend.subscriptionWeight
-                + topic * Recommend.topicWeight
-                + recency * Recommend.recencyWeight
-        }
-        return videos.sorted { left, right in
-            let l = blended(left), r = blended(right)
-            if abs(l - r) > 0.0001 { return l > r }
-            return (left.publishedAt ?? .distantPast) > (right.publishedAt ?? .distantPast)
-        }
+        Recommend.rankedVideos(videos,
+                               followedChannelIds: Set(store.subscriptions.map(\.channelId)),
+                               engagement: engagement,
+                               topics: topicProfile)
     }
 
     // Local only: playback position, and whether an episode was finished. Costs
@@ -361,8 +356,9 @@ final class DiscoverViewModel: ObservableObject {
         // no-op to protect the 100-per-day search budget, which meant a stale list
         // could not be replaced at all.
         let alreadySearchedToday = coldStartCache.isFresh()
-        if !forced, alreadySearchedToday {
-            coldStart = coldStartCache.videos()
+        let cachedVideos = alreadySearchedToday ? coldStartCache.videos() : []
+        if !forced, !cachedVideos.isEmpty {
+            setColdStart(cachedVideos)
             coldStartLog.notice("served \(self.coldStart.count) from today's cache")
             return
         }
@@ -376,49 +372,65 @@ final class DiscoverViewModel: ObservableObject {
         coldStartLog.notice("searching query=\(query, privacy: .public)")
         var path = "scrape"
         var found: [ChannelVideo] = []
-
-        // The scraped path FIRST, even when a key exists.
-        //
-        // Measured on the device: the identical request that returns 10 items from this
-        // Mac returned 0 on the phone, because googleapis.com is unreachable there
-        // while youtube.com is not — which is also why site-wide search kept working
-        // when suggestions did not. A key that cannot be reached is worse than no key,
-        // and `try?` was turning that into a silent empty list.
-        switch await service.searchVideosSiteWide(query: query, recentOnly: true) {
-        // One per channel here as well. The API path applies this inside the client,
-        // and without it the scraped results let a single prolific podcast take four
-        // of the ten slots — the same defect in the path that now runs first.
-        case .parsed(let videos): found = Recommend.diversified(videos)
-        case .structureMissing: found = []
-        }
-
-        // Only if scraping produced nothing does the API get a turn — it has better
-        // metadata when it is reachable at all.
-        if found.isEmpty, let api {
+        if let api, forced || !alreadySearchedToday {
+            // Marked before the request so a failure cannot retry and drain the
+            // day's 100-unit search budget.
             path = "api"
             coldStartCache.markAttempted(topic: query)
             found = (try? await api.searchTopic(query: query)) ?? []
+        }
+
+        // A configured API key is not a guarantee that the phone can reach
+        // googleapis.com. If the keyed path is empty or too small, keep the
+        // first-run experience alive with the free YouTube page search. Query
+        // several measured subjects so one sparse topic does not make the whole
+        // screen blank.
+        if Recommend.diversified(found, perChannel: 2).count < Self.coldStartPoolLimit {
+            path = "scrape"
+            for fallbackQuery in Recommend.coldStartFallbackQueries(startingWith: query) {
+                switch await service.searchVideosSiteWide(query: fallbackQuery, recentOnly: true) {
+                case .parsed(let videos):
+                    found += videos
+                case .structureMissing:
+                    break
+                }
+                if Recommend.diversified(found, perChannel: 2).count >= Self.coldStartPoolLimit { break }
+            }
         }
 
         // An empty result must not wipe what is on screen. A pull that fails — the
         // scrape breaking, the network dropping — should leave the previous
         // suggestions rather than clearing the feed, which would make refreshing
         // riskier than not refreshing.
-        let fresh = Array(found.prefix(10))
+        let fresh = Array(Recommend.diversified(found, perChannel: 2).prefix(Self.coldStartPoolLimit))
         coldStartLog.notice("got \(found.count) results, keeping \(fresh.count)")
         coldStartDiagnostic = fresh.isEmpty
             ? "No results · \(path) · \"\(query)\" · \(found.count) returned"
             : nil
         if !fresh.isEmpty {
-            coldStart = fresh
+            setColdStart(fresh)
         } else if coldStart.isEmpty, alreadySearchedToday {
             // Nothing new and nothing showing: fall back to whatever was cached.
-            coldStart = coldStartCache.videos()
+            setColdStart(coldStartCache.videos())
         }
 
-        if !fresh.isEmpty, api != nil {
+        if !fresh.isEmpty {
             coldStartCache.store(topic: query, videos: fresh)
         }
+    }
+
+    private func setColdStart(_ videos: [ChannelVideo]) {
+        coldStart = videos
+        coldStartVisibleCount = min(Self.coldStartPageSize, max(videos.count, Self.coldStartPageSize))
+    }
+
+    func loadMoreColdStartIfNeeded(current card: VideoCardItem) {
+        guard !hasSubscriptions, !isSearchActive, hasMoreColdStartCards else { return }
+        let visible = coldStartCards
+        guard let index = visible.firstIndex(where: { $0.videoId == card.videoId }) else { return }
+        guard index >= visible.count - 3 else { return }
+        coldStartVisibleCount = min(coldStartVisibleCount + Self.coldStartPageSize,
+                                    coldStart.count)
     }
 
     // One search per day, cached. search.list costs 100 units from a bucket of
@@ -441,7 +453,7 @@ final class DiscoverViewModel: ObservableObject {
         for labels in topicProfile.values {
             for label in labels { covered[label, default: 0] += 1 }
         }
-        guard let topic = Recommend.explorationTopic(covered: covered) else { return }
+        guard let topic = Recommend.recommendationTopic(covered: covered) else { return }
 
         // Marked before the request returns, so a failure cannot retry on the next
         // refresh and burn the day's only search.
@@ -455,7 +467,12 @@ final class DiscoverViewModel: ObservableObject {
             guard let id = video.channelId else { return true }
             return !followed.contains(id)
         }
-        exploration = Array(fresh.prefix(3))
+        exploration = Array(Recommend.rankedVideos(
+            fresh,
+            followedChannelIds: followed,
+            engagement: engagement,
+            topics: topicProfile
+        ).prefix(5))
         if !exploration.isEmpty {
             explorationCache.store(topic: topic, videos: exploration)
         }

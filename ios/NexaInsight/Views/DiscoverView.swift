@@ -127,7 +127,10 @@ struct DiscoverView: View {
                         .font(NXFont.auxiliary)
                         .foregroundStyle(NXColor.textTertiary(scheme))
                         .fixedSize(horizontal: false, vertical: true)
-                    cardList(vm.coldStartCards)
+                    cardList(vm.coldStartCards, onNearEnd: vm.loadMoreColdStartIfNeeded)
+                    if vm.hasMoreColdStartCards {
+                        LoadMoreHint()
+                    }
                 }
             }
         } else if let feedError = vm.feedError {
@@ -190,8 +193,9 @@ struct DiscoverView: View {
     }
 
     @ViewBuilder
-    private func cardList(_ cards: [VideoCardItem]) -> some View {
-        VStack(spacing: 0) {
+    private func cardList(_ cards: [VideoCardItem],
+                          onNearEnd: ((VideoCardItem) -> Void)? = nil) -> some View {
+        LazyVStack(spacing: 0) {
             ForEach(cards) { card in
                 VideoCard(
                     item: card,
@@ -206,6 +210,9 @@ struct DiscoverView: View {
                     explorationTopic: vm.explorationIds.contains(card.videoId)
                         ? vm.explorationTopic : nil,
                     playing: playingId == card.videoId)
+                    .onAppear {
+                        onNearEnd?(card)
+                    }
 
             }
         }
@@ -218,6 +225,23 @@ struct DiscoverView: View {
                 Divider().overlay(NXColor.border(scheme))
             }
         }
+    }
+}
+
+private struct LoadMoreHint: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(spacing: NXSpacing.x2) {
+            ProgressView()
+                .scaleEffect(0.72)
+                .tint(NXColor.textTertiary(scheme))
+            Text("Loading more")
+                .font(NXFont.auxiliary)
+                .foregroundStyle(NXColor.textTertiary(scheme))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, NXSpacing.x4)
     }
 }
 

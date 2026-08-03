@@ -78,19 +78,18 @@ final class YouTubeChannelLogicTests: XCTestCase {
         XCTAssertNil(YouTubeChannelLogic.durationSeconds("ab:cd"))
     }
 
-    // Site-wide search results carry a duration but no link, the reverse of the
-    // RSS path — so Shorts have to be identified by length there. 60s is
-    // YouTube's own ceiling.
-    func testIsShortDurationUsesTheSixtySecondCeiling() {
+    // Site-wide and in-channel search results carry a duration but no link, the
+    // reverse of the RSS path — so short content is identified by length.
+    func testIsShortDurationUsesTheTenMinuteStudyFloor() {
         XCTAssertTrue(YouTubeChannelLogic.isShortDuration("0:45"))
-        XCTAssertTrue(YouTubeChannelLogic.isShortDuration("1:00"))
-        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("1:01"))
+        XCTAssertTrue(YouTubeChannelLogic.isShortDuration("9:59"))
+        XCTAssertFalse(YouTubeChannelLogic.isShortDuration("10:00"))
         XCTAssertFalse(YouTubeChannelLogic.isShortDuration("18:42"))
         XCTAssertFalse(YouTubeChannelLogic.isShortDuration("2:19:34"))
     }
 
-    // Deliberate asymmetry: an unrecognized duration is kept. A stray Short is
-    // noise, but a dropped 4-hour episode is unfindable — the user searched for it.
+    // Deliberate asymmetry: an unrecognized duration is kept. One noisy short item
+    // is less costly than hiding a real long-form episode.
     func testUnparseableDurationIsNotTreatedAsAShort() {
         XCTAssertFalse(YouTubeChannelLogic.isShortDuration(nil))
         XCTAssertFalse(YouTubeChannelLogic.isShortDuration("LIVE"))

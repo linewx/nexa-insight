@@ -57,9 +57,10 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
 
         let merged = page.videos.compactMap { video -> ChannelVideo? in
             guard let detail = details[video.videoId] else { return video }
-            // Shorts are dropped here rather than in the parser: the parser sees
-            // no durations, so this is the first point where they are knowable.
-            // Same asymmetry as the scraped path — an unknown duration is kept.
+            // Channel catalogues are for long-form study. Shorts and ordinary
+            // short uploads below ten minutes are filtered once the API duration
+            // is available. Unknown duration is kept rather than hiding a real
+            // lecture because the detail request was incomplete.
             guard !detail.isShort else { return nil }
             var enriched = video
             enriched.durationText = detail.durationText

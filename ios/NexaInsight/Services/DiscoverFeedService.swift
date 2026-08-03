@@ -122,14 +122,13 @@ struct DiscoverFeedService: DiscoverFeedFetching {
             guard (200..<300).contains(status) else { return .structureMissing }
             switch VideoSearchParser.parse(data) {
             case .parsed(let videos):
-                // Site-wide search can surface Shorts, unlike in-channel search
-                // (measured: zero /shorts/ references there). Seconds-long clips
-                // are noise for an intensive-listening app.
+                // Site-wide search can surface short uploads. Anything under ten
+                // minutes is noise for Nexa's long-form study surfaces.
                 //
                 // Filtering by duration rather than by link form: this page gives
                 // us lengthText but no link to test, the reverse of the RSS path.
-                // Videos with an unparseable duration are KEPT — a stray Short is
-                // noise, a dropped episode is unfindable.
+                // Videos with an unparseable duration are KEPT — one noisy short
+                // item is less costly than hiding a real episode.
                 return .parsed(videos.filter { !YouTubeChannelLogic.isShortDuration($0.durationText) })
             case .structureMissing:
                 return .structureMissing

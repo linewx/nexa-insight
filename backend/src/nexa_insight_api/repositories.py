@@ -69,6 +69,10 @@ class Repository:
                 select(Chapter).where(Chapter.episode_id == episode_id).order_by(Chapter.start_ms)
             ))
 
+    def has_learning_content(self, episode_id: int) -> bool:
+        with self.session() as session:
+            return session.scalar(select(Sentence.id).where(Sentence.episode_id == episode_id).limit(1)) is not None
+
     def upsert_job(self, job_id: int, *, stage: str, progress: int, status: str = "running", error: str | None = None) -> None:
         with self.session() as session:
             job = session.get(ImportJob, job_id)
@@ -99,6 +103,14 @@ class Repository:
             session.expunge(job)
             return job
 
+    def requeue_running_jobs(self) -> int:
+        with self.session() as session:
+            jobs = list(session.scalars(select(ImportJob).where(ImportJob.status == "running")))
+            for job in jobs:
+                job.status = "queued"
+            session.commit()
+            return len(jobs)
+
     def completed_chunks(self, job_id: int) -> dict[int, ImportChunk]:
         with self.session() as session:
             chunks = session.scalars(
@@ -115,6 +127,12 @@ class Repository:
                 chunk = ImportChunk(job_id=job_id, position=position, start_ms=start_ms, end_ms=end_ms, path=path)
                 session.add(chunk)
             chunk.status, chunk.transcript_json = "complete", transcript_json
+            session.commit()
+
+    def clear_learning_content(self, episode_id: int) -> None:
+        with self.session() as session:
+            session.query(Sentence).filter_by(episode_id=episode_id).delete()
+            session.query(Chapter).filter_by(episode_id=episode_id).delete()
             session.commit()
 
     def replace_learning_content(self, episode_id: int, chapters: list[dict], sentences: list[dict]) -> None:

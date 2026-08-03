@@ -30,11 +30,10 @@ private func video(_ id: String, _ title: String) -> ChannelVideo {
                  summary: "about \(title)", thumbnailURL: nil)
 }
 
-private func upload(_ id: String, _ title: String, at seconds: TimeInterval) -> DiscoverEntry {
-    DiscoverEntry(videoId: id, channelId: "UCSHZKyawb77ixDdsGog4iWA", title: title,
-                  channelTitle: "Chan", published: Date(timeIntervalSince1970: seconds),
-                  summary: nil, thumbnailURL: nil, viewCount: nil,
-                  watchURL: URL(string: "https://www.youtube.com/watch?v=\(id)")!)
+private func video(_ id: String, _ title: String, duration: String) -> ChannelVideo {
+    ChannelVideo(videoId: id, title: title, durationText: duration,
+                 viewsText: "10K views", publishedText: "2 years ago",
+                 summary: "about \(title)", thumbnailURL: nil)
 }
 
 @MainActor
@@ -66,17 +65,6 @@ final class ChannelDetailViewModelTests: XCTestCase {
             store: store ?? makeStore(),
             service: service,
             importedVideoIds: { imported })
-    }
-
-    func testLoadUploadsPopulatesRecencyList() async {
-        var service = StubService()
-        service.uploads = [upload("v2", "Newer", at: 2000), upload("v1", "Older", at: 1000)]
-
-        let vm = makeVM(service)
-        await vm.loadUploads()
-
-        XCTAssertEqual(vm.uploads.map(\.videoId), ["v2", "v1"])
-        XCTAssertFalse(vm.loadingUploads)
     }
 
     func testRunSearchPopulatesResults() async {
@@ -142,13 +130,12 @@ final class ChannelDetailViewModelTests: XCTestCase {
         XCTAssertNil(vm.searchedTerm)
     }
 
-    func testClearSearchRestoresRecencyList() async {
+    func testClearSearchRestoresCatalogList() async {
         var service = StubService()
-        service.uploads = [upload("v1", "Older", at: 1000)]
         service.videoOutcome = .parsed([video("a", "Alpha")])
 
         let vm = makeVM(service)
-        await vm.loadUploads()
+        vm.catalog = [video("v1", "From catalog")]
         vm.query = "physics"
         await vm.runSearch()
         vm.clearSearch()
@@ -156,7 +143,7 @@ final class ChannelDetailViewModelTests: XCTestCase {
         XCTAssertTrue(vm.results.isEmpty)
         XCTAssertNil(vm.searchedTerm)
         XCTAssertEqual(vm.query, "")
-        XCTAssertEqual(vm.uploads.map(\.videoId), ["v1"], "uploads survive a search")
+        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["v1"], "catalog survives a search")
     }
 
     // Prevents re-running a pipeline that takes tens of minutes.
@@ -187,15 +174,8 @@ final class ChannelDetailViewModelTests: XCTestCase {
     // inspects a channel before deciding.
 
     func testOpensForAChannelNeverFollowed() async {
-        var service = StubService()
-        service.uploads = [upload("v1", "Something", at: 1000)]
-
-        let vm = makeVM(service, store: makeStore(following: false))
+        let vm = makeVM(StubService(), store: makeStore(following: false))
         XCTAssertFalse(vm.following)
-
-        await vm.loadUploads()
-        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["v1"],
-                       "content loads whether or not the channel is followed")
     }
 
     func testFollowWritesToTheStore() async {
@@ -251,12 +231,9 @@ final class ChannelDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.title, "Lex Fridman Official")
     }
 
-    // The contract that keeps a scrape failure from breaking the screen: YouTube
-    // is migrating this layer, and the content below comes from other sources.
     func testHeaderFailureLeavesTheScreenUsable() async {
         var service = StubService()
         service.header = .empty
-        service.uploads = [upload("v1", "Still here", at: 1000)]
 
         let vm = makeVM(service)
         await vm.load()
@@ -264,7 +241,7 @@ final class ChannelDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.title, "Lex Fridman", "falls back to the name we arrived with")
         XCTAssertNil(vm.avatarURL)
         XCTAssertNil(vm.subscriberText)
-        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["v1"], "content is unaffected")
+        XCTAssertTrue(vm.uploadCards.isEmpty)
     }
 
     // MARK: - Cards
@@ -272,11 +249,10 @@ final class ChannelDetailViewModelTests: XCTestCase {
     // A tappable channel name here would navigate back to this same screen.
     func testCardsOnThisScreenCarryNoChannelLink() async {
         var service = StubService()
-        service.uploads = [upload("v1", "From this channel", at: 1000)]
         service.videoOutcome = .parsed([video("a", "Alpha")])
 
         let vm = makeVM(service)
-        await vm.loadUploads()
+        vm.catalog = [video("v1", "From this channel")]
         vm.query = "physics"
         await vm.runSearch()
 
@@ -285,18 +261,18 @@ final class ChannelDetailViewModelTests: XCTestCase {
         XCTAssertFalse(vm.resultCards[0].channelIsTappable)
     }
 
-    // Search results have a duration, RSS uploads do not. Same card, one nil.
-    func testDurationPresentOnSearchResultsAbsentOnUploads() async {
+    func testSearchResultsUnderTenMinutesAreFiltered() async {
         var service = StubService()
-        service.uploads = [upload("v1", "An upload", at: 1000)]
-        service.videoOutcome = .parsed([video("a", "Alpha")])
+        service.videoOutcome = .parsed([
+            video("short", "Short", duration: "9:59"),
+            video("long", "Long", duration: "10:00"),
+        ])
 
         let vm = makeVM(service)
-        await vm.loadUploads()
-        XCTAssertNil(vm.uploadCards[0].durationText)
-
         vm.query = "physics"
         await vm.runSearch()
-        XCTAssertEqual(vm.resultCards[0].durationText, "1:02:03")
+
+        XCTAssertEqual(vm.resultCards.map(\.videoId), ["long"])
+        XCTAssertEqual(vm.resultCards[0].durationText, "10:00")
     }
 }

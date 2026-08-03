@@ -4,8 +4,8 @@ import XCTest
 // Paging behaviour for a channel's full catalog via the Data API.
 //
 // The interesting failures here are not parsing (covered in
-// YouTubeAPIParserTests) but coordination: re-entrant scroll triggers, running out
-// of pages, and falling back to RSS when the key does not work.
+// YouTubeAPIParserTests) but coordination: re-entrant scroll triggers and running
+// out of pages.
 private struct StubAPI: YouTubeAPIFetching {
     // Pages served in order; each call takes the next one.
     var pages: [UploadsPage] = []
@@ -201,10 +201,9 @@ final class ChannelCatalogPagingTests: XCTestCase {
                       "quota exhaustion reads differently from a bad key")
     }
 
-    // MARK: - Fallback
+    // MARK: - API-only
 
-    // A user with no key is the normal case, not an error case.
-    func testNoKeyUsesRSSUploads() async {
+    func testNoKeyDoesNotUseRSSUploads() async {
         var feed = StubFeed()
         feed.uploads = [upload("r1", at: 2000), upload("r2", at: 1000)]
 
@@ -213,11 +212,11 @@ final class ChannelCatalogPagingTests: XCTestCase {
 
         XCTAssertTrue(vm.catalog.isEmpty)
         XCTAssertFalse(vm.hasCatalog)
-        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["r1", "r2"])
+        XCTAssertTrue(vm.uploadCards.isEmpty)
+        XCTAssertTrue(vm.catalogError?.contains("API key") ?? false)
     }
 
-    // A key that is rejected must degrade to the shorter list, not an empty screen.
-    func testRejectedKeyFallsBackToRSS() async {
+    func testRejectedKeyDoesNotFallBackToRSS() async {
         var api = StubAPI()
         api.error = YouTubeAPIError.rejected(reason: "badRequest")
         var feed = StubFeed()
@@ -227,13 +226,12 @@ final class ChannelCatalogPagingTests: XCTestCase {
         await vm.load()
 
         XCTAssertTrue(vm.catalog.isEmpty)
-        XCTAssertEqual(vm.uploadCards.map(\.videoId), ["r1"], "content, not an error state")
-        XCTAssertNotNil(vm.catalogError, "but the reason is still surfaced")
+        XCTAssertTrue(vm.uploadCards.isEmpty)
+        XCTAssertNotNil(vm.catalogError)
+        XCTAssertTrue(vm.catalogError?.lowercased().contains("key") ?? false)
     }
 
-    // The catalog is the whole channel with durations; RSS is 15 entries without.
-    // When both exist the catalog must win, or the extra request bought nothing.
-    func testCatalogWinsOverRSSWhenBothLoaded() async {
+    func testCatalogIsUsedWhenLoaded() async {
         var api = StubAPI()
         api.pages = [UploadsPage(videos: [video("a")], nextPageToken: nil, totalCount: 1)]
         var feed = StubFeed()
@@ -400,10 +398,10 @@ final class ColdStartTests: XCTestCase {
         defaults.removePersistentDomain(forName: "ColdStartTests")
     }
 
-    private func makeVM(_ api: StubAPI?) -> DiscoverViewModel {
+    private func makeVM(_ api: StubAPI?, feed: StubFeed = StubFeed()) -> DiscoverViewModel {
         DiscoverViewModel(
             store: SubscriptionStore(defaults: defaults),   // deliberately empty
-            service: StubFeed(), api: api,
+            service: feed, api: api,
             episodesProvider: { [] },
             explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
             coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
@@ -446,12 +444,13 @@ final class ColdStartTests: XCTestCase {
         XCTAssertEqual(api.calls.searchQueries.count, 1)
     }
 
-    // Without a key there is nothing to search with, and the screen falls back to the
-    // written prompt rather than showing a spinner forever.
+    // Without a key, the page search still gives first-run users something to open.
     func testNoApiKeyMeansNoSuggestionsAndNoSpinner() async {
-        let vm = makeVM(nil)
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("a")])
+        let vm = makeVM(nil, feed: feed)
         await vm.refresh()
-        XCTAssertTrue(vm.coldStartCards.isEmpty)
+        XCTAssertFalse(vm.coldStartCards.isEmpty)
         XCTAssertFalse(vm.coldStartLoading)
     }
 
@@ -501,39 +500,87 @@ final class ColdStartTests: XCTestCase {
                        "an unversioned entry must not count as today's search")
     }
 
-    // The scraped path runs FIRST, even when a key is configured.
-    //
-    // Measured on the device: the identical request that returned 10 items from a Mac
-    // returned 0 on the phone, because googleapis.com is unreachable there while
-    // youtube.com is not. `try?` turned that into a silent empty list, so a key that
-    // could not be reached was worse than no key at all.
-    func testScrapedPathIsPreferredOverTheAPI() async {
-        var api = stub()
-        api.searchResults = [video("fromApi")]
+    func testFreshEmptyCacheRefetchesColdStart() async {
+        let cache = ExplorationCache(defaults: defaults, namespace: "cold")
+        cache.markAttempted(topic: "ai podcast")
         var feed = StubFeed()
-        feed.siteWideOutcome = .parsed([video("fromScrape")])
-
+        feed.siteWideOutcome = .parsed([video("fresh")])
         let vm = DiscoverViewModel(
             store: SubscriptionStore(defaults: defaults),
-            service: feed, api: api,
+            service: feed, api: nil,
             episodesProvider: { [] },
             explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
-            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+            coldStartCache: cache)
 
         await vm.refresh()
 
-        XCTAssertEqual(vm.coldStart.map(\.videoId), ["fromScrape"])
-        XCTAssertTrue(api.calls.searchQueries.isEmpty,
-                      "the API is not called when scraping succeeded")
+        XCTAssertEqual(vm.coldStart.map(\.videoId), ["fresh"])
+        XCTAssertFalse(feed.siteWideCalls.queries.isEmpty,
+                       "a previous empty attempt must not make the first-run home permanently empty for the rest of the day")
     }
 
-    // It still falls back, since the API has better metadata where it is reachable.
-    func testAPIIsUsedWhenScrapingFails() async {
-        var api = stub()
-        api.searchResults = [video("fromApi")]
+    func testNoChannelsUseScrapedColdStartSuggestions() async {
         var feed = StubFeed()
-        feed.siteWideOutcome = .structureMissing
+        feed.siteWideOutcome = .parsed([video("tech"), video("english")])
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: nil,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
 
+        await vm.refresh()
+
+        XCTAssertEqual(vm.coldStart.map(\.videoId), ["tech", "english"])
+        XCTAssertFalse(feed.siteWideCalls.queries.isEmpty,
+                       "no-channel home must offer technology and English podcast suggestions without requiring a key")
+    }
+
+    func testColdStartShowsFirstPageThenLoadsMoreOnScroll() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed((0..<25).map { video("v\($0)") })
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: nil,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+
+        XCTAssertEqual(vm.coldStart.count, 25)
+        XCTAssertEqual(vm.coldStartCards.count, 10)
+        XCTAssertTrue(vm.hasMoreColdStartCards)
+
+        vm.loadMoreColdStartIfNeeded(current: vm.coldStartCards[7])
+
+        XCTAssertEqual(vm.coldStartCards.count, 20)
+        XCTAssertTrue(vm.hasMoreColdStartCards)
+    }
+
+    func testColdStartPagingStopsAtAvailableContent() async {
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed((0..<12).map { video("v\($0)") })
+        let vm = DiscoverViewModel(
+            store: SubscriptionStore(defaults: defaults),
+            service: feed, api: nil,
+            episodesProvider: { [] },
+            explorationCache: ExplorationCache(defaults: defaults, namespace: "exp"),
+            coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
+
+        await vm.refresh()
+
+        vm.loadMoreColdStartIfNeeded(current: vm.coldStartCards[9])
+
+        XCTAssertEqual(vm.coldStartCards.count, 12)
+        XCTAssertFalse(vm.hasMoreColdStartCards)
+    }
+
+    func testColdStartFallsBackToScrapeWhenAPIIsEmpty() async {
+        var api = stub()
+        api.searchResults = []
+        var feed = StubFeed()
+        feed.siteWideOutcome = .parsed([video("scraped")])
         let vm = DiscoverViewModel(
             store: SubscriptionStore(defaults: defaults),
             service: feed, api: api,
@@ -543,8 +590,10 @@ final class ColdStartTests: XCTestCase {
 
         await vm.refresh()
 
-        XCTAssertEqual(vm.coldStart.map(\.videoId), ["fromApi"])
         XCTAssertEqual(api.calls.searchQueries.count, 1)
+        XCTAssertEqual(vm.coldStart.map(\.videoId), ["scraped"])
+        XCTAssertFalse(feed.siteWideCalls.queries.isEmpty,
+                       "a configured key must not make the first-run feed blank when the API path fails")
     }
 
     // A pull always refetches, even with a key. This replaces a guard that limited
@@ -676,7 +725,7 @@ final class LazyAPIResolutionTests: XCTestCase {
             coldStartCache: ExplorationCache(defaults: defaults, namespace: "cold"))
 
         await vm.refresh()
-        XCTAssertTrue(vm.coldStartCards.isEmpty, "no key yet, so nothing to suggest")
+        XCTAssertTrue(vm.coldStartCards.isEmpty)
 
         // The user enters a key in Settings; no relaunch.
         box.api = stub
@@ -720,7 +769,7 @@ final class KeylessColdStartTests: XCTestCase {
         await vm.refresh()
 
         XCTAssertEqual(vm.coldStartCards.count, 2)
-        XCTAssertEqual(feed.siteWideCalls.queries.count, 1)
+        XCTAssertEqual(feed.siteWideCalls.queries.count, Recommend.coldStartQueries.count)
         XCTAssertTrue(Recommend.coldStartQueries.contains(feed.siteWideCalls.queries[0]))
     }
 
@@ -748,7 +797,7 @@ final class KeylessColdStartTests: XCTestCase {
         feed.siteWideOutcome = .parsed([video("a")])
         let vm = makeVM(feed)
         await vm.refresh()
-        XCTAssertEqual(feed.siteWideCalls.recentFlags, [true])
+        XCTAssertEqual(feed.siteWideCalls.recentFlags, Array(repeating: true, count: Recommend.coldStartQueries.count))
     }
 
     // But a user hunting a specific talk must not have it hidden for being a year old.
@@ -768,13 +817,13 @@ final class KeylessColdStartTests: XCTestCase {
         let vm = makeVM(feed)
 
         await vm.refresh()
-        XCTAssertEqual(feed.siteWideCalls.queries.count, 1)
+        XCTAssertEqual(feed.siteWideCalls.queries.count, Recommend.coldStartQueries.count)
 
         await vm.refresh()                      // ordinary refresh: cached
-        XCTAssertEqual(feed.siteWideCalls.queries.count, 1)
+        XCTAssertEqual(feed.siteWideCalls.queries.count, Recommend.coldStartQueries.count)
 
         await vm.refresh(forced: true)          // pull: searches again
-        XCTAssertEqual(feed.siteWideCalls.queries.count, 2)
+        XCTAssertEqual(feed.siteWideCalls.queries.count, Recommend.coldStartQueries.count * 2)
     }
 
     // A broken scrape leaves the written prompt rather than a permanent spinner.

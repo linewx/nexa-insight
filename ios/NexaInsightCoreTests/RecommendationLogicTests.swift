@@ -317,6 +317,62 @@ final class RecommendationLogicTests: XCTestCase {
         XCTAssertGreaterThan(Recommend.minimumSubscribers, 0)
     }
 
+    func testVideoRecommendationWeightsFollowedHistoryPopularityAndTime() {
+        func recommended(_ id: String,
+                         channel: String,
+                         title: String? = nil,
+                         views: String?,
+                         published: String?) -> ChannelVideo {
+            ChannelVideo(videoId: id, title: title ?? id, durationText: "1:00:00",
+                         viewsText: views, publishedText: published, summary: nil,
+                         thumbnailURL: nil, channelTitle: channel, channelId: channel)
+        }
+        let engagement = [
+            "UCstudied": ChannelEngagement(channelId: "UCstudied",
+                                           episodesFinished: 4,
+                                           totalListenedMs: 7_200_000),
+            "UChistory": ChannelEngagement(channelId: "UChistory",
+                                           episodesFinished: 2,
+                                           totalListenedMs: 3_600_000),
+        ]
+        let topics = [
+            "UCstudied": ["Technology"],
+            "UCpopular": ["Technology"],
+            "UCold": ["Sports"],
+            "UCrandom": ["Sports"],
+        ]
+        let ranked = Recommend.rankedVideos(
+            [
+                recommended("random", channel: "UCrandom", views: "900K views", published: "1 day ago"),
+                recommended("studied", channel: "UCstudied", views: "40K views", published: "5 days ago"),
+                recommended("popular", channel: "UCpopular", views: "2M views", published: "2 days ago"),
+                recommended("old", channel: "UCold", views: "3M views", published: "2 years ago"),
+            ],
+            followedChannelIds: ["UCstudied"],
+            engagement: engagement,
+            topics: topics,
+            now: now)
+
+        XCTAssertEqual(ranked.first?.videoId, "studied",
+                       "a followed channel with real playback history should lead")
+        XCTAssertLessThan(ranked.firstIndex { $0.videoId == "popular" }!,
+                          ranked.firstIndex { $0.videoId == "random" }!,
+                          "popular videos in a studied category should beat unrelated fresh items")
+        XCTAssertEqual(ranked.last?.videoId, "old", "stale videos should not win on views alone")
+    }
+
+    func testVideoMetadataParsingSupportsRecommendationSignals() {
+        XCTAssertEqual(Recommend.parseViewCount("1.2M views"), 1_200_000)
+        XCTAssertEqual(Recommend.parseViewCount("45K views"), 45_000)
+        XCTAssertEqual(Recommend.parseViewCount("9,876 views"), 9_876)
+
+        let threeWeeks = Recommend.parsePublishedText("3 weeks ago", now: now)
+        XCTAssertNotNil(threeWeeks)
+        XCTAssertEqual(threeWeeks!.timeIntervalSince(now.addingTimeInterval(-21 * 86_400)),
+                       0,
+                       accuracy: 0.1)
+    }
+
     // MARK: - Insertion
 
     // Never first, never adjacent: an unproven pick should not lead the feed, and a

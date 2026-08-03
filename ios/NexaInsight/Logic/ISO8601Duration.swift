@@ -53,11 +53,12 @@ enum ISO8601Duration {
             : String(format: "%d:%02d", minutes, secs)
     }
 
-    // YouTube's own Shorts ceiling. Unknown durations are NOT shorts: dropping a
-    // real episode is worse than letting one short clip through, and the caller
-    // cannot tell the difference after the fact.
-    static func isShort(_ text: String?, maxSeconds: Int = 60) -> Bool {
+    // Nexa's study surfaces are for long-form material. Anything below ten
+    // minutes is treated as too short, including Shorts and ordinary short
+    // uploads. Unknown durations are kept because hiding a real lecture is worse
+    // than letting one short item through.
+    static func isShort(_ text: String?, minimumSeconds: Int = 600) -> Bool {
         guard let total = seconds(text), total > 0 else { return false }
-        return total <= maxSeconds
+        return total < minimumSeconds
     }
 }
