@@ -25,9 +25,13 @@ enum DiscoverFeedError: LocalizedError {
 protocol DiscoverFeedFetching {
     func fetchFeeds(channelIds: [String]) async -> FeedFetchResult
     func resolveChannel(fromURL url: String) async throws -> Subscription
-    func searchChannels(query: String) async -> ChannelSearchOutcome
+    // `recentOnly` applies YouTube's this-month + long-form filter, for the
+    // cold-start feed. Plain search leaves it off: someone looking for a specific
+    // talk does not want it hidden because it is a year old.
+    func searchVideosSiteWide(query: String, recentOnly: Bool) async -> ChannelVideoOutcome
     func searchVideos(channelId: String, query: String) async -> ChannelVideoOutcome
     func fetchChannelUploads(channelId: String) async -> [DiscoverEntry]
+    func fetchChannelHeader(channelId: String) async -> ChannelHeader
 }
 
 // Fetches subscribed channels' public RSS feeds.
@@ -72,34 +76,43 @@ struct DiscoverFeedService: DiscoverFeedFetching {
         }
     }
 
-    // Searches channels via YouTube's public results page.
+    // Site-wide video search — what Discover's search box now does.
     //
-    // All three query parameters are load-bearing and were measured:
-    //   sp=EgIQAg== restricts results to channels (with it: 20 channels, 0
-    //     videos; without it: 0 channels, 19 videos)
-    //   hl=en&gl=US pins the response language — AND the Accept-Language header
-    //     is also required. With neither, results came back Japanese
-    //     ("チャンネル登録者数 2.04万人"); only pinning both reliably produced
-    //     "1.67M subscribers".
-    func searchChannels(query: String) async -> ChannelSearchOutcome {
+    // Deliberately WITHOUT `sp=EgIQAg==`. That parameter restricted results to
+    // channels (measured: with it 20 channels / 0 videos, without it 0 channels /
+    // 19 videos). Dropping it is the whole switch from searching channels to
+    // searching videos.
+    //
+    // hl=en&gl=US pin the response language, AND the Accept-Language header is
+    // also required. With neither, results came back Japanese
+    // ("チャンネル登録者数 2.04万人"); only pinning both reliably produced English.
+    // YouTube's own search filters, encoded. Verified live: without it the results
+    // page mixed 3-day-old and 10-month-old uploads; with it every result was within
+    // three days. Used for the cold-start feed, where the point is what is current.
+    static let recentLongFormFilter = "EgQIAxAB"   // this month + over 20 minutes
+
+    func searchVideosSiteWide(query: String, recentOnly: Bool = false) async -> ChannelVideoOutcome {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .parsed([]) }
 
         var components = URLComponents(string: "https://www.youtube.com/results")!
         components.queryItems = [
             URLQueryItem(name: "search_query", value: trimmed),
-            URLQueryItem(name: "sp", value: "EgIQAg=="),
             URLQueryItem(name: "hl", value: "en"),
             URLQueryItem(name: "gl", value: "US"),
         ]
+        if recentOnly {
+            components.queryItems?.append(
+                URLQueryItem(name: "sp", value: Self.recentLongFormFilter))
+        }
         guard let url = components.url else { return .structureMissing }
 
         var request = URLRequest(url: url)
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
         // A browser User-Agent is REQUIRED, not cosmetic. With URLSession's
         // default UA, YouTube serves a consent interstitial instead: HTTP 200,
-        // ~475 KB, ytInitialData present but ZERO channelRenderer nodes — which
-        // the parser correctly reports as structureMissing. With a browser UA the
+        // ~475 KB, ytInitialData present but ZERO renderer nodes — which the
+        // parser correctly reports as structureMissing. With a browser UA the
         // same request returns ~845 KB and 21 renderers. Measured both ways.
         request.setValue(Self.browserUserAgent, forHTTPHeaderField: "User-Agent")
 
@@ -107,11 +120,48 @@ struct DiscoverFeedService: DiscoverFeedFetching {
             let (data, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(status) else { return .structureMissing }
-            return ChannelSearchParser.parse(data)
+            switch VideoSearchParser.parse(data) {
+            case .parsed(let videos):
+                // Site-wide search can surface short uploads. Anything under ten
+                // minutes is noise for Nexa's long-form study surfaces.
+                //
+                // Filtering by duration rather than by link form: this page gives
+                // us lengthText but no link to test, the reverse of the RSS path.
+                // Videos with an unparseable duration are KEPT — one noisy short
+                // item is less costly than hiding a real episode.
+                return .parsed(videos.filter { !YouTubeChannelLogic.isShortDuration($0.durationText) })
+            case .structureMissing:
+                return .structureMissing
+            }
         } catch {
             // A transport failure is indistinguishable from a broken page as far
             // as the user's next action goes: fall back to pasting a link.
             return .structureMissing
+        }
+    }
+
+    // The channel's own avatar, title, and subscriber count.
+    //
+    // Returns .empty on any failure rather than throwing: this is decoration, and
+    // the content below it comes from RSS and in-channel search. A header failure
+    // must never become a page failure.
+    func fetchChannelHeader(channelId: String) async -> ChannelHeader {
+        guard YouTubeChannelLogic.isValidChannelId(channelId),
+              let url = URL(string: "https://www.youtube.com/channel/\(channelId)?hl=en&gl=US")
+        else { return .empty }
+
+        var request = URLRequest(url: url)
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        // Same browser-UA requirement as every other YouTube HTML request here.
+        request.setValue(Self.browserUserAgent, forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { return .empty }
+            return ChannelHeaderParser.parse(data)
+        } catch {
+            return .empty
         }
     }
 

@@ -11,7 +11,8 @@ voice class talks directly to Qwen Realtime with your own key (no backend).
   entry point.
 - `NexaInsight/` — all app source, grouped by responsibility (Models, Logic,
   Services, Storage, Playback, Import, Shadowing, Classroom, Views).
-- `NexaInsightCoreTests/` — 61 XCTest cases (interaction logic, store, view models).
+- `NexaInsightCoreTests/` — 298 XCTest cases (interaction logic, parsers, store,
+  view models). All run offline: no simulator, no network.
 - `project.yml` + `generate.sh` — generate the runnable `NexaInsight.xcodeproj`
   app target (gitignored; regenerate on demand).
 
@@ -22,11 +23,11 @@ voice class talks directly to Qwen Realtime with your own key (no backend).
 cd ios && swift test
 
 # Unit tests on the iOS simulator
-xcodebuild -scheme NexaInsightCore-Package -destination 'platform=iOS Simulator,name=iPhone 15' test
+xcodebuild -scheme NexaInsightCore-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 
 # Runnable app
 ./generate.sh
-xcodebuild -project NexaInsight.xcodeproj -scheme NexaInsight -destination 'platform=iOS Simulator,name=iPhone 15' build
+xcodebuild -project NexaInsight.xcodeproj -scheme NexaInsight -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
 
 `generate.sh` pins the project to objectVersion 56 because xcodegen 2.46 emits
@@ -39,6 +40,9 @@ installed locally (`xcrun simctl list devices available`).
   real device).
 - OpenAI API key — shadowing feedback (stored in Keychain).
 - DashScope API key + workspace id — live voice class (stored in Keychain).
+- YouTube Data API key — a channel's full upload list (stored in Keychain).
+  Optional: without it a channel page falls back to the RSS feed, which is
+  capped at 15 entries and carries no duration. See "Channel browsing" below.
 
 ## Activating the live voice class (WebRTC)
 
@@ -72,3 +76,29 @@ contains the real `RTCPeerConnection` implementation behind
 Validate on a physical device (not covered by unit tests): microphone capture,
 audio-session routing, a real Qwen WebRTC call, and dual-track (learner+teacher)
 recording — the one deferred spec item.
+
+## Channel browsing (YouTube Data API)
+
+A channel page lists the whole catalog — measured 865 videos on one channel,
+newest-first, 50 per page with scroll-to-load — when a YouTube Data API key is
+configured in Settings.
+
+Why a key rather than scraping further: the RSS feed hard-caps at 15 entries
+(`max-results` and `start-index` are both ignored) and the channel videos page
+holds 30. Going past that means POSTing to `youtubei/v1/browse` with a forged
+`INNERTUBE_API_KEY`, an internal endpoint with no compatibility contract. The
+documented API costs a user-supplied key instead.
+
+Getting one (free, no card required):
+
+1. Create a project at [console.cloud.google.com](https://console.cloud.google.com)
+2. **APIs & Services → Library** → enable **YouTube Data API v3**
+3. **Credentials → Create credentials → API key**, then restrict it to that API
+
+Quota is not a practical limit: 10,000 units/day, and one page costs 2
+(`playlistItems.list` + `videos.list` for durations) — roughly 5,000 pages a day.
+
+Reading your own subscriptions would need OAuth (`subscriptions.list?mine=true`
+rejects an API key), and captions are unavailable this way at all:
+`captions.download` requires edit permission on the video. Subtitles keep coming
+from yt-dlp in the backend pipeline.

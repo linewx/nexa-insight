@@ -62,4 +62,76 @@ final class SubscriptionStoreTests: XCTestCase {
         defaults.set("not json", forKey: "discoverSubscriptions")
         XCTAssertTrue(SubscriptionStore(defaults: defaults).subscriptions.isEmpty)
     }
+
+    // Regression lock on the highest-cost failure available here: the store
+    // decodes the whole array under one `try?`, so a single undecodable element
+    // silently empties the follow list. avatarURL and subscriberText were added
+    // after users already had subscriptions saved without them, so if either
+    // were non-optional this JSON would wipe every existing channel.
+    func testDecodesSubscriptionsSavedBeforeAvatarFieldsExisted() {
+        let legacy = """
+        [{"channelId":"UCSHZKyawb77ixDdsGog4iWA","title":"Lex Fridman","addedAt":0}]
+        """
+        defaults.set(Data(legacy.utf8), forKey: "discoverSubscriptions")
+
+        let store = SubscriptionStore(defaults: defaults)
+        XCTAssertEqual(store.subscriptions.map(\.channelId), ["UCSHZKyawb77ixDdsGog4iWA"],
+                       "adding a required field here would empty every existing user's list")
+        XCTAssertEqual(store.subscriptions[0].title, "Lex Fridman")
+        XCTAssertNil(store.subscriptions[0].avatarURL)
+        XCTAssertNil(store.subscriptions[0].subscriberText)
+    }
+
+    func testAvatarAndSubscriberTextRoundTrip() {
+        let store = SubscriptionStore(defaults: defaults)
+        store.add(Subscription(
+            channelId: "UCSHZKyawb77ixDdsGog4iWA",
+            title: "Lex Fridman",
+            addedAt: Date(timeIntervalSince1970: 0),
+            avatarURL: URL(string: "https://yt3.googleusercontent.com/abc=s176"),
+            subscriberText: "4.7M subscribers"))
+
+        let reloaded = SubscriptionStore(defaults: defaults)
+        XCTAssertEqual(reloaded.subscriptions[0].avatarURL?.absoluteString,
+                       "https://yt3.googleusercontent.com/abc=s176")
+        XCTAssertEqual(reloaded.subscriptions[0].subscriberText, "4.7M subscribers")
+    }
+
+    // Opening a channel you already follow parses its header and writes back, so
+    // an old subscription saved without an avatar upgrades from a monogram to the
+    // real image. Updating only the title would leave the monogram forever.
+    func testAddingAgainWithAvatarUpgradesAStoredSubscription() {
+        let store = SubscriptionStore(defaults: defaults)
+        store.add(sub("UCSHZKyawb77ixDdsGog4iWA", "Lex Fridman"))
+        XCTAssertNil(store.subscriptions[0].avatarURL)
+
+        store.add(Subscription(
+            channelId: "UCSHZKyawb77ixDdsGog4iWA", title: "Lex Fridman",
+            addedAt: Date(timeIntervalSince1970: 0),
+            avatarURL: URL(string: "https://yt3.googleusercontent.com/abc=s176"),
+            subscriberText: "4.7M subscribers"))
+
+        XCTAssertEqual(store.subscriptions.count, 1)
+        XCTAssertEqual(store.subscriptions[0].avatarURL?.absoluteString,
+                       "https://yt3.googleusercontent.com/abc=s176")
+        XCTAssertEqual(store.subscriptions[0].subscriberText, "4.7M subscribers")
+    }
+
+    // Re-following an existing channel must not blank fields the row displays.
+    func testAddingAgainWithoutAvatarKeepsTheStoredOne() {
+        let store = SubscriptionStore(defaults: defaults)
+        store.add(Subscription(
+            channelId: "UCSHZKyawb77ixDdsGog4iWA", title: "Lex Fridman",
+            addedAt: Date(timeIntervalSince1970: 0),
+            avatarURL: URL(string: "https://yt3.googleusercontent.com/abc=s176"),
+            subscriberText: "4.7M subscribers"))
+        store.add(sub("UCSHZKyawb77ixDdsGog4iWA", "Lex Fridman Renamed"))
+
+        XCTAssertEqual(store.subscriptions.count, 1)
+        XCTAssertEqual(store.subscriptions[0].title, "Lex Fridman Renamed")
+        XCTAssertEqual(store.subscriptions[0].avatarURL?.absoluteString,
+                       "https://yt3.googleusercontent.com/abc=s176",
+                       "a re-follow without avatar data must not erase it")
+        XCTAssertEqual(store.subscriptions[0].subscriberText, "4.7M subscribers")
+    }
 }

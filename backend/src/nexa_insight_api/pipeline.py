@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -40,6 +41,7 @@ class MediaAdapter(Protocol):
     def stream(self, url: str) -> tuple[str | None, datetime | None]: ...
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
     def download_audio(self, url: str, destination: Path) -> Path: ...
+    def is_constant_bitrate(self, audio: Path) -> bool: ...
     def split_audio(self, audio: Path, output_dir: Path) -> list[Path]: ...
 
 
@@ -50,14 +52,69 @@ class AIAdapter(Protocol):
 
 
 class YtDlpMediaAdapter:
+    YTDLP_TIMEOUT_SECONDS = 90
+    YTDLP_DOWNLOAD_TIMEOUT_SECONDS = 900
+    EXTRA_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+    def __init__(self):
+        self.yt_dlp = self._resolve_binary("yt-dlp")
+        self.ffmpeg = self._resolve_binary("ffmpeg")
+        self.ffprobe = self._resolve_binary("ffprobe")
+        self.js_runtime = self._resolve_optional_binary("deno") or self._resolve_optional_binary("node")
+
+    @classmethod
+    def _resolve_binary(cls, name: str) -> str:
+        path = shutil.which(name)
+        if path:
+            return path
+        for directory in cls.EXTRA_BIN_DIRS:
+            candidate = Path(directory) / name
+            if candidate.exists():
+                return str(candidate)
+        raise RuntimeError(f"{name} is not installed or is not on the backend PATH")
+
+    @classmethod
+    def _resolve_optional_binary(cls, name: str) -> str | None:
+        try:
+            return cls._resolve_binary(name)
+        except RuntimeError:
+            return None
+
+    def _yt_dlp_command(self, *args: str, include_ffmpeg: bool = False) -> list[str]:
+        command = [self.yt_dlp, *args]
+        if include_ffmpeg:
+            command.extend(["--ffmpeg-location", str(Path(self.ffmpeg).parent)])
+        if self.js_runtime:
+            command.extend(["--js-runtimes", f"{Path(self.js_runtime).stem}:{self.js_runtime}"])
+        return command
+
+    def _run(self, command: list[str], *, timeout: int | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                command,
+                check=check,
+                capture_output=True,
+                text=True,
+                timeout=timeout or YtDlpMediaAdapter.YTDLP_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"{command[0]} is not installed or is not on the backend PATH") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Timed out while contacting YouTube. Check the backend server's network or proxy.") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            if detail:
+                raise RuntimeError(f"yt-dlp failed: {detail[-1000:]}") from exc
+            raise RuntimeError("yt-dlp failed while reading this YouTube URL") from exc
+
     def metadata(self, url: str) -> MediaMetadata:
-        result = subprocess.run(["yt-dlp", "--dump-single-json", "--skip-download", url], check=True, capture_output=True, text=True)
+        result = self._run(self._yt_dlp_command("--dump-single-json", "--skip-download", url))
         data = json.loads(result.stdout)
         stream_url, expires_at = self._best_stream(data)
         return MediaMetadata(data["id"], data.get("title", "Untitled"), data.get("channel", "Unknown"), int(data.get("duration", 0) * 1000), data.get("thumbnail"), stream_url, expires_at)
 
     def stream(self, url: str) -> tuple[str | None, datetime | None]:
-        result = subprocess.run(["yt-dlp", "--dump-single-json", "--skip-download", url], check=True, capture_output=True, text=True)
+        result = self._run(self._yt_dlp_command("--dump-single-json", "--skip-download", url))
         return self._best_stream(json.loads(result.stdout))
 
     @staticmethod
@@ -92,7 +149,10 @@ class YtDlpMediaAdapter:
     def download_audio(self, url: str, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         template = str(destination.with_suffix(".%(ext)s"))
-        subprocess.run(["yt-dlp", "-x", "--audio-format", "mp3", "-o", template, url], check=True)
+        self._run(
+            self._yt_dlp_command("-x", "--audio-format", "mp3", "-o", template, url, include_ffmpeg=True),
+            timeout=self.YTDLP_DOWNLOAD_TIMEOUT_SECONDS,
+        )
         generated = destination.with_suffix(".mp3")
         # Re-encode to CONSTANT bitrate. yt-dlp yields a VBR MP3, and iOS AVPlayer
         # estimates the current time from byte-offset ÷ average bitrate — which
@@ -100,13 +160,37 @@ class YtDlpMediaAdapter:
         # from subtitles. CBR makes byte↔time linear so the clock stays accurate.
         cbr = generated.with_name("source_cbr.mp3")
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(generated), "-c:a", "libmp3lame",
+            [self.ffmpeg, "-y", "-i", str(generated), "-c:a", "libmp3lame",
              "-b:a", "128k", "-vn", str(cbr)],
             check=True, capture_output=True,
         )
         cbr.replace(destination)
-        generated.unlink(missing_ok=True)
+        if generated != destination:
+            generated.unlink(missing_ok=True)
         return destination
+
+    def is_constant_bitrate(self, audio: Path) -> bool:
+        """Whether an existing file is already the CBR the player needs.
+
+        Measured by packet-size variety, NOT by the declared bitrate or the
+        presence of a Xing header — neither distinguishes CBR from VBR. A real
+        CBR file yields 1-2 distinct packet sizes; the VBR file that caused the
+        desync had 15.
+
+        Returns False when ffprobe cannot read the file, so an unreadable file is
+        re-downloaded rather than trusted.
+        """
+        try:
+            result = subprocess.run(
+                [self.ffprobe, "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "packet=size", "-of", "csv=p=0", str(audio)],
+                check=True, capture_output=True, text=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+        sizes = {line for line in result.stdout.split() if line}
+        # An empty read means ffprobe found no audio packets at all.
+        return 0 < len(sizes) <= 2
 
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]:
         # Only the source-language track is fetched now. The zh-Hans auto-caption
@@ -115,12 +199,17 @@ class YtDlpMediaAdapter:
         # second tuple element is kept as None for the (source, chinese) contract.
         destination.mkdir(parents=True, exist_ok=True)
         template = str(destination / "captions.%(ext)s")
-        command = [
-            "yt-dlp", "--skip-download", "--write-subs", "--write-auto-subs",
+        command = self._yt_dlp_command(
+            "--skip-download", "--write-subs", "--write-auto-subs",
             "--sub-langs", "en-orig,en", "--sub-format", "json3",
-            "--js-runtimes", "node", "-o", template, url,
-        ]
-        subprocess.run(command, check=False, capture_output=True, text=True)
+            "-o", template, url,
+        )
+        try:
+            subprocess.run(command, check=False, capture_output=True, text=True, timeout=self.YTDLP_TIMEOUT_SECONDS)
+        except FileNotFoundError as exc:
+            raise RuntimeError("yt-dlp is not installed or is not on the backend PATH") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Timed out while fetching YouTube captions. Check the backend server's network or proxy.") from exc
         source_caption_path = next(iter(destination.glob("captions.en-orig.json3")), None) or next(iter(destination.glob("captions.en.json3")), None)
         source_text = self._parse_json3(source_caption_path) if source_caption_path else []
         return source_text, None
@@ -150,7 +239,7 @@ class YtDlpMediaAdapter:
 
     def split_audio(self, audio: Path, output_dir: Path) -> list[Path]:
         output_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["ffmpeg", "-y", "-i", str(audio), "-f", "segment", "-segment_time", "900", "-c", "copy", str(output_dir / "%03d.mp3")], check=True, capture_output=True)
+        subprocess.run([self.ffmpeg, "-y", "-i", str(audio), "-f", "segment", "-segment_time", "900", "-c", "copy", str(output_dir / "%03d.mp3")], check=True, capture_output=True)
         return sorted(output_dir.glob("*.mp3"))
 
 
@@ -223,7 +312,12 @@ class ImportPipeline:
                 session.commit()
             self.repo.upsert_job(job_id, stage="audio", progress=15)
             audio = root / "source.mp3"
-            if not audio.exists():
+            # Existence is not enough: a file left by a run that predates the CBR
+            # re-encode (or that died mid-import) is VBR, and AVPlayer drifts on
+            # VBR. Reusing it meant no retry could ever fix the desync, because
+            # the re-encode lives inside download_audio. Observed on a real
+            # import: 15 distinct packet sizes at 103kbps, against 128k CBR.
+            if not audio.exists() or not self.media.is_constant_bitrate(audio):
                 self.media.download_audio(episode.source_url, audio)
             self.repo.set_audio_path(episode.id, str(audio.relative_to(self.settings.data_dir)))
             if job.stage == "audio_backfill":
@@ -265,7 +359,8 @@ class ImportPipeline:
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
         except Exception as exc:
             self.repo.upsert_job(job_id, stage=self.repo.get_job(job_id).stage, progress=self.repo.get_job(job_id).progress, status="failed", error=str(exc))
-            self.repo.fail_episode(episode.id, str(exc))
+            if not self.repo.has_learning_content(episode.id):
+                self.repo.fail_episode(episode.id, str(exc))
             raise
 
     def _translate(self, segments: list[TranscriptSegment], cache_dir: Path, job_id: int) -> list[str]:

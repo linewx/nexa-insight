@@ -70,6 +70,43 @@ def test_import_duplicate_ready_episode_without_audio_requeues_backfill(client):
     assert body["job"]["status"] == "queued"
 
 
+def test_reprocess_ready_episode_preserves_content_and_queues_new_job(client):
+    created = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()
+    first_job_id = created["job"]["id"]
+    episode_id = created["episode"]["id"]
+    repo = client.app.state.repo
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Old", "summary": "stale", "start_ms": 0, "end_ms": 2000}],
+        [{"start_ms": 0, "end_ms": 1000, "speaker": None, "source_text": "Old text", "chinese": "旧"}],
+    )
+    repo.upsert_job(first_job_id, stage="complete", progress=100, status="complete")
+
+    response = client.post(f"/api/episodes/{episode_id}/reprocess")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["episode"]["id"] == episode_id
+    assert body["episode"]["status"] == "queued"
+    assert body["job"]["id"] != first_job_id
+    assert body["job"]["stage"] == "metadata"
+    assert body["job"]["status"] == "queued"
+    assert len(repo.list_chapters(episode_id)) == 1
+    assert len(repo.list_sentences(episode_id)) == 1
+
+
+def test_reprocess_returns_existing_running_job(client):
+    created = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()
+    episode_id = created["episode"]["id"]
+    job_id = created["job"]["id"]
+
+    response = client.post(f"/api/episodes/{episode_id}/reprocess")
+
+    assert response.status_code == 200
+    assert response.json()["job"]["id"] == job_id
+    assert response.json()["job"]["status"] == "queued"
+
+
 def test_retry_requeues(client):
     created = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()
     job_id = created["job"]["id"]

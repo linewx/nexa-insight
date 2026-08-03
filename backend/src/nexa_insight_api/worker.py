@@ -13,11 +13,17 @@ def run_once(repo: Repository, pipeline) -> bool:
         return False
     try:
         pipeline.run(job.id)
-    except Exception:
+    except Exception as exc:
         logging.exception("Import job %s failed", job.id)
         try:
             current = repo.get_job(job.id)
-            repo.upsert_job(job.id, stage=current.stage, progress=current.progress, status="failed", error="Import failed")
+            repo.upsert_job(
+                job.id,
+                stage=current.stage,
+                progress=current.progress,
+                status="failed",
+                error=current.error or str(exc) or "Import failed",
+            )
         except LookupError:
             pass
     return True
@@ -28,6 +34,9 @@ def main() -> None:
     settings = Settings()
     repo = Repository.from_settings(settings)
     repo.create_schema()
+    resumed = repo.requeue_running_jobs()
+    if resumed:
+        logging.info("Re-queued %s interrupted import job(s)", resumed)
     pipeline = ImportPipeline(repo, settings, YtDlpMediaAdapter(), OpenAIAdapter(settings))
     logging.info("Import worker ready")
     while True:

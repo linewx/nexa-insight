@@ -5,18 +5,27 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     private let keychain = KeychainStore()
     @State private var openAIKey = ""
+    @State private var youtubeAPIKey = ""
     @State private var dashscopeKey = ""
     @State private var workspaceId = ""
     @State private var savedMessage: String?
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: NXSpacing.x8) {
-                    SettingsHeader(onClose: { dismiss() })
+        VStack(spacing: 0) {
+            BrandHeader()
+            form
+        }
+        // One header per screen: the brand row above. Left visible, the navigation
+        // bar drew a second band behind it in a different tone.
+        .toolbar(.hidden, for: .navigationBar)
+    }
 
+    // No NavigationStack of its own: this is a tab, so the caller supplies the
+    // stack. The old close button belonged to a sheet that no longer exists.
+    private var form: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NXSpacing.x8) {
                     SettingsSection(
                         title: "Backend",
                         subtitle: "Used for importing and downloading prepared sources."
@@ -60,6 +69,23 @@ struct SettingsView: View {
                     }
 
                     SettingsSection(
+                        title: "Channel browsing",
+                        subtitle: "A YouTube Data API key lets a channel page list its whole catalog instead of the 15 most recent uploads."
+                    ) {
+                        SettingsSecureField(
+                            title: "YouTube API key",
+                            text: $youtubeAPIKey,
+                            placeholder: "Stored in Keychain",
+                            systemName: "key"
+                        )
+                        ReadinessRow(
+                            ready: !youtubeAPIKey.isEmpty,
+                            readyText: "Full channel catalog available",
+                            missingText: "Without a key, channels show their 15 most recent uploads"
+                        )
+                    }
+
+                    SettingsSection(
                         title: "Optional services",
                         subtitle: "OpenAI is only needed for features that explicitly use it."
                     ) {
@@ -76,35 +102,51 @@ struct SettingsView: View {
                         )
                     }
 
+                    SettingsSection(
+                        title: "Display",
+                        subtitle: "Discover content is English, so dates and view counts default to English too."
+                    ) {
+                        Toggle(isOn: $settings.localizedBylines) {
+                            VStack(alignment: .leading, spacing: NXSpacing.x1) {
+                                Text("Use device language for dates")
+                                    .font(NXFont.bodyMedium)
+                                    .foregroundStyle(NXColor.text(scheme))
+                                Text("On a Japanese device this shows \u{300c}3\u{65e5}\u{524d}\u{300d} instead of \u{201c}3d ago\u{201d}.")
+                                    .font(NXFont.auxiliary)
+                                    .foregroundStyle(NXColor.textSecondary(scheme))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .tint(NXColor.primary)
+                    }
+
                     if let savedMessage {
                         SaveNotice(message: savedMessage)
                     }
 
-                    HStack {
-                        NXSecondaryButton(title: "Close", action: { dismiss() })
-                        Spacer()
-                        NXPrimaryButton(title: "Save changes", systemName: "checkmark", action: save)
-                    }
-                }
-                .frame(maxWidth: 760, alignment: .leading)
-                .padding(.horizontal, NXSpacing.x6)
-                .padding(.vertical, NXSpacing.x6)
-                .frame(maxWidth: .infinity)
+                    // Save is the only action left. "Close" dismissed a sheet that
+                    // no longer exists — you leave by tapping another tab.
+                    NXPrimaryButton(title: "Save changes", systemName: "checkmark", action: save)
             }
-            .background(NXColor.background(scheme))
-            .toolbar(.hidden, for: .navigationBar)
-            .onAppear(perform: load)
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, NXSpacing.x4)
+            .padding(.vertical, NXSpacing.x4)
+            .frame(maxWidth: .infinity)
         }
+        .background(NXColor.background(scheme))
+        .onAppear(perform: load)
     }
 
     private func load() {
         openAIKey = keychain.get(.openAIKey) ?? ""
+        youtubeAPIKey = keychain.get(.youtubeAPIKey) ?? ""
         dashscopeKey = keychain.get(.dashscopeKey) ?? ""
         workspaceId = keychain.get(.dashscopeWorkspaceId) ?? ""
     }
 
     private func save() {
         saveOrDelete(openAIKey, for: .openAIKey)
+        saveOrDelete(youtubeAPIKey, for: .youtubeAPIKey)
         saveOrDelete(dashscopeKey, for: .dashscopeKey)
         saveOrDelete(workspaceId, for: .dashscopeWorkspaceId)
         savedMessage = "Settings saved"
@@ -116,26 +158,6 @@ struct SettingsView: View {
             keychain.delete(key)
         } else {
             keychain.set(trimmed, for: key)
-        }
-    }
-}
-
-private struct SettingsHeader: View {
-    let onClose: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(alignment: .top, spacing: NXSpacing.x4) {
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                Text("Settings")
-                    .font(NXFont.pageTitle)
-                    .foregroundStyle(NXColor.text(scheme))
-                Text("Connections and local secrets for Nexa Insight.")
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-            }
-            Spacer()
-            NXIconButton(systemName: "xmark", accessibilityLabel: "Close settings", action: onClose)
         }
     }
 }

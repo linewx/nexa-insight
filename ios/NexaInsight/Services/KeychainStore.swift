@@ -1,7 +1,11 @@
 import Foundation
 import Security
 
-enum SecretKey: String { case openAIKey, dashscopeKey, dashscopeWorkspaceId }
+enum SecretKey: String {
+    case openAIKey, dashscopeKey, dashscopeWorkspaceId
+    // YouTube Data API v3, for channel catalogues and richer discovery results.
+    case youtubeAPIKey
+}
 
 struct KeychainStore {
     let service = "com.nexainsight.secrets"

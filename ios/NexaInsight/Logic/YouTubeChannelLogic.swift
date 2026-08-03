@@ -32,6 +32,37 @@ enum YouTubeChannelLogic {
         link.contains("/shorts/")
     }
 
+    // Whether a duration string is too short for Nexa's study surfaces.
+    //
+    // The RSS path tests the link form instead (`isShortsLink`), because the feed
+    // carries no duration at all. Site-wide search results have the reverse
+    // problem: a duration is present but there is no link to inspect. So the
+    // signal has to be the duration itself.
+    //
+    // Anything below ten minutes is hidden. A value that fails to parse is kept:
+    // a dropped 4-hour episode is harder to recover from than one noisy short row.
+    static func isShortDuration(_ text: String?, minimumSeconds: Int = 600) -> Bool {
+        guard let seconds = durationSeconds(text) else { return false }
+        return seconds < minimumSeconds
+    }
+
+    // Parses "2:19:34", "18:42", or "0:45" into seconds. Returns nil for anything
+    // else, including live-stream placeholders and localized text.
+    static func durationSeconds(_ text: String?) -> Int? {
+        guard let text, !text.isEmpty else { return nil }
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard (2...3).contains(parts.count) else { return nil }
+
+        var total = 0
+        for part in parts {
+            guard let value = Int(part), value >= 0, part.count <= 2 || part == parts.first else {
+                return nil
+            }
+            total = total * 60 + value
+        }
+        return total
+    }
+
     static func isValidChannelId(_ value: String) -> Bool {
         guard let match = firstMatch(in: value, pattern: "^(\(idPattern))$") else { return false }
         return match == value

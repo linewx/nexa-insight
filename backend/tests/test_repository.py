@@ -22,6 +22,18 @@ def test_claim_next_job_marks_running_and_increments_attempts(repo):
     assert repo.claim_next_job() is None  # no more queued jobs
 
 
+def test_requeue_running_jobs_restores_interrupted_work(repo):
+    _seed_episode(repo)
+    job = repo.claim_next_job()
+
+    assert repo.requeue_running_jobs() == 1
+
+    reclaimed = repo.claim_next_job()
+    assert reclaimed is not None
+    assert reclaimed.id == job.id
+    assert reclaimed.attempts == 2
+
+
 def test_replace_learning_content_sets_ready_and_assigns_chapters(repo):
     episode_id = _seed_episode(repo)
     chapters = [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}]
@@ -35,6 +47,20 @@ def test_replace_learning_content_sets_ready_and_assigns_chapters(repo):
     assert all(s.chapter_id is not None for s in stored)
     assert repo.get_episode(episode_id).status == "ready"
     assert len(repo.list_chapters(episode_id)) == 1
+
+
+def test_clear_learning_content_removes_chapters_and_sentences(repo):
+    episode_id = _seed_episode(repo)
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": "Hi", "chinese": "嗨"}],
+    )
+
+    repo.clear_learning_content(episode_id)
+
+    assert repo.list_chapters(episode_id) == []
+    assert repo.list_sentences(episode_id) == []
 
 
 def test_set_audio_path(repo):

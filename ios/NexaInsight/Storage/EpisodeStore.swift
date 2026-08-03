@@ -62,10 +62,21 @@ final class EpisodeStore {
 
     func localAudioPath(for episodeId: Int) -> String? { episode(episodeId)?.localAudioPath }
 
+    func playbackPosition(for episodeId: Int) -> Int? { episode(episodeId)?.positionMs }
+
+    // Called as playback advances, so it is throttled by Resume.shouldPersist at
+    // the call site rather than writing on every tick.
+    func savePlaybackPosition(_ ms: Int, for episodeId: Int) {
+        guard let stored = episode(episodeId) else { return }
+        stored.positionMs = ms
+        stored.lastPlayedAt = Date()
+        try? context.save()
+    }
+
     func downloadedEpisodes() -> [EpisodeDTO] {
         let all = (try? context.fetch(FetchDescriptor<StoredEpisode>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
         return all.map {
-            EpisodeDTO(id: $0.episodeId, sourceUrl: $0.sourceUrl, youtubeId: $0.youtubeId, title: $0.title, channel: $0.channel, durationMs: $0.durationMs, thumbnailUrl: $0.thumbnailUrl, audioPath: $0.localAudioPath, status: $0.status, error: nil)
+            EpisodeDTO(id: $0.episodeId, sourceUrl: $0.sourceUrl, youtubeId: $0.youtubeId, title: $0.title, channel: $0.channel, durationMs: $0.durationMs, thumbnailUrl: $0.thumbnailUrl, audioPath: $0.localAudioPath, status: $0.status, error: nil, positionMs: $0.positionMs)
         }
     }
 

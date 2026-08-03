@@ -58,6 +58,14 @@ struct BackendClient {
         return try await send(request)
     }
 
+    func reprocessEpisode(_ id: Int) async throws -> (episode: EpisodeDTO, job: JobDTO) {
+        struct ImportView: Decodable { let episode: EpisodeDTO; let job: JobDTO }
+        var request = URLRequest(url: url(path: "/api/episodes/\(id)/reprocess"))
+        request.httpMethod = "POST"
+        let view: ImportView = try await send(request)
+        return (view.episode, view.job)
+    }
+
     func bundle(_ id: Int) async throws -> BundleDTO { try await get("/api/episodes/\(id)/bundle") }
 
     func downloadAudio(_ id: Int, to destination: URL) async throws {

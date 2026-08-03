@@ -108,6 +108,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session.commit()
         return job
 
+    @app.post("/api/episodes/{episode_id}/reprocess", response_model=ImportView)
+    def reprocess_episode(episode_id: int, session: Session = Depends(db)) -> ImportView:
+        episode = session.get(Episode, episode_id)
+        if not episode:
+            raise HTTPException(404, "Episode not found")
+        running = session.scalar(
+            select(ImportJob)
+            .where(ImportJob.episode_id == episode_id, ImportJob.status.in_(["queued", "running"]))
+            .order_by(ImportJob.created_at.desc())
+        )
+        if running:
+            return ImportView(episode=EpisodeView.model_validate(episode), job=JobView.model_validate(running))
+        job = ImportJob(episode_id=episode_id, stage="metadata", status="queued", progress=0)
+        session.add(job)
+        episode.status = "queued"
+        episode.error = None
+        session.commit()
+        return ImportView(episode=EpisodeView.model_validate(episode), job=JobView.model_validate(job))
+
     @app.get("/api/episodes/{episode_id}/bundle", response_model=EpisodeBundle)
     def get_bundle(episode_id: int, session: Session = Depends(db)) -> EpisodeBundle:
         episode = session.get(Episode, episode_id)

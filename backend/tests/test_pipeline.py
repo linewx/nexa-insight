@@ -1,10 +1,14 @@
 import json
+import os
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from nexa_insight_api.models import Episode, ImportJob
-from nexa_insight_api.pipeline import ImportPipeline, MediaMetadata, TranscriptSegment
+from nexa_insight_api.pipeline import ImportPipeline, MediaMetadata, TranscriptSegment, YtDlpMediaAdapter
 from nexa_insight_api.settings import Settings
 
 
@@ -25,6 +29,11 @@ class FakeMedia:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"ID3fake")
         return destination
+
+    def is_constant_bitrate(self, audio):
+        # Only what download_audio writes counts as CBR here, so a file left by
+        # an earlier run is treated the way a real VBR file would be.
+        return audio.read_bytes() == b"ID3fake"
 
     def split_audio(self, audio, output_dir):
         raise AssertionError("should not split audio when captions exist")
@@ -154,3 +163,51 @@ def test_pipeline_translates_uncached_batches_concurrently(repo, tmp_path):
     assert len(sentences) == 8
     assert ai.max_active > 1
     assert repo.get_job(job_id).status == "complete"
+
+
+def test_pipeline_replaces_leftover_audio_from_an_earlier_run(repo, tmp_path):
+    """A source.mp3 already on disk must not be trusted.
+
+    The guard was `if not audio.exists()`, which only asks whether a file is
+    there — never whether it is the CBR file the player needs. So an episode
+    whose audio was downloaded before the VBR fix (or by a run that died
+    mid-import) kept its VBR file forever: every retry skipped download_audio,
+    which is where the CBR re-encode lives. Observed on a real import — 15
+    distinct packet sizes at 103kbps, against the 128k CBR the pipeline emits.
+    """
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    media = FakeMedia(tmp_path)
+
+    stale = tmp_path / "episodes" / str(episode_id) / "source.mp3"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"VBR-from-an-earlier-run")
+
+    ImportPipeline(repo, settings, media, FakeAI()).run(job_id)
+
+    assert media.downloaded_audio is True, "stale audio must be re-downloaded, not reused"
+    assert stale.read_bytes() == b"ID3fake", "the stale bytes must be gone"
+
+
+def test_media_adapter_finds_homebrew_tools_when_launchd_path_is_minimal():
+    with patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}):
+        adapter = YtDlpMediaAdapter()
+
+    assert adapter.yt_dlp.endswith("yt-dlp")
+    assert adapter.ffmpeg.endswith("ffmpeg")
+    assert adapter.ffprobe.endswith("ffprobe")
+
+
+def test_media_adapter_passes_ffmpeg_location_to_yt_dlp():
+    adapter = YtDlpMediaAdapter()
+
+    command = adapter._yt_dlp_command("-x", "--audio-format", "mp3", include_ffmpeg=True)
+
+    assert "--ffmpeg-location" in command
+    assert str(Path(adapter.ffmpeg).parent) in command
+
+
+def test_media_adapter_reports_missing_required_tool(tmp_path):
+    with patch.dict(os.environ, {"PATH": str(tmp_path)}), patch.object(YtDlpMediaAdapter, "EXTRA_BIN_DIRS", (str(tmp_path),)):
+        with pytest.raises(RuntimeError, match="yt-dlp is not installed"):
+            YtDlpMediaAdapter()

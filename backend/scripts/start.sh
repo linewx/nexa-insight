@@ -19,16 +19,24 @@ fi
 
 is_running() {
   local pid_file="$1"
-  [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null
+  local marker="$2"
+  local pid
+  [[ -f "$pid_file" ]] || return 1
+  pid="$(cat "$pid_file")"
+  if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= | grep -F "$marker" >/dev/null; then
+    return 0
+  fi
+  rm -f "$pid_file"
+  return 1
 }
 
-if ! is_running "$API_PID_FILE"; then
+if ! is_running "$API_PID_FILE" "nexa_insight_api.app:app"; then
   nohup "$UVICORN" nexa_insight_api.app:app --host 0.0.0.0 --port 8000 \
     > "$LOG_DIR/api.log" 2>&1 < /dev/null &
   echo $! > "$API_PID_FILE"
 fi
 
-if ! is_running "$WORKER_PID_FILE"; then
+if ! is_running "$WORKER_PID_FILE" "nexa_insight_api.worker"; then
   nohup "$PYTHON" -m nexa_insight_api.worker \
     > "$LOG_DIR/worker.log" 2>&1 < /dev/null &
   echo $! > "$WORKER_PID_FILE"

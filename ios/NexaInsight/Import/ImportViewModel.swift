@@ -93,19 +93,18 @@ final class ImportViewModel: ObservableObject {
         }
     }
 
-    // Re-pull the bundle AND re-download the audio, overwriting the local copies.
-    // Use when the backend has reprocessed an episode: corrected translations
-    // (saveBundle replaces the cached rows) and/or a re-encoded audio file (the
-    // CBR fix — the old VBR file on disk drifts against subtitles). Progress is
-    // surfaced so the row can show it's working.
+    // Ask the backend to rebuild transcript/chapters/translations, then replace
+    // the local bundle and audio. A plain bundle download would only copy the
+    // stale parse again, which made "re-sync" appear to do nothing.
     func resyncContent(episodeId: Int) async {
         importError = nil
-        progress = ImportProgress(stage: "syncing", percent: 0)
-        defer { progress = nil }
+        progress = ImportProgress(stage: "reprocessing", percent: 0)
         do {
-            try await finishDownload(episodeId: episodeId)
+            let (_, job) = try await client.reprocessEpisode(episodeId)
+            await pollUntilReady(episodeId: episodeId, jobId: job.id)
         } catch {
             importError = error.localizedDescription
+            progress = nil
         }
     }
 }

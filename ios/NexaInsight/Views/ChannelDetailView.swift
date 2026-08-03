@@ -1,59 +1,134 @@
 #if os(iOS)
 import SwiftUI
 
-// One channel: search inside it, or browse its recent uploads.
+// One channel: follow it, search inside it, or browse its long-form catalogue.
 //
-// Search is the primary surface because it is the only path that reaches the
-// back catalog — a channel with years of history cannot be served by a
-// "latest N" list.
+// Search is the primary surface because it is the only path that reaches the back
+// catalog — a channel with years of history cannot be served by a "latest N" list.
+//
+// This screen works for channels the user does NOT follow. It is reached by
+// tapping a channel name on any video card, which is how someone inspects what a
+// channel publishes before committing to it.
 struct ChannelDetailView: View {
     @StateObject var vm: ChannelDetailViewModel
     let importing: Bool
     let onImport: (String) -> Void
+    @State private var showSearch = false
+    // Separate history per surface: searching inside one channel is a different
+    // activity from searching all of YouTube, and mixing the two lists would offer
+    // channel-specific terms on the site-wide page.
+    @StateObject private var history = SearchHistoryStore(
+        defaults: UserDefaults(suiteName: "channelSearchHistory") ?? .standard)
+    @State private var playingId: String?
+    @State private var showChannelHome = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: NXSpacing.x6) {
-                searchField
+            VStack(alignment: .leading, spacing: NXSpacing.x4) {
+                header
 
-                if vm.isSearchActive {
-                    searchSection
-                } else {
-                    uploadsSection
-                }
+            if vm.isSearchActive {
+                searchSection
+            } else {
+                catalogSection
             }
+            }
+            .frame(maxWidth: 720, alignment: .leading)
             .padding(.horizontal, NXSpacing.x4)
             .padding(.vertical, NXSpacing.x4)
         }
         .background(NXColor.background(scheme))
-        .navigationTitle(vm.subscription.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { if vm.uploads.isEmpty { await vm.loadUploads() } }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: NXSpacing.x3) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(NXColor.textTertiary(scheme))
-            TextField("Search in this channel", text: $vm.query)
-                .font(NXFont.body)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-                .onSubmit { Task { await vm.runSearch() } }
-            if vm.isSearchActive || !vm.query.isEmpty {
-                Button(action: vm.clearSearch) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(NXColor.textTertiary(scheme))
+        // Discover had this and the channel screen did not, so two lists that look
+        // identical behaved differently. Refresh reloads the first page rather than
+        // re-fetching every page already scrolled.
+        .refreshable { await vm.reload() }
+        .nxToolbarGlyphs(scheme)
+        .toolbar {
+            // The channel's own page on YouTube: description, playlists, community.
+            // Cheaper and more complete than scraping those into our own screen,
+            // for a question ("what is this channel like?") asked rarely.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showChannelHome = true } label: {
+                    Image(systemName: "safari")
+                        .foregroundStyle(NXColor.text(scheme))
                 }
-                .buttonStyle(.plain)
+                .accessibilityLabel("Open this channel on YouTube")
+            }
+            .nxPlainToolbarItem()
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showSearch = true } label: {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(NXColor.text(scheme))
+                }
+                .accessibilityLabel("Search in this channel")
+            }
+            .nxPlainToolbarItem()
+        }
+        // The channel name moved into the scrolling header (see `header`). Inline
+        // in the bar it had to share 44pt with two trailing icons, and iOS 26's
+        // grouped-item capsule squeezed it to a single vertical sliver.
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await vm.load() }
+        .fullScreenCover(isPresented: $showSearch) {
+            // No onPasteLink: importing by URL belongs on Discover, not inside one
+            // channel's catalogue.
+            SearchScreen(
+                query: $vm.query,
+                history: history,
+                onSubmit: { _ in Task { await vm.runSearch() } },
+                onDismiss: { showSearch = false })
+        }
+        .sheet(isPresented: $showChannelHome) {
+            if let url = YouTubeWeb.channel(channelId: vm.channelId) {
+                WebPageSheet(title: vm.title, url: url)
             }
         }
-        .padding(.horizontal, NXSpacing.x3)
-        .frame(height: 48)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
+
+    }
+
+    // Avatar and subscriber count come from the channel page. When that parse
+    // fails they are simply absent — the title falls back to the name the video
+    // card supplied, and the content below is unaffected.
+    private var header: some View {
+        HStack(spacing: NXSpacing.x3) {
+            ChannelAvatar(
+                url: vm.avatarURL,
+                title: vm.title,
+                channelId: vm.channelId,
+                size: 48)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(vm.title)
+                    .font(NXFont.sectionTitle)
+                    .foregroundStyle(NXColor.text(scheme))
+                    .lineLimit(2)
+                if let subscriberText = vm.subscriberText {
+                    Text(subscriberText)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                }
+            }
+
+            Spacer(minLength: NXSpacing.x2)
+
+            followButton
+        }
+    }
+
+    // Follow lives here, where the user can see what the channel publishes before
+    // deciding. This is the only screen that writes to the subscription store.
+    @ViewBuilder
+    private var followButton: some View {
+        if vm.following {
+            Button(action: vm.toggleFollow) {
+                NXTag(text: "Following", tint: NXColor.success)
+            }
+            .buttonStyle(.plain)
+        } else {
+            NXSecondaryButton(title: "Follow", systemName: "plus", action: vm.toggleFollow)
+                .fixedSize(horizontal: true, vertical: false)
+        }
     }
 
     @ViewBuilder
@@ -61,23 +136,23 @@ struct ChannelDetailView: View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
             NXSectionHeader(title: "Results")
 
-            if vm.searchUnavailable {
+            if vm.searching {
+                skeletons
+            } else if vm.searchUnavailable {
                 // Distinct from "no match": the page could not be read at all,
                 // so point at the fallback that needs no page structure.
                 NXErrorState(
                     message: "Browsing this channel is unavailable right now. You can paste a video link on Discover to import it.",
                     retry: { Task { await vm.runSearch() } })
-            } else if vm.searching {
-                ProgressView("Searching").font(NXFont.auxiliary)
-            } else if vm.results.isEmpty {
+            } else if vm.resultCards.isEmpty {
                 Text("No videos in this channel match \(vm.searchedTerm ?? "").")
                     .font(NXFont.body)
                     .foregroundStyle(NXColor.textSecondary(scheme))
             } else {
-                rows(vm.results)
-                // Pagination would need the innertube API, so the cap is real
-                // and stated rather than silently truncating.
-                Text("Showing the top \(vm.results.count) matches.")
+                cardList(vm.resultCards)
+                // Pagination would need the innertube API, so the cap is stated
+                // rather than silently truncating.
+                Text("Showing the top \(vm.resultCards.count) matches.")
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textTertiary(scheme))
             }
@@ -85,131 +160,94 @@ struct ChannelDetailView: View {
     }
 
     @ViewBuilder
-    private var uploadsSection: some View {
+    private var catalogSection: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            NXSectionHeader(title: "Recent uploads")
+            NXSectionHeader(title: "Long-form videos")
 
-            if vm.loadingUploads && vm.uploads.isEmpty {
-                ProgressView("Loading").font(NXFont.auxiliary)
-            } else if vm.uploads.isEmpty {
-                Text("Could not load recent uploads. Try searching instead.")
+            if vm.loadingUploads && vm.uploadCards.isEmpty {
+                skeletons
+            } else if vm.uploadCards.isEmpty {
+                Text(vm.catalogError ?? "No long-form videos found.")
                     .font(NXFont.body)
                     .foregroundStyle(NXColor.textSecondary(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(vm.uploads) { entry in
-                        ChannelUploadRow(
-                            entry: entry,
-                            imported: vm.isImported(videoId: entry.videoId),
-                            importing: importing,
-                            onImport: { onImport(entry.watchURL.absoluteString) })
-                        if entry.id != vm.uploads.last?.id {
-                            Divider().overlay(NXColor.border(scheme))
-                        }
-                    }
-                }
-                // The feed itself caps at 15; searching reaches older uploads.
-                Text("The channel feed lists its \(vm.uploads.count) most recent uploads. Search to find older ones.")
+                cardList(vm.uploadCards)
+                footer
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if vm.canLoadMore {
+            // The trigger is the footer's own appearance rather than a "load more"
+            // button: reaching the bottom IS the intent to see more.
+            HStack(spacing: NXSpacing.x2) {
+                ProgressView().controlSize(.small)
+                Text(countText)
                     .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, NXSpacing.x3)
+            .task(id: vm.uploadCards.count) { await vm.loadMoreIfNeeded() }
+        } else {
+            VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                Text(countText)                    .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textTertiary(scheme))
                     .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func rows(_ videos: [ChannelVideo]) -> some View {
-        VStack(spacing: 0) {
-            ForEach(videos) { video in
-                ChannelVideoRow(
-                    video: video,
-                    imported: vm.isImported(videoId: video.videoId),
-                    importing: importing,
-                    onImport: { if let url = video.watchURL { onImport(url.absoluteString) } })
-                if video.id != videos.last?.id {
-                    Divider().overlay(NXColor.border(scheme))
+                // A paging failure is stated inline: the videos already loaded
+                // stay usable, so this is not an error state.
+                if let catalogError = vm.catalogError {
+                    Text(catalogError)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .padding(.top, NXSpacing.x2)
         }
     }
-}
 
-private struct ChannelVideoRow: View {
-    let video: ChannelVideo
-    let imported: Bool
-    let importing: Bool
-    let onImport: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            Text(video.title)
-                .font(NXFont.bodyMedium)
-                .foregroundStyle(NXColor.text(scheme))
-                .fixedSize(horizontal: false, vertical: true)
-            Text(byline)
-                .font(NXFont.auxiliary)
-                .foregroundStyle(NXColor.textSecondary(scheme))
-            if let summary = video.summary {
-                Text(summary)
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-                    .lineLimit(2)
-            }
-            action
+    // Never silently truncates: whichever source is in use, the count says what is
+    // shown and what the ceiling is.
+    private var countText: String {
+        let shown = vm.uploadCards.count
+        if vm.catalog.isEmpty {
+            return vm.catalogError ?? "No long-form videos found."
         }
-        .padding(.vertical, NXSpacing.x3)
-    }
-
-    // Duration first: it is the strongest signal for whether a 4-hour episode is
-    // worth committing to, and the pipeline run is expensive.
-    private var byline: String {
-        [video.durationText, video.publishedText, video.viewsText]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        if let total = vm.catalogTotal, total > shown {
+            return "Showing \(shown) of \(total) long-form videos."
+        }
+        return "Showing all \(shown) long-form videos."
     }
 
     @ViewBuilder
-    private var action: some View {
-        if imported {
-            NXTag(text: "In your library", tint: NXColor.success)
-        } else {
-            NXSecondaryButton(
-                title: importing ? "Adding" : "Add to Nexa",
-                systemName: importing ? "clock" : "plus",
-                action: onImport)
-        }
-    }
-}
+    private func cardList(_ cards: [VideoCardItem]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(cards) { card in
+                // No onOpenChannel here: the channel is already known, so a
+                // tappable name would navigate back to this screen.
+                VideoCard(
+                    item: card,
+                    imported: vm.isImported(videoId: card.videoId),
+                    importing: importing,
+                    onImport: { onImport(card.watchURL.absoluteString) },
+                    onTap: { playingId = playingId == card.videoId ? nil : card.videoId },
+                    playing: playingId == card.videoId)
 
-private struct ChannelUploadRow: View {
-    let entry: DiscoverEntry
-    let imported: Bool
-    let importing: Bool
-    let onImport: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            Text(entry.title)
-                .font(NXFont.bodyMedium)
-                .foregroundStyle(NXColor.text(scheme))
-                .fixedSize(horizontal: false, vertical: true)
-            // No duration here — the RSS feed carries none. Reusing
-            // DiscoverFormat.byline keeps this consistent with the Discover feed.
-            Text(DiscoverFormat.byline(entry))
-                .font(NXFont.auxiliary)
-                .foregroundStyle(NXColor.textSecondary(scheme))
-            if imported {
-                NXTag(text: "In your library", tint: NXColor.success)
-            } else {
-                NXSecondaryButton(
-                    title: importing ? "Adding" : "Add to Nexa",
-                    systemName: importing ? "clock" : "plus",
-                    action: onImport)
             }
         }
-        .padding(.vertical, NXSpacing.x3)
+    }
+
+    private var skeletons: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<4, id: \.self) { _ in
+                VideoCardSkeleton()
+                Divider().overlay(NXColor.border(scheme))
+            }
+        }
     }
 }
 #endif

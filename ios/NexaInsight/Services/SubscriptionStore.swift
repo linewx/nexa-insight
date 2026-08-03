@@ -22,11 +22,21 @@ final class SubscriptionStore: ObservableObject {
         }
     }
 
+    // Merges rather than replaces. Opening a channel parses its header and calls
+    // this again, which is how a subscription saved before avatars existed
+    // upgrades from a monogram to the real image. New values win, but a nil does
+    // not erase what is already stored — the channel screen may not have managed
+    // to parse a header this time.
     func add(_ subscription: Subscription) {
-        if let index = subscriptions.firstIndex(where: { $0.channelId == subscription.channelId }) {
-            subscriptions[index].title = subscription.title
-        } else {
+        guard let index = subscriptions.firstIndex(where: { $0.channelId == subscription.channelId })
+        else {
             subscriptions.append(subscription)
+            return
+        }
+        subscriptions[index].title = subscription.title
+        if let avatarURL = subscription.avatarURL { subscriptions[index].avatarURL = avatarURL }
+        if let subscriberText = subscription.subscriberText {
+            subscriptions[index].subscriberText = subscriberText
         }
     }
 

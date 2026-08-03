@@ -61,16 +61,28 @@ enum NXColor {
     }
 }
 
+// Every size is relativeTo: a text style, so the whole app follows the reader's
+// Dynamic Type setting. These were fixed points before, which meant a language
+// learner who had turned text size up got the same 14pt transcript as everyone
+// else — on the one screen where reading IS the task.
+//
+// The scale is unchanged: each pairs with the text style whose default size is
+// closest, so nothing shifts at the default setting.
 enum NXFont {
-    static let pageTitle = Font.system(size: 28, weight: .semibold)
-    static let sectionTitle = Font.system(size: 18, weight: .semibold)
-    static let subsectionTitle = Font.system(size: 14, weight: .semibold)
-    static let body = Font.system(size: 14, weight: .regular)
-    static let bodyMedium = Font.system(size: 14, weight: .medium)
-    static let control = Font.system(size: 13, weight: .medium)
-    static let controlEmphasis = Font.system(size: 16, weight: .semibold)
-    static let auxiliary = Font.system(size: 12, weight: .regular)
-    static let label = Font.system(size: 11, weight: .medium)
+    // Text STYLES, not point sizes. `.system(size:)` never scales, which is what
+    // pinned the transcript at 14pt however large the reader had set their text —
+    // on the one screen where reading is the entire task. Each style below is the
+    // one whose default size matches the size it replaces, so nothing moves at the
+    // default setting.
+    static let pageTitle = Font.system(.largeTitle, design: .default, weight: .semibold)
+    static let sectionTitle = Font.system(.title3, weight: .semibold)
+    static let subsectionTitle = Font.system(.subheadline, weight: .semibold)
+    static let body = Font.system(.subheadline)
+    static let bodyMedium = Font.system(.subheadline, weight: .medium)
+    static let control = Font.system(.footnote, weight: .medium)
+    static let controlEmphasis = Font.system(.body, weight: .semibold)
+    static let auxiliary = Font.system(.caption)
+    static let label = Font.system(.caption2, weight: .medium)
 }
 
 extension Color {
@@ -263,8 +275,10 @@ struct NXProgressIndicator: View {
 struct NXEmptyState: View {
     let title: String
     let message: String
-    let actionTitle: String
-    let action: () -> Void
+    // Optional: some empty states have nothing to offer but an explanation, and a
+    // button that merely restates the message is worse than no button.
+    var actionTitle: String?
+    var action: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -276,7 +290,9 @@ struct NXEmptyState: View {
                 .font(NXFont.body)
                 .foregroundStyle(NXColor.textSecondary(scheme))
                 .fixedSize(horizontal: false, vertical: true)
-            NXPrimaryButton(title: actionTitle, systemName: "plus", action: action)
+            if let actionTitle {
+                NXPrimaryButton(title: actionTitle, systemName: "plus", action: action)
+            }
         }
         .padding(.vertical, NXSpacing.x4)
     }
@@ -308,6 +324,42 @@ struct NXErrorState: View {
         .padding(NXSpacing.x4)
         .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
         .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.border(scheme), lineWidth: 1))
+    }
+}
+
+extension View {
+    // No-op kept for call sites; the capsule is per-ITEM, not per-bar, so hiding
+    // the bar's background never touched it. See nxPlainToolbarItem.
+    func nxPlainToolbarBackground() -> some View { self }
+}
+
+extension ToolbarContent {
+    // Drops the per-item Liquid Glass capsule iOS 26 draws around each toolbar
+    // item, so the glyphs are not each sitting in their own little panel. The BAR
+    // keeps its own background — without it the icons had nothing to sit against
+    // and were hard to read over scrolling content.
+    @ToolbarContentBuilder
+    func nxPlainToolbarItem() -> some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            self.sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
+    }
+}
+
+extension View {
+    // Toolbar glyphs in the primary text colour, not the accent. A tinted icon
+    // reads as "active" or "selected", which none of these are — the accent stays
+    // on the tab bar, where it does mean that.
+    //
+    // Also gives the bar a surface of its own, always visible. iOS only reveals a
+    // bar background once content scrolls under it, so at rest the header was the
+    // same colour as the page and the icons had nothing to sit against.
+    func nxToolbarGlyphs(_ scheme: ColorScheme) -> some View {
+        tint(NXColor.text(scheme))
+            .toolbarBackground(NXColor.surface1(scheme), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
     }
 }
 #endif
