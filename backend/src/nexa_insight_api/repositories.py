@@ -25,6 +25,21 @@ TEACHING_TYPES = ("phrase", "pattern", "collocation")
 EXPRESSION_TYPES = (*NATIVE_TYPES, *TEACHING_TYPES, "word", "chunk")
 
 
+def normalize_pronunciation(value: object) -> str | None:
+    """Coerce IPA into one string, or nothing.
+
+    qwen-plus returns per-word IPA as a list (["riːl", "tɔːk"]), which SQLite
+    refuses to bind — it failed the insert outright. It also sometimes wraps the
+    value in slashes, which the card adds itself.
+    """
+    if isinstance(value, list):
+        value = " ".join(str(part) for part in value if part)
+    if not isinstance(value, str):
+        return None
+    text = value.strip().strip("/").strip()
+    return text or None
+
+
 def normalize_expression_type(value: object) -> str:
     """Keep `type` inside the known set, defaulting to the safest label."""
     if not isinstance(value, str):
@@ -287,7 +302,13 @@ class Repository:
                     continue
                 # The new prompts return `type`; `kind` is derived from it so the
                 # non-nullable column and the older client contract both hold.
+                expression_data["pronunciation"] = normalize_pronunciation(expression_data.get("pronunciation"))
                 expression_data["type"] = normalize_expression_type(expression_data.get("type"))
+                # A pattern is a frame with slots. The model routinely labels whole
+                # quoted sentences as patterns, which teaches nothing reusable, so
+                # one without slots is recorded as the phrase it actually is.
+                if expression_data["type"] == "pattern" and "{" not in expression_data["text"]:
+                    expression_data["type"] = "phrase"
                 expression_data["kind"] = normalize_expression_kind(
                     expression_data.get("kind") or expression_data["type"]
                 )
