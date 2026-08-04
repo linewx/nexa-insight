@@ -509,17 +509,29 @@ private struct WorkspaceTopBar: View {
                         .monospacedDigit()
                         .foregroundStyle(NXColor.primary)
                 }
+
+                Button {
+                    studyMode = studyMode == .listening ? .reading : .listening
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: studyMode == .reading ? "headphones" : "text.book.closed")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(studyMode == .reading ? "精听" : "精读")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(studyMode == .reading ? NXColor.primary : NXColor.textSecondary(scheme))
+                    .padding(.horizontal, NXSpacing.x2)
+                    .frame(height: 28)
+                    .background(studyMode == .reading ? NXColor.primary.opacity(0.1) : NXColor.surface2(scheme), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(studyMode == .reading ? "切换到精听" : "进入精读")
             }
 
             if shouldShowCompactStatus {
                 CompactAudioStatus(audioRefreshState: audioRefreshState, player: player, onRefreshAudio: onRefreshAudio)
             }
 
-            Picker("学习模式", selection: $studyMode) {
-                Text("精听").tag(StudyMode.listening)
-                Text("精读").tag(StudyMode.reading)
-            }
-            .pickerStyle(.segmented)
         }
         .padding(.horizontal, compact ? NXSpacing.x4 : NXSpacing.x6)
         .padding(.top, compact ? NXSpacing.x3 : NXSpacing.x4)
@@ -1225,6 +1237,11 @@ private struct TranscriptBlock: View {
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .padding(.bottom, NXSpacing.x2)
+            } else if studyMode == .reading {
+                Text("已标注 \(learningExpressions.count) 个重点，点击蓝色词组展开精读卡片。")
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .padding(.bottom, NXSpacing.x2)
             }
             if sentences.isEmpty {
                 Text("No transcript matches this search.")
@@ -1495,10 +1512,30 @@ private struct ExpressionInlineCard: View {
                     Text("/\(pronunciation)/").font(NXFont.auxiliary).foregroundStyle(NXColor.textTertiary(scheme))
                 }
                 Spacer()
-                Text(expression.kind == .word ? "词汇" : expression.kind == .phrase ? "短语" : "句式")
+                Text(ExpressionCardCopy.typeLabel(expression.type))
                     .font(NXFont.auxiliary).foregroundStyle(NXColor.primary)
             }
             Text(expression.chinese).font(NXFont.body).foregroundStyle(NXColor.textSecondary(scheme))
+
+            // A reduction or an ellipsis is only worth a card because of the gap
+            // between what reached the ear and what was said, so that comparison
+            // leads rather than sitting below the gloss.
+            if let heard = expression.heardAs, let restored = expression.restored {
+                soundGap(heard: heard, restored: restored)
+            } else if let restored = expression.restored {
+                labelled("完整说法", restored, mono: true)
+            }
+
+            if let mistake = expression.commonMistake {
+                mistakeContrast(wrong: mistake, right: expression.text)
+            }
+            if let whyHard = expression.whyHard {
+                labelled("为什么难", whyHard)
+            }
+            if let whenToUse = expression.whenToUse {
+                labelled("什么时候用", whenToUse)
+            }
+
             VStack(alignment: .leading, spacing: NXSpacing.x1) {
                 Text(expression.example).font(NXFont.bodyMedium).foregroundStyle(NXColor.text(scheme))
                 Text(expression.exampleChinese).font(NXFont.auxiliary).foregroundStyle(NXColor.textSecondary(scheme))
@@ -1509,6 +1546,43 @@ private struct ExpressionInlineCard: View {
         .padding(NXSpacing.x4)
         .background(NXColor.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: NXRadius.surface))
         .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.primary.opacity(0.16), lineWidth: 1))
+    }
+
+    /// Heard on the left, actually said on the right — the whole point of the item.
+    private func soundGap(heard: String, restored: String) -> some View {
+        HStack(spacing: NXSpacing.x2) {
+            Text(heard)
+                .font(NXFont.bodyMedium).foregroundStyle(NXColor.text(scheme))
+                .monospaced()
+            Image(systemName: "arrow.right")
+                .font(NXFont.auxiliary).foregroundStyle(NXColor.textTertiary(scheme))
+            Text(restored)
+                .font(NXFont.bodyMedium).foregroundStyle(NXColor.primary)
+                .monospaced()
+        }
+        .padding(.vertical, NXSpacing.x1)
+        .accessibilityLabel("听到 \(heard)，实际是 \(restored)")
+    }
+
+    /// The Chinese-English attempt this replaces. Dictionaries cannot give this.
+    private func mistakeContrast(wrong: String, right: String) -> some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x1) {
+            Label(wrong, systemImage: "xmark")
+                .font(NXFont.auxiliary).foregroundStyle(NXColor.error)
+            Label(right, systemImage: "checkmark")
+                .font(NXFont.auxiliary).foregroundStyle(NXColor.primary)
+        }
+        .accessibilityLabel("常见错误 \(wrong)，正确说法 \(right)")
+    }
+
+    @ViewBuilder private func labelled(_ title: String, _ body: String, mono: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x1) {
+            Text(title).font(NXFont.auxiliary).foregroundStyle(NXColor.textTertiary(scheme))
+            Text(body)
+                .font(NXFont.auxiliary).foregroundStyle(NXColor.textSecondary(scheme))
+                .monospaced(mono)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

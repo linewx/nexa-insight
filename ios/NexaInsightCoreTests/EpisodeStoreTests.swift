@@ -25,6 +25,30 @@ final class EpisodeStoreTests: XCTestCase {
             ])
     }
 
+    func testSavedExpressionKeepsItsStudyFields() throws {
+        // A downloaded episode reads from this store, so anything dropped here is
+        // invisible in the app no matter what the backend produced.
+        let store = try makeStore()
+        let expression = LearningExpressionDTO(
+            id: 2, text: "kind of", kind: .phrase, type: .reduction, chinese: "有点儿",
+            pronunciation: nil, example: "I kind of like it.", exampleChinese: "我有点喜欢。",
+            heardAs: "kinda", restored: "kind of", whyHard: "弱读脱落。",
+            whenToUse: nil, commonMistake: "a little bit of", formality: "spoken",
+            occurrences: [ExpressionOccurrenceDTO(sentenceId: 10, startOffset: 0, endOffset: 2)])
+        _ = try store.saveBundle(
+            BundleDTO(episode: bundle().episode, chapters: [], sentences: [], hasAudio: false,
+                      hasLearningPack: true, learningExpressions: [expression]),
+            localAudioPath: nil)
+
+        let read = try XCTUnwrap(store.learningExpressions(for: 1).first)
+        XCTAssertEqual(read.type, .reduction)
+        XCTAssertEqual(read.heardAs, "kinda")
+        XCTAssertEqual(read.restored, "kind of")
+        XCTAssertEqual(read.whyHard, "弱读脱落。")
+        XCTAssertEqual(read.commonMistake, "a little bit of")
+        XCTAssertEqual(read.formality, "spoken")
+    }
+
     func testSaveAndReadBundle() throws {
         let store = try makeStore()
         _ = try store.saveBundle(bundle(), localAudioPath: "audio/1.mp3")

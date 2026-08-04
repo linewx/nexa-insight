@@ -76,11 +76,29 @@ import SwiftData
 @Model final class StoredLearningExpression {
     var expressionId: Int; var episodeId: Int; var text: String; var kind: String; var chinese: String
     var pronunciation: String?; var example: String; var exampleChinese: String
+    // Defaulted so an existing local store opens without a migration; a
+    // re-download fills them in. Dropping these here made the richer card
+    // invisible for downloaded episodes whatever the backend produced.
+    var type: String = "phrase"
+    var heardAs: String?
+    var restored: String?
+    var whyHard: String?
+    var whenToUse: String?
+    var commonMistake: String?
+    var formality: String?
     @Relationship(deleteRule: .cascade) var occurrences: [StoredExpressionOccurrence]
 
-    init(expressionId: Int, episodeId: Int, text: String, kind: String, chinese: String, pronunciation: String?, example: String, exampleChinese: String) {
+    init(
+        expressionId: Int, episodeId: Int, text: String, kind: String, type: String = "phrase",
+        chinese: String, pronunciation: String?, example: String, exampleChinese: String,
+        heardAs: String? = nil, restored: String? = nil, whyHard: String? = nil,
+        whenToUse: String? = nil, commonMistake: String? = nil, formality: String? = nil
+    ) {
         self.expressionId = expressionId; self.episodeId = episodeId; self.text = text; self.kind = kind
+        self.type = type
         self.chinese = chinese; self.pronunciation = pronunciation; self.example = example; self.exampleChinese = exampleChinese
+        self.heardAs = heardAs; self.restored = restored; self.whyHard = whyHard
+        self.whenToUse = whenToUse; self.commonMistake = commonMistake; self.formality = formality
         self.occurrences = []
     }
 }

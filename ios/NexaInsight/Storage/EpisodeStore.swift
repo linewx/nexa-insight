@@ -48,8 +48,12 @@ final class EpisodeStore {
         for item in bundle.learningExpressions {
             let expression = StoredLearningExpression(
                 expressionId: item.id, episodeId: bundle.episode.id, text: item.text,
-                kind: item.kind.rawValue, chinese: item.chinese, pronunciation: item.pronunciation,
-                example: item.example, exampleChinese: item.exampleChinese)
+                kind: item.kind.rawValue, type: item.type.rawValue,
+                chinese: item.chinese, pronunciation: item.pronunciation,
+                example: item.example, exampleChinese: item.exampleChinese,
+                heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
+                whenToUse: item.whenToUse, commonMistake: item.commonMistake,
+                formality: item.formality)
             context.insert(expression)
             for item in item.occurrences {
                 let occurrence = StoredExpressionOccurrence(
@@ -78,10 +82,17 @@ final class EpisodeStore {
     func learningExpressions(for episodeId: Int) -> [LearningExpressionDTO] {
         guard let e = episode(episodeId) else { return [] }
         return e.learningExpressions.sorted { $0.expressionId < $1.expressionId }.compactMap { item in
-            guard let kind = LearningExpressionKind(rawValue: item.kind) else { return nil }
+            // Unknown stored values fall back rather than dropping the row: a
+            // discarded expression is a hole in the transcript's highlights.
+            let kind = LearningExpressionKind(fallbackFrom: item.kind)
             return LearningExpressionDTO(
-                id: item.expressionId, text: item.text, kind: kind, chinese: item.chinese,
+                id: item.expressionId, text: item.text, kind: kind,
+                type: LearningExpressionType(rawValue: item.type) ?? .phrase,
+                chinese: item.chinese,
                 pronunciation: item.pronunciation, example: item.example, exampleChinese: item.exampleChinese,
+                heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
+                whenToUse: item.whenToUse, commonMistake: item.commonMistake,
+                formality: item.formality,
                 occurrences: item.occurrences.map {
                     ExpressionOccurrenceDTO(sentenceId: $0.sentenceId, startOffset: $0.startOffset, endOffset: $0.endOffset)
                 })
