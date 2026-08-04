@@ -100,6 +100,28 @@ def test_bundle_ignores_invalid_expression_occurrence(client):
     assert [(item["start_offset"], item["end_offset"]) for item in expressions[0]["occurrences"]] == [(6, 11)]
 
 
+def test_bundle_normalizes_numeric_expression_offsets_and_ignores_invalid_types(client):
+    episode_id = client.post("/api/episodes/import", json={"url": "https://youtu.be/abcdefghijk"}).json()["episode"]["id"]
+    client.repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 1000, "speaker": None, "source_text": "Hello world", "chinese": "你好世界"}],
+        [{
+            "text": "world", "kind": "word", "chinese": "世界", "pronunciation": "wɜːrld",
+            "example": "A new world.", "example_chinese": "一个新世界。",
+            "occurrences": [
+                {"sentence_position": "0", "start_offset": "6", "end_offset": "11"},
+                {"sentence_position": "zero", "start_offset": "6", "end_offset": "11"},
+                {"sentence_position": 0, "start_offset": "six", "end_offset": "11"},
+            ],
+        }],
+    )
+
+    expressions = client.get(f"/api/episodes/{episode_id}/bundle").json()["learning_expressions"]
+
+    assert expressions[0]["occurrences"] == [{"sentence_id": expressions[0]["occurrences"][0]["sentence_id"], "start_offset": 6, "end_offset": 11}]
+
+
 def test_audio_404_when_absent(client):
     episode_id = _ready_episode(client)
     assert client.get(f"/api/episodes/{episode_id}/audio").status_code == 404
