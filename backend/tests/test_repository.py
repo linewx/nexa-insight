@@ -73,6 +73,75 @@ def test_replace_learning_content_ignores_unknown_expression_fields(repo):
     assert len(expressions[0].occurrences) == 1
 
 
+def test_replace_learning_content_stores_the_new_study_fields(repo):
+    """A card needs more than a gloss: why it is hard, when to use it, the mistake."""
+    episode_id = _seed_episode(repo)
+    host = "I have days when my brain feels like a little cloud of rain."
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": host, "chinese": "有时候我脑子里像有朵小雨云。"}],
+        [{
+            "text": "a little cloud of rain",
+            "type": "idiom",
+            "chinese": "心头阴云密布",
+            "pronunciation": None,
+            "example": host,
+            "example_chinese": "有时候我脑子里像有朵小雨云。",
+            "why_hard": "字面是雨云，实指情绪低落，无法直译。",
+            "when_to_use": "描述心情阴郁但不想说得太重时。",
+            "common_mistake": "feel very sad",
+            "formality": "spoken",
+            "heard_as": None,
+            "restored": None,
+            "occurrences": [{"sentence_position": 0}],
+        }],
+    )
+
+    stored = repo.list_learning_expressions(episode_id)[0]
+    assert stored.type == "idiom"
+    assert stored.why_hard == "字面是雨云，实指情绪低落，无法直译。"
+    assert stored.when_to_use == "描述心情阴郁但不想说得太重时。"
+    assert stored.common_mistake == "feel very sad"
+    assert stored.formality == "spoken"
+
+
+def test_replace_learning_content_stores_heard_as_for_a_reduction(repo):
+    """Native-speed material needs the sound actually produced, and the full form."""
+    episode_id = _seed_episode(repo)
+    host = "I kind of want to try that."
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": host, "chinese": "我有点想试试。"}],
+        [{
+            "text": "kind of",
+            "type": "reduction",
+            "chinese": "有点儿",
+            "pronunciation": None,
+            "example": host,
+            "example_chinese": "我有点想试试。",
+            "heard_as": "kinda",
+            "restored": "kind of",
+            "why_hard": "of 弱化脱落，听感是一个音节。",
+            "formality": "spoken",
+            "occurrences": [{"sentence_position": 0}],
+        }],
+    )
+
+    stored = repo.list_learning_expressions(episode_id)[0]
+    assert stored.type == "reduction"
+    assert stored.heard_as == "kinda"
+    assert stored.restored == "kind of"
+
+
+def test_episode_records_its_material_kind(repo):
+    """native vs teaching decides which extraction strategy ran."""
+    episode_id = _seed_episode(repo)
+    repo.set_material_kind(episode_id, "teaching")
+    assert repo.get_episode(episode_id).material_kind == "teaching"
+
+
 def test_replace_learning_content_locates_the_expression_itself(repo):
     """Model-counted offsets are wrong ~97% of the time, so they are recomputed.
 

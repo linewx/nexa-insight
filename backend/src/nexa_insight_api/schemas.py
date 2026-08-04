@@ -24,6 +24,7 @@ class EpisodeView(ORMModel):
     stream_url_expires_at: datetime | None
     status: str
     error: str | None
+    material_kind: str | None = None
     created_at: datetime
 
 
@@ -72,10 +73,17 @@ class LearningExpressionView(ORMModel):
     id: int
     text: str
     kind: str
+    type: str | None = None
     chinese: str
     pronunciation: str | None
     example: str
     example_chinese: str
+    heard_as: str | None = None
+    restored: str | None = None
+    why_hard: str | None = None
+    when_to_use: str | None = None
+    common_mistake: str | None = None
+    formality: str | None = None
     occurrences: list[ExpressionOccurrenceView]
 
 

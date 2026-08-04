@@ -29,6 +29,9 @@ class Episode(Base):
     stream_url_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="queued")
     error: Mapped[str | None] = mapped_column(Text)
+    # "native" (made for native speakers) or "teaching" (an English lesson).
+    # Decides which extraction strategy runs, since the two serve different goals.
+    material_kind: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(default=utc_now)
 
     chapters: Mapped[list[Chapter]] = relationship(cascade="all, delete-orphan")
@@ -97,10 +100,23 @@ class LearningExpression(Base):
     episode_id: Mapped[int] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), index=True)
     text: Mapped[str] = mapped_column(String(500))
     kind: Mapped[str] = mapped_column(String(32))
+    # One of the eight extraction types. `kind` stays for the older three-value
+    # client contract; `type` carries the real granularity.
+    type: Mapped[str | None] = mapped_column(String(32))
     chinese: Mapped[str] = mapped_column(Text)
     pronunciation: Mapped[str | None] = mapped_column(String(500))
     example: Mapped[str] = mapped_column(Text)
     example_chinese: Mapped[str] = mapped_column(Text)
+    # Native-speed material: the sound actually produced ("kinda"), and the full
+    # form a learner needs restored to parse the line.
+    heard_as: Mapped[str | None] = mapped_column(String(500))
+    restored: Mapped[str | None] = mapped_column(Text)
+    why_hard: Mapped[str | None] = mapped_column(Text)
+    # Teaching material: the situation that calls for it, and the Chinese-English
+    # attempt it replaces.
+    when_to_use: Mapped[str | None] = mapped_column(Text)
+    common_mistake: Mapped[str | None] = mapped_column(Text)
+    formality: Mapped[str | None] = mapped_column(String(16))
     occurrences: Mapped[list[ExpressionOccurrence]] = relationship(cascade="all, delete-orphan", order_by="ExpressionOccurrence.id")
 
 

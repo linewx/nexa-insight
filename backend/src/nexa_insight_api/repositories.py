@@ -9,11 +9,33 @@ from sqlalchemy.orm import Session, sessionmaker
 from .models import Base, Chapter, Episode, ExpressionOccurrence, ImportChunk, ImportJob, LearningExpression, Sentence
 from .settings import Settings
 
-EXPRESSION_FIELDS = ("text", "kind", "chinese", "pronunciation", "example", "example_chinese")
+EXPRESSION_FIELDS = (
+    "text", "kind", "type", "chinese", "pronunciation", "example", "example_chinese",
+    "heard_as", "restored", "why_hard", "when_to_use", "common_mistake", "formality",
+)
 
 # The iOS LearningExpressionKind enum decodes exactly these three, and one
 # unknown value fails the whole bundle decode, so the column is narrowed here.
 EXPRESSION_KINDS = ("word", "phrase", "pattern")
+
+# Native-speed material is mined for what defeats comprehension; teaching
+# material for what the learner should be able to say.
+NATIVE_TYPES = ("reduction", "ellipsis", "syntax", "idiom", "reference")
+TEACHING_TYPES = ("phrase", "pattern", "collocation")
+EXPRESSION_TYPES = (*NATIVE_TYPES, *TEACHING_TYPES, "word", "chunk")
+
+
+def normalize_expression_type(value: object) -> str:
+    """Keep `type` inside the known set, defaulting to the safest label."""
+    if not isinstance(value, str):
+        return "phrase"
+    text = value.strip().casefold().replace("-", " ").replace("_", " ")
+    if text in EXPRESSION_TYPES:
+        return text
+    for known in EXPRESSION_TYPES:
+        if known in text:
+            return known
+    return "phrase"
 
 
 def locate_expression(text_value: str, host: str) -> tuple[int, int] | None:
@@ -75,6 +97,7 @@ class Repository:
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
         self._ensure_episode_stream_columns()
+        self._ensure_study_columns()
 
     def _ensure_episode_stream_columns(self) -> None:
         if self.engine.dialect.name != "sqlite":
@@ -85,6 +108,42 @@ class Repository:
                 connection.execute(text("ALTER TABLE episodes ADD COLUMN stream_url TEXT"))
             if "stream_url_expires_at" not in columns:
                 connection.execute(text("ALTER TABLE episodes ADD COLUMN stream_url_expires_at DATETIME"))
+
+    def _ensure_study_columns(self) -> None:
+        """Add the columns the richer cards need, on an existing database.
+
+        All nullable, so old rows stay valid — they simply carry no explanation,
+        which is what a re-import fixes. Values are model-generated and cannot be
+        back-computed.
+        """
+        if self.engine.dialect.name != "sqlite":
+            return
+        additions = {
+            "episodes": {"material_kind": "VARCHAR(16)"},
+            "learning_expressions": {
+                "type": "VARCHAR(32)",
+                "heard_as": "VARCHAR(500)",
+                "restored": "TEXT",
+                "why_hard": "TEXT",
+                "when_to_use": "TEXT",
+                "common_mistake": "TEXT",
+                "formality": "VARCHAR(16)",
+            },
+        }
+        with self.engine.begin() as connection:
+            for table, columns in additions.items():
+                existing = {row[1] for row in connection.execute(text(f"PRAGMA table_info({table})"))}
+                for column, ddl in columns.items():
+                    if column not in existing:
+                        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+    def set_material_kind(self, episode_id: int, material_kind: str) -> None:
+        with self.session() as session:
+            episode = session.get(Episode, episode_id)
+            if episode is None:
+                raise LookupError("Episode not found")
+            episode.material_kind = material_kind
+            session.commit()
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -226,7 +285,12 @@ class Repository:
                 expression_data = {key: item[key] for key in EXPRESSION_FIELDS if key in item}
                 if not isinstance(expression_data.get("text"), str) or not expression_data["text"].strip():
                     continue
-                expression_data["kind"] = normalize_expression_kind(expression_data.get("kind"))
+                # The new prompts return `type`; `kind` is derived from it so the
+                # non-nullable column and the older client contract both hold.
+                expression_data["type"] = normalize_expression_type(expression_data.get("type"))
+                expression_data["kind"] = normalize_expression_kind(
+                    expression_data.get("kind") or expression_data["type"]
+                )
                 normalized_text = " ".join(expression_data["text"].casefold().split())
                 expression = expressions_by_text.get(normalized_text)
                 if expression is None:
