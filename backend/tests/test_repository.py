@@ -142,6 +142,68 @@ def test_episode_records_its_material_kind(repo):
     assert repo.get_episode(episode_id).material_kind == "teaching"
 
 
+def test_replace_learning_content_accepts_a_top_level_sentence_position(repo):
+    """The new prompts report position on the item, not in an occurrences list.
+
+    Reading only `occurrences` silently dropped every highlight: three episodes
+    imported with 0 occurrences and nothing marked in the transcript.
+    """
+    episode_id = _seed_episode(repo)
+    host = "You should dwell on something else entirely."
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": host, "chinese": "中文"}],
+        [{
+            "text": "dwell on",
+            "type": "phrase",
+            "chinese": "反复想",
+            "pronunciation": None,
+            "example": host,
+            "example_chinese": "中文",
+            "sentence_position": 0,  # no "occurrences" key at all
+        }],
+    )
+
+    occurrences = repo.list_learning_expressions(episode_id)[0].occurrences
+    assert len(occurrences) == 1
+    assert host[occurrences[0].start_offset:occurrences[0].end_offset] == "dwell on"
+
+
+def test_replace_learning_content_searches_other_sentences_when_the_position_is_wrong(repo):
+    """The reported sentence index is often wrong, and the text is elsewhere.
+
+    Trusting it dropped 37 of 45 expressions on a real episode even though 35 of
+    them appear verbatim in another sentence.
+    """
+    episode_id = _seed_episode(repo)
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 2000}],
+        [
+            {"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": "Nothing to see here.", "chinese": "中文"},
+            {"start_ms": 500, "end_ms": 1000, "speaker": None, "source_text": "You should not dwell on it.", "chinese": "中文"},
+        ],
+        [{
+            "text": "dwell on",
+            "type": "phrase",
+            "chinese": "反复想",
+            "pronunciation": None,
+            "example": "You should not dwell on it.",
+            "example_chinese": "中文",
+            "sentence_position": 0,  # wrong: it is in sentence 1
+        }],
+    )
+
+    occurrences = repo.list_learning_expressions(episode_id)[0].occurrences
+    assert len(occurrences) == 1
+    found = occurrences[0]
+    stored = {item.id: item for item in repo.list_sentences(episode_id)}
+    host = stored[found.sentence_id].source_text
+    assert host == "You should not dwell on it."
+    assert host[found.start_offset:found.end_offset] == "dwell on"
+
+
 def test_replace_learning_content_locates_the_expression_itself(repo):
     """Model-counted offsets are wrong ~97% of the time, so they are recomputed.
 

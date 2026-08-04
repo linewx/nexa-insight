@@ -307,7 +307,12 @@ class Repository:
             expressions_by_text: dict[str, LearningExpression] = {}
             stored_occurrences: dict[str, set[tuple[int, int, int]]] = {}
             for item in learning_expressions or []:
-                occurrences = item.get("occurrences", [])
+                # The extraction prompts report one position per item; the older
+                # prompt nested a list. Reading only the list dropped every
+                # highlight and left the transcript unmarked.
+                occurrences = item.get("occurrences") or []
+                if not occurrences and item.get("sentence_position") is not None:
+                    occurrences = [{"sentence_position": item["sentence_position"]}]
                 # The model invents extra keys ("confidence", "difficulty"), and
                 # one of those reaching the constructor fails the whole import.
                 expression_data = {key: item[key] for key in EXPRESSION_FIELDS if key in item}
@@ -339,17 +344,25 @@ class Repository:
                     try:
                         position = int(occurrence["sentence_position"])
                     except (KeyError, TypeError, ValueError):
+                        position = -1
+                    # Nothing the model reports about location is reliable: the
+                    # offsets were wrong ~97% of the time, and the sentence index
+                    # is wrong often enough that trusting it dropped 37 of 45
+                    # expressions whose text sits plainly in another sentence. The
+                    # text is the only dependable anchor, so the reported index is
+                    # just the first place to look.
+                    reported = sentence_rows[position] if 0 <= position < len(sentence_rows) else None
+                    candidates = ([reported] if reported else []) + [
+                        row for row in sentence_rows if row is not reported
+                    ]
+                    match = next(
+                        ((row, found) for row in candidates
+                         if (found := locate_expression(expression_data["text"], row.source_text)) is not None),
+                        None,
+                    )
+                    if match is None:
                         continue
-                    if not 0 <= position < len(sentence_rows):
-                        continue
-                    sentence = sentence_rows[position]
-                    # The reported offsets are discarded; only the sentence index
-                    # is trusted, and even that is checked by whether the text is
-                    # actually there.
-                    located = locate_expression(expression_data["text"], sentence.source_text)
-                    if located is None:
-                        continue
-                    start, end = located
+                    sentence, (start, end) = match
                     occurrence_key = (sentence.id, start, end)
                     if occurrence_key in stored_occurrences[normalized_text]:
                         continue
