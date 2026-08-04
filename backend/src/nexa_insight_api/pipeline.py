@@ -310,6 +310,10 @@ class OpenAIAdapter:
         'B2 learner already knows ("speaking of that", "a lot of"); domain nouns '
         'that translate literally and teach no English ("training data center", '
         '"n flops"); and compounds whose meaning is just the sum of their words. '
+        "Each item must be at most 6 words — the reusable expression itself, not "
+        "the sentence containing it. Quoting a whole sentence teaches nothing "
+        "transferable. The one exception is a pattern with {slots}, which may be "
+        "longer because the frame is what carries over. "
         "Return at most 8 items for these sentences. Fewer is better than padding. "
         "Every explanation field must be written in Chinese. "
         "Give sentence_position (the numbered sentence it came from) but NO "

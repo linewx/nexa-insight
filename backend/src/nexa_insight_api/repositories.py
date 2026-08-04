@@ -25,6 +25,19 @@ TEACHING_TYPES = ("phrase", "pattern", "collocation")
 EXPRESSION_TYPES = (*NATIVE_TYPES, *TEACHING_TYPES, "word", "chunk")
 
 
+# A studiable item is short enough to carry into another sentence. Beyond this the
+# model is quoting the transcript: the teaching prompt returned 28% items of six
+# words or more, up to an 18-word sentence, each with a fine gloss and nothing
+# reusable. Slotted patterns are exempt — a frame is reusable however long it is.
+MAX_EXPRESSION_WORDS = 6
+
+
+def is_studiable_expression(text: str, type_value: str) -> bool:
+    if type_value == "pattern" and "{" in text:
+        return True
+    return len(text.split()) <= MAX_EXPRESSION_WORDS
+
+
 def normalize_pronunciation(value: object) -> str | None:
     """Coerce IPA into one string, or nothing.
 
@@ -309,6 +322,8 @@ class Repository:
                 # one without slots is recorded as the phrase it actually is.
                 if expression_data["type"] == "pattern" and "{" not in expression_data["text"]:
                     expression_data["type"] = "phrase"
+                if not is_studiable_expression(expression_data["text"], expression_data["type"]):
+                    continue
                 expression_data["kind"] = normalize_expression_kind(
                     expression_data.get("kind") or expression_data["type"]
                 )

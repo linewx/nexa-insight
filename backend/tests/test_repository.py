@@ -172,6 +172,67 @@ def test_replace_learning_content_locates_the_expression_itself(repo):
     assert host[found.start_offset:found.end_offset] == "Thanks so much"
 
 
+def test_replace_learning_content_rejects_a_whole_sentence_as_an_expression(repo):
+    """A quoted sentence teaches nothing reusable, however good the gloss is.
+
+    The teaching prompt returned 28% items of six words or more, up to an
+    18-word sentence, which is a transcript quote wearing a card.
+    """
+    episode_id = _seed_episode(repo)
+    quote = "My brain sometimes wakes up and says good morning and lists everything wrong today."
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": quote, "chinese": "中文"}],
+        [
+            {
+                "text": quote,
+                "type": "phrase",
+                "chinese": "整句",
+                "pronunciation": None,
+                "example": quote,
+                "example_chinese": "中文",
+                "occurrences": [{"sentence_position": 0}],
+            },
+            {
+                "text": "wakes up",
+                "type": "phrase",
+                "chinese": "醒来",
+                "pronunciation": None,
+                "example": quote,
+                "example_chinese": "中文",
+                "occurrences": [{"sentence_position": 0}],
+            },
+        ],
+    )
+
+    assert [item.text for item in repo.list_learning_expressions(episode_id)] == ["wakes up"]
+
+
+def test_replace_learning_content_keeps_a_long_pattern_with_slots(repo):
+    """A slotted frame is reusable even when long, so length alone must not reject."""
+    episode_id = _seed_episode(repo)
+    host = "I can't change everything, but I can change my next five minutes."
+    repo.replace_learning_content(
+        episode_id,
+        [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 1000}],
+        [{"start_ms": 0, "end_ms": 500, "speaker": None, "source_text": host, "chinese": "中文"}],
+        [{
+            "text": "I can't change {everything}, but I can change {my next five minutes}",
+            "type": "pattern",
+            "chinese": "我无法改变……但我可以改变……",
+            "pronunciation": None,
+            "example": host,
+            "example_chinese": "中文",
+            "occurrences": [{"sentence_position": 0}],
+        }],
+    )
+
+    stored = repo.list_learning_expressions(episode_id)
+    assert len(stored) == 1
+    assert stored[0].type == "pattern"
+
+
 def test_replace_learning_content_drops_an_expression_absent_from_its_sentence(repo):
     """An invented expression cannot be highlighted, so it stores no occurrence."""
     episode_id = _seed_episode(repo)
