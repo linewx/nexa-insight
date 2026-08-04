@@ -3,11 +3,73 @@ import XCTest
 
 @MainActor
 final class ImportViewModelTests: XCTestCase {
-    func testProgressPercentFromJob() {
+    func testTaskStoreKeepsTasksForSeparateEpisodes() {
+        var tasks = ImportTaskStore()
+        tasks.upsert(ImportTask(
+            episode: episode(id: 1, youtubeId: "first"),
+            job: JobDTO(id: 11, episodeId: 1, stage: "metadata", status: "queued", progress: 0, error: nil),
+            kind: .importing))
+        tasks.upsert(ImportTask(
+            episode: episode(id: 2, youtubeId: "second"),
+            job: JobDTO(id: 22, episodeId: 2, stage: "transcribing", status: "running", progress: 42, error: nil),
+            kind: .reprocessing))
+
+        XCTAssertEqual(tasks.task(for: 1)?.jobId, 11)
+        XCTAssertEqual(tasks.task(for: 2)?.progress, 42)
+        XCTAssertEqual(tasks.ordered.map(\.episodeId), [1, 2])
+    }
+
+    func testTaskStoreRemovesOnlyCompletedEpisode() {
+        var tasks = ImportTaskStore()
+        tasks.upsert(ImportTask(
+            episode: episode(id: 1, youtubeId: "first"),
+            job: JobDTO(id: 11, episodeId: 1, stage: "metadata", status: "queued", progress: 0, error: nil),
+            kind: .importing))
+        tasks.upsert(ImportTask(
+            episode: episode(id: 2, youtubeId: "second"),
+            job: JobDTO(id: 22, episodeId: 2, stage: "metadata", status: "queued", progress: 0, error: nil),
+            kind: .importing))
+
+        tasks.remove(episodeId: 1)
+
+        XCTAssertNil(tasks.task(for: 1))
+        XCTAssertEqual(tasks.task(for: 2)?.jobId, 22)
+    }
+
+    func testSyntheticFailedReprocessTaskIsIdentifiableForRequestRetry() {
+        let task = ImportTask(
+            episode: episode(id: 1, youtubeId: "first"),
+            job: JobDTO(id: -1, episodeId: 1, stage: "reprocessing", status: "failed", progress: 0, error: "Offline"),
+            kind: .reprocessing)
+
+        XCTAssertTrue(task.isFailed)
+        XCTAssertLessThan(task.jobId, 0)
+    }
+
+    func testPlaybackTargetEmbedsYouTubeAndUsesSourcePageOtherwise() {
+        XCTAssertEqual(
+            LibraryPlaybackTarget.forEpisode(episode(id: 1, youtubeId: "abcdefghijk")),
+            .youtube(videoId: "abcdefghijk"))
+        XCTAssertEqual(
+            LibraryPlaybackTarget.forEpisode(episode(id: 2, youtubeId: nil)),
+            .web(URL(string: "https://example.com/talk")!))
+    }
+
+    func testPlaybackTargetRejectsAnInvalidSourceURL() {
+        var invalid = episode(id: 1, youtubeId: nil)
+        invalid = EpisodeDTO(id: invalid.id, sourceUrl: "not a URL", youtubeId: nil,
+                             title: invalid.title, channel: invalid.channel,
+                             durationMs: invalid.durationMs, thumbnailUrl: invalid.thumbnailUrl,
+                             audioPath: invalid.audioPath, status: invalid.status,
+                             error: invalid.error)
+        XCTAssertEqual(LibraryPlaybackTarget.forEpisode(invalid), .unavailable)
+    }
+
+    func testTaskExposesProgressFromItsJob() {
         let job = JobDTO(id: 1, episodeId: 1, stage: "translation", status: "running", progress: 72, error: nil)
-        let progress = ImportViewModel.progress(from: job)
-        XCTAssertEqual(progress.stage, "translation")
-        XCTAssertEqual(progress.percent, 72)
+        let task = ImportTask(episode: episode(id: 1, youtubeId: nil), job: job, kind: .importing)
+        XCTAssertEqual(task.job.stage, "translation")
+        XCTAssertEqual(task.progress, 72)
     }
 
     func testAudioURLPathIsStableAndRelativePathDerivable() {
@@ -41,5 +103,11 @@ final class ImportViewModelTests: XCTestCase {
         XCTAssertEqual(
             ImportViewModel.normalizedYouTubeURL("https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s"),
             "https://www.youtube.com/watch?v=9IMwRIei-Xc&t=347s")
+    }
+
+    private func episode(id: Int, youtubeId: String?) -> EpisodeDTO {
+        EpisodeDTO(id: id, sourceUrl: "https://example.com/talk", youtubeId: youtubeId,
+                   title: "Episode \(id)", channel: "Channel", durationMs: 60_000,
+                   thumbnailUrl: nil, audioPath: nil, status: "ready", error: nil)
     }
 }

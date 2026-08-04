@@ -54,7 +54,7 @@ struct LibraryView: View {
                 // twice as inset as the list.
                 DiscoverView(
                     vm: discover,
-                    importing: vm.importing,
+                    importing: false,
                     onAddToNexa: addToNexa,
                     onOpenChannel: { channelId, title in
                         discoverPath.append(ChannelTarget(channelId: channelId, title: title))
@@ -76,12 +76,12 @@ struct LibraryView: View {
             tab(.library, path: $libraryPath) {
                 LibraryMain(
                     episodes: vm.episodes,
-                    progress: vm.progress,
-                    importError: vm.importError,
-                    backendBaseURL: vm.backendBaseURL,
+                    tasks: vm.tasks.ordered,
                     onDiscover: { selectedSection = .discover },
                     onAddSource: { showImport = true },
-                    onResync: { id in Task { await vm.resyncContent(episodeId: id) } })
+                    onStudy: { id in libraryPath.append(id) },
+                    onResync: { id in Task { await vm.resyncContent(episodeId: id) } },
+                    onRetry: { task in Task { await vm.retry(task: task) } })
             }
 
             // Settings was a sheet behind a gear icon. A sheet is for finishing one
@@ -138,8 +138,8 @@ struct LibraryView: View {
                         api: Self.youtubeAPI(),
                         // The one place this round still reads youtubeId. When
                         // that field becomes source_id, this moves with it.
-                        importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) }),
-                    importing: vm.importing,
+                    importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) }),
+                    importing: false,
                     onImport: addToNexa)
             }
         }
@@ -201,13 +201,14 @@ private enum AppSection: String, CaseIterable {
 
 private struct LibraryMain: View {
     let episodes: [EpisodeDTO]
-    let progress: ImportViewModel.ImportProgress?
-    let importError: String?
-    let backendBaseURL: URL
+    let tasks: [ImportTask]
     let onDiscover: () -> Void
     let onAddSource: () -> Void
+    let onStudy: (Int) -> Void
     var onResync: (Int) -> Void = { _ in }
+    var onRetry: (ImportTask) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
+    @State private var playingEpisodeId: Int?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -227,17 +228,20 @@ private struct LibraryMain: View {
         }
     }
 
-    // The eyebrow, a restatement of what Library is, and a note that Discover is
-    // separate took three lines before the first item. The tab bar says where you are.
     private var list: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x6) {
-            if let progress {
-                LibraryProcessingState(progress: progress)
-            } else if let importError {
-                NXErrorState(message: cleanedImportError(importError), retry: onAddSource)
+        let storedIds = Set(episodes.map(\.id))
+        let newTasks = tasks.filter { !storedIds.contains($0.episodeId) }
+        return LazyVStack(alignment: .leading, spacing: NXSpacing.x4) {
+            ForEach(newTasks) { task in
+                LibraryVideoCard(
+                    episode: task.episode, task: task,
+                    playing: playingEpisodeId == task.episodeId,
+                    onTogglePlayback: { togglePlayback(task.episodeId) },
+                    onStudy: { onStudy(task.episodeId) },
+                    onReprocess: {}, onRetry: { onRetry(task) })
             }
 
-            if episodes.isEmpty {
+            if episodes.isEmpty && newTasks.isEmpty {
                 NXEmptyState(
                     title: "Nothing added yet",
                     message: "Find something in Discover, or paste a link with the + button.",
@@ -245,148 +249,160 @@ private struct LibraryMain: View {
                     action: onDiscover
                 )
             } else {
-                VStack(spacing: 0) {
-                    ForEach(episodes) { episode in
-                        SourceListItem(episode: episode)
-                            .contextMenu { resyncButton(episode.id) }
-                        if episode.id != episodes.last?.id {
-                            Divider().overlay(NXColor.border(scheme))
-                        }
-                    }
+                ForEach(episodes) { episode in
+                    let task = tasks.first { $0.episodeId == episode.id }
+                    LibraryVideoCard(
+                        episode: episode, task: task,
+                        playing: playingEpisodeId == episode.id,
+                        onTogglePlayback: { togglePlayback(episode.id) },
+                        onStudy: { onStudy(episode.id) },
+                        onReprocess: { onResync(episode.id) },
+                        onRetry: { if let task { onRetry(task) } })
                 }
             }
         }
     }
 
-    // Long-press to rebuild the backend parse and replace the local copy. Lives
-    // here rather than on the study screen, which has no room for maintenance.
-    @ViewBuilder private func resyncButton(_ episodeId: Int) -> some View {
-        Button {
-            onResync(episodeId)
-        } label: {
-            Label("重新解析内容", systemImage: "arrow.triangle.2.circlepath")
-        }
+    private func togglePlayback(_ episodeId: Int) {
+        playingEpisodeId = playingEpisodeId == episodeId ? nil : episodeId
     }
 }
 
-private struct LibraryProcessingState: View {
-    let progress: ImportViewModel.ImportProgress
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            HStack(alignment: .top, spacing: NXSpacing.x3) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(NXColor.primary)
-                    .frame(width: 24, height: 24)
-                VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                    Text("Added to Nexa")
-                        .font(NXFont.subsectionTitle)
-                        .foregroundStyle(NXColor.text(scheme))
-                    // The stage list directly below already shows what is
-                    // happening; naming every artifact again said nothing new.
-                    Text("You can keep browsing while this finishes.")
-                        .font(NXFont.body)
-                        .foregroundStyle(NXColor.textSecondary(scheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            NXProgressIndicator(value: progress.percent, label: processingStageTitle(progress.stage))
-            ProcessingStageList(currentStage: progress.stage)
-        }
-        .padding(NXSpacing.x4)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.border(scheme), lineWidth: 1))
-    }
-}
-
-private struct ProcessingStageList: View {
-    let currentStage: String
-    @Environment(\.colorScheme) private var scheme
-
-    private let stages: [(key: String, title: String)] = [
-        ("uploading", "Uploading"),
-        ("parsing", "Parsing source"),
-        ("transcribing", "Generating transcript"),
-        ("chapters", "Generating chapters"),
-        ("ready", "Ready to discuss")
-    ]
-
-    private var currentIndex: Int {
-        let normalized = normalizedProcessingStage(currentStage)
-        return stages.firstIndex { $0.key == normalized } ?? 1
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            ForEach(stages.indices, id: \.self) { index in
-                HStack(spacing: NXSpacing.x2) {
-                    Image(systemName: iconName(for: index))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(tint(for: index))
-                        .frame(width: 16)
-                    Text(stages[index].title)
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(index == currentIndex ? NXColor.text(scheme) : NXColor.textTertiary(scheme))
-                }
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private func iconName(for index: Int) -> String {
-        if index < currentIndex { return "checkmark.circle.fill" }
-        if index == currentIndex { return "circle.fill" }
-        return "circle"
-    }
-
-    private func tint(for index: Int) -> Color {
-        if index < currentIndex { return NXColor.success }
-        if index == currentIndex { return NXColor.primary }
-        return NXColor.textTertiary(scheme)
-    }
-}
-
-private struct SourceListItem: View {
+private struct LibraryVideoCard: View {
     let episode: EpisodeDTO
+    let task: ImportTask?
+    let playing: Bool
+    let onTogglePlayback: () -> Void
+    let onStudy: () -> Void
+    let onReprocess: () -> Void
+    let onRetry: () -> Void
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.openURL) private var openURL
+    @State private var playerFailure: String?
 
-    // Where you got to, when you got somewhere. An untouched or finished episode
-    // shows its plain duration instead — a 0% bar on everything would be noise.
     private var progressFraction: Double? {
         Resume.progressFraction(savedMs: episode.positionMs, durationMs: episode.durationMs)
     }
 
     var body: some View {
-        NavigationLink(value: episode.id) {
-            HStack(spacing: NXSpacing.x3) {
-                SourceThumbnail(episode: episode, size: 32)
-                VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                    Text(episode.title ?? "Untitled")
-                        .font(NXFont.body)
-                        .foregroundStyle(NXColor.text(scheme))
-                        .lineLimit(1)
-                    Text(episode.channel ?? sourceHost(episode.sourceUrl))
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(NXColor.textSecondary(scheme))
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: NXSpacing.x3) {
+            player
+
+            VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                Text(episode.title ?? episode.sourceUrl)
+                    .font(NXFont.bodyMedium)
+                    .foregroundStyle(NXColor.text(scheme))
+                    .lineLimit(2)
+                Text(episode.channel ?? sourceHost(episode.sourceUrl))
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .lineLimit(1)
+
+                if let task {
+                    taskStatus(task)
+                } else {
                     if let progressFraction {
                         progressBar(progressFraction)
                     }
+                    Text(Resume.progressText(savedMs: episode.positionMs, durationMs: episode.durationMs)
+                            ?? durationText(episode.durationMs))
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(progressFraction == nil ? NXColor.textTertiary(scheme) : NXColor.primary)
+                        .monospacedDigit()
                 }
-                Spacer()
-                // The remaining time is what decides whether to start now, so a
-                // part-heard episode shows position/total rather than just total.
-                Text(Resume.progressText(savedMs: episode.positionMs, durationMs: episode.durationMs)
-                        ?? durationText(episode.durationMs))
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(progressFraction == nil ? NXColor.textTertiary(scheme) : NXColor.primary)
-                    .monospacedDigit()
             }
-            .padding(.vertical, NXSpacing.x3)
+
+            if let task, task.isFailed {
+                NXSecondaryButton(title: "Retry parsing", systemName: "arrow.clockwise", action: onRetry)
+            } else if task == nil {
+                HStack(spacing: NXSpacing.x3) {
+                    NXPrimaryButton(
+                        title: progressFraction == nil ? "Start learning" : "Continue learning",
+                        systemName: progressFraction == nil ? "play.fill" : "arrow.right.circle.fill",
+                        action: onStudy)
+                    NXSecondaryButton(title: "Reprocess", systemName: "arrow.triangle.2.circlepath", action: onReprocess)
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .padding(NXSpacing.x3)
+        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
+        .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.border(scheme), lineWidth: 1))
+    }
+
+    @ViewBuilder private var player: some View {
+        ZStack(alignment: .topTrailing) {
+            if playing {
+                playbackView
+                Button(action: onTogglePlayback) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.white)
+                        .shadow(radius: 3)
+                }
+                .padding(NXSpacing.x2)
+                .accessibilityLabel("Close original video")
+            } else {
+                LibraryThumbnail(episode: episode)
+                    .onTapGesture {
+                        guard LibraryPlaybackTarget.forEpisode(episode) != .unavailable else { return }
+                        onTogglePlayback()
+                    }
+                    .accessibilityLabel("Play original video: \(episode.title ?? "source")")
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16 / 9, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: NXRadius.surface))
+    }
+
+    @ViewBuilder private var playbackView: some View {
+        if let playerFailure {
+            VStack(spacing: NXSpacing.x3) {
+                Image(systemName: "play.slash")
+                    .font(.system(size: 26))
+                Text("This source cannot play here.")
+                    .font(NXFont.bodyMedium)
+                Button("Open in Safari") { openURL(URL(string: episode.sourceUrl)!) }
+                    .font(NXFont.controlEmphasis)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .accessibilityLabel(playerFailure)
+        } else {
+            switch LibraryPlaybackTarget.forEpisode(episode) {
+            case .youtube(let videoId):
+                if let url = YouTubeWeb.embed(videoId: videoId) {
+                    WebPage(url: url, onLoadFailure: { playerFailure = $0 }, wrapInFrame: true)
+                        .background(Color.black)
+                }
+            case .web(let url):
+                WebPage(url: url, onLoadFailure: { playerFailure = $0 })
+                    .background(NXColor.surface2(scheme))
+            case .unavailable:
+                Color.black.overlay(Image(systemName: "play.slash").foregroundStyle(.white))
+            }
+        }
+    }
+
+    @ViewBuilder private func taskStatus(_ task: ImportTask) -> some View {
+        if task.isFailed {
+            Text(task.job.error ?? "Processing failed. You can retry this source.")
+                .font(NXFont.auxiliary)
+                .foregroundStyle(NXColor.error)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if task.isQueued {
+            Label("Waiting to parse", systemImage: "clock")
+                .font(NXFont.auxiliary)
+                .foregroundStyle(NXColor.textSecondary(scheme))
+        } else {
+            VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                Text("Preparing learning material · \(processingStageTitle(task.job.stage))")
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.primary)
+                NXProgressIndicator(value: task.progress, label: "\(task.progress)%")
+            }
+        }
     }
 
     private func progressBar(_ fraction: Double) -> some View {
@@ -399,6 +415,47 @@ private struct SourceListItem: View {
         .frame(height: 2)
         .padding(.top, 2)
         .accessibilityHidden(true)   // the position/total text already says this
+    }
+}
+
+private struct LibraryThumbnail: View {
+    let episode: EpisodeDTO
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if let url = episode.thumbnailUrl.flatMap(URL.init(string:)) {
+                AsyncImage(url: url) { phase in
+                    if case let .success(image) = phase {
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+            if let duration = episode.durationMs, duration > 0 {
+                Text(durationText(duration))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 4))
+                    .padding(NXSpacing.x2)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            NXColor.surface2(scheme)
+            Image(systemName: "play.rectangle")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(NXColor.textTertiary(scheme))
+        }
     }
 }
 
@@ -448,6 +505,7 @@ struct ImportSheet: View {
     @Environment(\.colorScheme) private var scheme
     @FocusState private var focused: Bool
     @State private var didTrySubmit = false
+    @State private var submitting = false
 
     private var trimmedURL: String {
         urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -458,7 +516,7 @@ struct ImportSheet: View {
     }
 
     private var canSubmit: Bool {
-        !trimmedURL.isEmpty && !vm.importing
+        !trimmedURL.isEmpty && !submitting
     }
 
     private var urlHost: String? {
@@ -481,15 +539,12 @@ struct ImportSheet: View {
                     showEmptyHint: didTrySubmit && trimmedURL.isEmpty,
                     onSubmit: startImport
                 )
-                ImportStatusPanel(
-                    importing: vm.importing,
-                    progress: vm.progress,
-                    error: vm.importError,
-                    backendBaseURL: vm.backendBaseURL
-                )
+                if let error = vm.submissionError {
+                    ImportSubmissionError(message: cleanedImportError(error))
+                }
                 Spacer(minLength: NXSpacing.x4)
                 ImportSheetActions(
-                    importing: vm.importing,
+                    importing: submitting,
                     canSubmit: canSubmit,
                     onCancel: { dismiss() },
                     onSubmit: startImport
@@ -507,8 +562,10 @@ struct ImportSheet: View {
         guard canSubmit else { return }
         let url = urlDraft
         Task {
-            await vm.startImport(urlString: url)
-            if vm.importError == nil && vm.progress == nil { dismiss() }
+            submitting = true
+            let accepted = await vm.startImport(urlString: url)
+            submitting = false
+            if accepted { dismiss() }
         }
     }
 }
@@ -608,114 +665,21 @@ private struct ImportMetaItem: View {
     }
 }
 
-private struct ImportStatusPanel: View {
-    let importing: Bool
-    let progress: ImportViewModel.ImportProgress?
-    let error: String?
-    let backendBaseURL: URL
+private struct ImportSubmissionError: View {
+    let message: String
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x4) {
-            if let progress {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    HStack(spacing: NXSpacing.x2) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(NXColor.primary)
-                        Text("Preparing source")
-                            .font(NXFont.subsectionTitle)
-                            .foregroundStyle(NXColor.text(scheme))
-                    }
-                    NXProgressIndicator(value: progress.percent, label: progress.stage)
-                    ImportSkeleton()
-                }
-            } else if importing {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    HStack(spacing: NXSpacing.x2) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(NXColor.primary)
-                        Text("Connecting to Nexa")
-                            .font(NXFont.subsectionTitle)
-                            .foregroundStyle(NXColor.text(scheme))
-                    }
-                    Text("Sending the source to \(backendBaseURL.host() ?? backendBaseURL.absoluteString).")
-                        .font(NXFont.body)
-                        .foregroundStyle(NXColor.textSecondary(scheme))
-                    ImportSkeleton()
-                }
-            } else if let error {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    HStack(spacing: NXSpacing.x2) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(NXColor.error)
-                        Text("Add failed")
-                            .font(NXFont.subsectionTitle)
-                            .foregroundStyle(NXColor.text(scheme))
-                    }
-                    Text(error)
-                        .font(NXFont.body)
-                        .foregroundStyle(NXColor.textSecondary(scheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("Check that the phone can reach \(backendBaseURL.absoluteString), then try again.")
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: NXSpacing.x3) {
-                    ImportReadinessRow(systemName: "text.quote", title: "Transcript", detail: "Sentences and timing")
-                    ImportReadinessRow(systemName: "list.bullet.rectangle", title: "Chapters", detail: "Navigation and context")
-                    ImportReadinessRow(systemName: "bubble.left.and.bubble.right", title: "Discussion", detail: "Questions and insight capture")
-                }
-            }
+        HStack(alignment: .top, spacing: NXSpacing.x2) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(NXColor.error)
+            Text(message)
+                .font(NXFont.body)
+                .foregroundStyle(NXColor.textSecondary(scheme))
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(NXSpacing.x4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NXColor.surface2(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
-        .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.border(scheme), lineWidth: 1))
-    }
-}
-
-private struct ImportReadinessRow: View {
-    let systemName: String
-    let title: String
-    let detail: String
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(spacing: NXSpacing.x3) {
-            Image(systemName: systemName)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(NXColor.textTertiary(scheme))
-                .frame(width: 20)
-            Text(title)
-                .font(NXFont.control)
-                .foregroundStyle(NXColor.text(scheme))
-            Spacer(minLength: NXSpacing.x3)
-            Text(detail)
-                .font(NXFont.auxiliary)
-                .foregroundStyle(NXColor.textTertiary(scheme))
-                .lineLimit(1)
-        }
-    }
-}
-
-private struct ImportSkeleton: View {
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            Capsule()
-                .fill(NXColor.borderStrong(scheme))
-                .frame(width: 220, height: 8)
-            Capsule()
-                .fill(NXColor.border(scheme))
-                .frame(width: 156, height: 8)
-        }
-        .accessibilityHidden(true)
+        .padding(NXSpacing.x3)
+        .background(NXColor.error.opacity(0.08), in: RoundedRectangle(cornerRadius: NXRadius.control))
     }
 }
 

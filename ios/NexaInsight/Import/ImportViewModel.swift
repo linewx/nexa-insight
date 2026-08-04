@@ -2,12 +2,9 @@ import Foundation
 
 @MainActor
 final class ImportViewModel: ObservableObject {
-    struct ImportProgress: Equatable { let stage: String; let percent: Int }
-
     @Published var episodes: [EpisodeDTO] = []
-    @Published var importing = false
-    @Published var importError: String?
-    @Published var progress: ImportProgress?
+    @Published private(set) var tasks = ImportTaskStore()
+    @Published private(set) var submissionError: String?
 
     private var client: BackendClient
     private let store: EpisodeStore
@@ -23,11 +20,11 @@ final class ImportViewModel: ObservableObject {
         self.client = client
     }
 
-    static func progress(from job: JobDTO) -> ImportProgress {
-        ImportProgress(stage: job.stage, percent: job.progress)
-    }
-
     func reload() { episodes = store.downloadedEpisodes() }
+
+    func task(for episodeId: Int) -> ImportTask? { tasks.task(for: episodeId) }
+
+    var hasTasks: Bool { !tasks.ordered.isEmpty }
 
     static func normalizedYouTubeURL(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,37 +34,79 @@ final class ImportViewModel: ObservableObject {
         return "https://\(trimmed)"
     }
 
-    func startImport(urlString: String) async {
-        importing = true; importError = nil; progress = nil
-        defer { importing = false }
+    @discardableResult
+    func startImport(urlString: String) async -> Bool {
+        submissionError = nil
         let sourceURL = Self.normalizedYouTubeURL(urlString)
         do {
             let (episode, job) = try await client.importEpisode(url: sourceURL)
-            await pollUntilReady(episodeId: episode.id, jobId: job.id)
+            start(task: ImportTask(episode: episode, job: job, kind: .importing))
+            return true
         } catch {
-            importError = "\(error.localizedDescription)\nBackend: \(client.baseURL.absoluteString)\nURL: \(sourceURL)"
+            submissionError = "\(error.localizedDescription)\nBackend: \(client.baseURL.absoluteString)\nURL: \(sourceURL)"
+            return false
         }
     }
 
-    func pollUntilReady(episodeId: Int, jobId: Int) async {
+    private func start(task: ImportTask) {
+        tasks.upsert(task)
+        Task { await poll(task: task) }
+    }
+
+    private func poll(task: ImportTask) async {
+        var policy = ImportPollPolicy()
+        var latest = task
         while true {
+            var delay = ImportPollPolicy.baseRetryDelay
             do {
-                let job = try await client.episodeJob(episodeId)
-                progress = Self.progress(from: job)
+                let job = try await client.episodeJob(task.episodeId)
+                policy.afterSuccess()
+                latest = ImportTask(episode: task.episode, job: job, kind: task.kind)
+                tasks.upsert(latest)
                 if job.status == "complete" {
-                    try await finishDownload(episodeId: episodeId)
-                    return
-                }
-                if job.status == "failed" {
-                    importError = job.error ?? "Add failed"
+                    // Only the download may throw here, and giving up on it would
+                    // freeze the card at its last percentage with no way into the
+                    // episode, so it retries under the same policy.
+                    do {
+                        try await finishDownload(episodeId: task.episodeId)
+                        tasks.remove(episodeId: task.episodeId)
+                        return
+                    } catch {
+                        if policy.afterError(status: Self.httpStatus(of: error)) == .giveUp {
+                            markFailed(latest, error: error.localizedDescription)
+                            return
+                        }
+                        delay = policy.retryDelay
+                    }
+                } else if job.status == "failed" {
+                    // The backend saying so is the only real failure.
+                    markFailed(latest, error: job.error ?? "Processing failed")
                     return
                 }
             } catch {
-                importError = error.localizedDescription
-                return
+                if policy.afterError(status: Self.httpStatus(of: error)) == .giveUp {
+                    markFailed(latest, error: error.localizedDescription)
+                    return
+                }
+                delay = policy.retryDelay
             }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
+    }
+
+    private func markFailed(_ task: ImportTask, error: String) {
+        tasks.upsert(ImportTask(
+            episode: task.episode,
+            job: JobDTO(id: task.jobId, episodeId: task.episodeId, stage: task.job.stage,
+                        status: "failed", progress: task.progress, error: error),
+            kind: task.kind))
+    }
+
+    /// BackendClient throws NSError(domain: "Backend", code: <status>); transport
+    /// failures carry a URLError domain instead, which has no HTTP status.
+    private static func httpStatus(of error: Error) -> Int? {
+        let nsError = error as NSError
+        return nsError.domain == "Backend" ? nsError.code : nil
     }
 
     private func finishDownload(episodeId: Int) async throws {
@@ -80,16 +119,26 @@ final class ImportViewModel: ObservableObject {
         }
         _ = try store.saveBundle(bundle, localAudioPath: localPath)
         reload()
-        progress = nil
     }
 
-    func retry(jobId: Int, episodeId: Int) async {
-        importError = nil
+    func retry(task: ImportTask) async {
+        // A reprocess request can fail before the server creates a job. Its
+        // synthetic negative ID must retry the request itself, not /jobs/{id}.
+        if task.kind == .reprocessing, task.jobId < 0 {
+            tasks.remove(episodeId: task.episodeId)
+            await resyncContent(episodeId: task.episodeId)
+            return
+        }
         do {
-            _ = try await client.retryJob(jobId)
-            await pollUntilReady(episodeId: episodeId, jobId: jobId)
+            let job = try await client.retryJob(task.jobId)
+            start(task: ImportTask(episode: task.episode, job: job, kind: task.kind))
         } catch {
-            importError = error.localizedDescription
+            tasks.upsert(ImportTask(
+                episode: task.episode,
+                job: JobDTO(id: task.jobId, episodeId: task.episodeId, stage: task.job.stage,
+                            status: "failed", progress: task.progress,
+                            error: error.localizedDescription),
+                kind: task.kind))
         }
     }
 
@@ -97,14 +146,18 @@ final class ImportViewModel: ObservableObject {
     // the local bundle and audio. A plain bundle download would only copy the
     // stale parse again, which made "re-sync" appear to do nothing.
     func resyncContent(episodeId: Int) async {
-        importError = nil
-        progress = ImportProgress(stage: "reprocessing", percent: 0)
+        guard tasks.task(for: episodeId) == nil,
+              let episode = episodes.first(where: { $0.id == episodeId })
+        else { return }
         do {
             let (_, job) = try await client.reprocessEpisode(episodeId)
-            await pollUntilReady(episodeId: episodeId, jobId: job.id)
+            start(task: ImportTask(episode: episode, job: job, kind: .reprocessing))
         } catch {
-            importError = error.localizedDescription
-            progress = nil
+            tasks.upsert(ImportTask(
+                episode: episode,
+                job: JobDTO(id: -episodeId, episodeId: episodeId, stage: "reprocessing",
+                            status: "failed", progress: 0, error: error.localizedDescription),
+                kind: .reprocessing))
         }
     }
 }

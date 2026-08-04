@@ -22,6 +22,9 @@ struct WebPage: UIViewRepresentable {
     // Reported so the caller can show its own progress rather than leaving a blank
     // rectangle during the first (large) page load.
     var onLoadingChange: (Bool) -> Void = { _ in }
+    // A card can offer a Safari escape hatch when a source refuses to load in a
+    // web view. Existing callers only need the loading signal.
+    var onLoadFailure: (String) -> Void = { _ in }
     // Wrap the address in a minimal HTML document loaded from `baseURL`.
     //
     // Required for the embed player. Loading the embed URL directly gives WebKit no
@@ -78,6 +81,7 @@ struct WebPage: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.onLoadingChange = onLoadingChange
+        context.coordinator.onLoadFailure = onLoadFailure
         // Only reload on a genuine change of address; SwiftUI re-invokes this on
         // every state change, and reloading each time would restart the video.
         // The framed case has no comparable url (it is an HTML string), so it is
@@ -90,14 +94,17 @@ struct WebPage: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onLoadingChange: onLoadingChange)
+        Coordinator(onLoadingChange: onLoadingChange, onLoadFailure: onLoadFailure)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var onLoadingChange: (Bool) -> Void
+        var onLoadFailure: (String) -> Void
 
-        init(onLoadingChange: @escaping (Bool) -> Void) {
+        init(onLoadingChange: @escaping (Bool) -> Void,
+             onLoadFailure: @escaping (String) -> Void) {
             self.onLoadingChange = onLoadingChange
+            self.onLoadFailure = onLoadFailure
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -110,10 +117,12 @@ struct WebPage: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             onLoadingChange(false)
+            onLoadFailure(error.localizedDescription)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             onLoadingChange(false)
+            onLoadFailure(error.localizedDescription)
         }
     }
 }

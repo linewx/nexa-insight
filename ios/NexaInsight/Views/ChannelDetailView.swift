@@ -69,6 +69,9 @@ struct ChannelDetailView: View {
         // in the bar it had to share 44pt with two trailing icons, and iOS 26's
         // grouped-item capsule squeezed it to a single vertical sliver.
         .navigationBarTitleDisplayMode(.inline)
+        // This is a pushed detail screen, not a top-level destination. The tab bar
+        // returns automatically when the user navigates back to its root tab.
+        .toolbar(.hidden, for: .tabBar)
         .task { await vm.load() }
         .fullScreenCover(isPresented: $showSearch) {
             // No onPasteLink: importing by URL belongs on Discover, not inside one
