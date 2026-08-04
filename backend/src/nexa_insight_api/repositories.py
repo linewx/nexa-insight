@@ -1,3 +1,4 @@
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -7,6 +8,58 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base, Chapter, Episode, ExpressionOccurrence, ImportChunk, ImportJob, LearningExpression, Sentence
 from .settings import Settings
+
+EXPRESSION_FIELDS = ("text", "kind", "chinese", "pronunciation", "example", "example_chinese")
+
+# The iOS LearningExpressionKind enum decodes exactly these three, and one
+# unknown value fails the whole bundle decode, so the column is narrowed here.
+EXPRESSION_KINDS = ("word", "phrase", "pattern")
+
+
+def locate_expression(text_value: str, host: str) -> tuple[int, int] | None:
+    """Find where an expression really sits in its sentence.
+
+    The model reports start/end offsets by counting characters itself, and it is
+    wrong about 97% of the time — plausibly wrong, so a range check passes and the
+    highlight lands on unrelated words ("Thanks so much" highlighting "Okay,
+    Patrick"). Searching for the text is the only way to be right, and returning
+    None when it is absent means an invented expression simply gets no highlight
+    instead of a misleading one.
+
+    Matching ignores case and treats any run of whitespace as equivalent, because
+    transcripts carry double spaces the model silently normalizes. Each word may
+    also carry a suffix, so the lemma "work out" still finds "worked out" — the
+    form actually spoken. The lookarounds keep that from reaching inside a longer
+    word, which would otherwise let "work out" match "network outside".
+    """
+    if not text_value or not host:
+        return None
+    words = text_value.split()
+    if not words:
+        return None
+    pattern = r"(?<!\w)" + r"\s+".join(re.escape(word) + r"\w*" for word in words)
+    match = re.search(pattern, host, flags=re.IGNORECASE)
+    return (match.start(), match.end()) if match else None
+
+
+def normalize_expression_kind(value: object) -> str:
+    """Map whatever the model called this onto a kind the client can decode.
+
+    Asking for "word, phrase, or pattern" in the prompt is not binding: real
+    imports produced 19 distinct kinds, including "phrasal verb" and
+    "compound noun (YC term)". Anything unrecognized becomes "phrase", the
+    safest label for a multi-word expression.
+    """
+    if not isinstance(value, str):
+        return "phrase"
+    text = value.strip().casefold()
+    if text in EXPRESSION_KINDS:
+        return text
+    if "pattern" in text:
+        return "pattern"
+    if "word" in text or "acronym" in text:
+        return "word"
+    return "phrase"
 
 
 class Repository:
@@ -167,8 +220,13 @@ class Repository:
             expressions_by_text: dict[str, LearningExpression] = {}
             stored_occurrences: dict[str, set[tuple[int, int, int]]] = {}
             for item in learning_expressions or []:
-                expression_data = dict(item)
-                occurrences = expression_data.pop("occurrences", [])
+                occurrences = item.get("occurrences", [])
+                # The model invents extra keys ("confidence", "difficulty"), and
+                # one of those reaching the constructor fails the whole import.
+                expression_data = {key: item[key] for key in EXPRESSION_FIELDS if key in item}
+                if not isinstance(expression_data.get("text"), str) or not expression_data["text"].strip():
+                    continue
+                expression_data["kind"] = normalize_expression_kind(expression_data.get("kind"))
                 normalized_text = " ".join(expression_data["text"].casefold().split())
                 expression = expressions_by_text.get(normalized_text)
                 if expression is None:
@@ -178,13 +236,20 @@ class Repository:
                     expressions_by_text[normalized_text] = expression
                     stored_occurrences[normalized_text] = set()
                 for occurrence in occurrences:
-                    position = occurrence["sentence_position"]
+                    try:
+                        position = int(occurrence["sentence_position"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
                     if not 0 <= position < len(sentence_rows):
                         continue
                     sentence = sentence_rows[position]
-                    start, end = occurrence["start_offset"], occurrence["end_offset"]
-                    if not 0 <= start < end <= len(sentence.source_text):
+                    # The reported offsets are discarded; only the sentence index
+                    # is trusted, and even that is checked by whether the text is
+                    # actually there.
+                    located = locate_expression(expression_data["text"], sentence.source_text)
+                    if located is None:
                         continue
+                    start, end = located
                     occurrence_key = (sentence.id, start, end)
                     if occurrence_key in stored_occurrences[normalized_text]:
                         continue
