@@ -17,6 +17,9 @@ import SwiftData
     // what is only a convenience.
     var positionMs: Int?
     var lastPlayedAt: Date?
+    /// "native" or "teaching". Optional for the same reason as the fields above,
+    /// and on-demand extraction falls back to native when it is missing.
+    var materialKind: String?
     @Relationship(deleteRule: .cascade) var chapters: [StoredChapter]
     @Relationship(deleteRule: .cascade) var sentences: [StoredSentence]
     @Relationship(deleteRule: .cascade) var recordings: [StoredRecording]
@@ -86,19 +89,31 @@ import SwiftData
     var whenToUse: String?
     var commonMistake: String?
     var formality: String?
+    // "auto" or "manual". Defaulted for the same reason as the fields above, and
+    // "auto" is right for every row that predates on-demand notes.
+    var source: String = "auto"
+    var request: String?
+    // Manual notes are created on the device before any upload, so they have no
+    // backend id yet. Nil marks "not archived", which is what the uploader looks
+    // for and what keeps a failed upload retriable.
+    var remoteId: Int?
     @Relationship(deleteRule: .cascade) var occurrences: [StoredExpressionOccurrence]
+
+    var isManual: Bool { source == "manual" }
 
     init(
         expressionId: Int, episodeId: Int, text: String, kind: String, type: String = "phrase",
         chinese: String, pronunciation: String?, example: String, exampleChinese: String,
         heardAs: String? = nil, restored: String? = nil, whyHard: String? = nil,
-        whenToUse: String? = nil, commonMistake: String? = nil, formality: String? = nil
+        whenToUse: String? = nil, commonMistake: String? = nil, formality: String? = nil,
+        source: String = "auto", request: String? = nil, remoteId: Int? = nil
     ) {
         self.expressionId = expressionId; self.episodeId = episodeId; self.text = text; self.kind = kind
         self.type = type
         self.chinese = chinese; self.pronunciation = pronunciation; self.example = example; self.exampleChinese = exampleChinese
         self.heardAs = heardAs; self.restored = restored; self.whyHard = whyHard
         self.whenToUse = whenToUse; self.commonMistake = commonMistake; self.formality = formality
+        self.source = source; self.request = request; self.remoteId = remoteId
         self.occurrences = []
     }
 }
@@ -108,6 +123,36 @@ import SwiftData
 
     init(sentenceId: Int, startOffset: Int, endOffset: Int) {
         self.sentenceId = sentenceId; self.startOffset = startOffset; self.endOffset = endOffset
+    }
+}
+
+/// A free-form question about one paragraph, and the answer.
+///
+/// Separate from `StoredLearningExpression` because that model is entirely about a
+/// piece of vocabulary — pronunciation, the sound it reduces to, the form to
+/// restore, the example to shadow. A question like "what is this paragraph
+/// arguing" fills none of those, and forcing it in would mean fifteen nil columns
+/// and `chinese` quietly repurposed as the answer.
+///
+/// Anchored to a sentence id rather than to character offsets: the subject is the
+/// paragraph, so there is nothing to highlight and no offsets to keep aligned.
+@Model final class StoredParagraphNote {
+    /// Negative and local, same convention as manual expressions: backend ids are
+    /// positive, so the two can never collide if these are ever synced.
+    var noteId: Int
+    var episodeId: Int
+    var sentenceId: Int
+    var question: String
+    var answer: String
+    var createdAt: Date
+
+    init(noteId: Int, episodeId: Int, sentenceId: Int, question: String, answer: String) {
+        self.noteId = noteId
+        self.episodeId = episodeId
+        self.sentenceId = sentenceId
+        self.question = question
+        self.answer = answer
+        self.createdAt = Date()
     }
 }
 

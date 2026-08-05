@@ -34,6 +34,11 @@ struct EpisodeDTO: Codable, Identifiable, Equatable {
     // Saved playback position. Optional and defaulted so the backend's decoding of
     // this DTO is unaffected — the backend has no such field.
     var positionMs: Int? = nil
+    /// "native" or "teaching", decided at import. On-demand extraction needs it to
+    /// pick the same prompt the pipeline would have used. Nil for episodes imported
+    /// before classification existed, which the extractor treats as native — the
+    /// backend's default too.
+    var materialKind: String? = nil
 }
 
 struct JobDTO: Codable, Equatable {
@@ -105,6 +110,19 @@ enum LearningExpressionType: String, Codable, Equatable, CaseIterable {
         }
     }
 
+    /// The coarse three-value `kind` this type belongs to.
+    ///
+    /// A note extracted on the device has no backend to narrow `kind` for it, and
+    /// the value still matters: the older client contract decodes exactly these
+    /// three, and one unknown value used to fail a whole bundle.
+    var impliedKind: LearningExpressionKind {
+        switch self {
+        case .word: .word
+        case .pattern: .pattern
+        case .reduction, .ellipsis, .syntax, .idiom, .reference, .phrase, .collocation, .chunk: .phrase
+        }
+    }
+
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -136,6 +154,10 @@ struct LearningExpressionDTO: Codable, Identifiable, Equatable {
     let whenToUse: String?
     let commonMistake: String?
     let formality: String?
+    /// "auto" or "manual". Absent from older backends, where every row came from
+    /// batch extraction — which is what the default describes.
+    let source: String
+    let request: String?
     let occurrences: [ExpressionOccurrenceDTO]
 
     init(from decoder: Decoder) throws {
@@ -154,6 +176,8 @@ struct LearningExpressionDTO: Codable, Identifiable, Equatable {
         whenToUse = try values.decodeIfPresent(String.self, forKey: .whenToUse)
         commonMistake = try values.decodeIfPresent(String.self, forKey: .commonMistake)
         formality = try values.decodeIfPresent(String.self, forKey: .formality)
+        source = try values.decodeIfPresent(String.self, forKey: .source) ?? "auto"
+        request = try values.decodeIfPresent(String.self, forKey: .request)
         occurrences = try values.decodeIfPresent([ExpressionOccurrenceDTO].self, forKey: .occurrences) ?? []
     }
 
@@ -162,6 +186,7 @@ struct LearningExpressionDTO: Codable, Identifiable, Equatable {
         chinese: String, pronunciation: String? = nil, example: String, exampleChinese: String,
         heardAs: String? = nil, restored: String? = nil, whyHard: String? = nil,
         whenToUse: String? = nil, commonMistake: String? = nil, formality: String? = nil,
+        source: String = "auto", request: String? = nil,
         occurrences: [ExpressionOccurrenceDTO] = []
     ) {
         self.id = id
@@ -178,6 +203,8 @@ struct LearningExpressionDTO: Codable, Identifiable, Equatable {
         self.whenToUse = whenToUse
         self.commonMistake = commonMistake
         self.formality = formality
+        self.source = source
+        self.request = request
         self.occurrences = occurrences
     }
 }

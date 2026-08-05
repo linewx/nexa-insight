@@ -46,6 +46,69 @@ enum LearningExpressionLogic {
     }
 
 
+    /// Occurrences grouped by the sentence they belong to.
+    ///
+    /// Built once per transcript instead of per row. Reading mode was scanning
+    /// EVERY expression's EVERY occurrence for EVERY visible row on EVERY redraw —
+    /// on a 681-sentence episode with 137 expressions that is tens of thousands of
+    /// comparisons per frame, which is what made scrolling stutter.
+    struct Index {
+        fileprivate let bySentence: [Int: [(expressionID: Int, start: Int, end: Int)]]
+
+        init(_ expressions: [LearningExpressionDTO]) {
+            var map: [Int: [(expressionID: Int, start: Int, end: Int)]] = [:]
+            for expression in expressions {
+                for occurrence in expression.occurrences where occurrence.startOffset < occurrence.endOffset {
+                    guard occurrence.startOffset >= 0 else { continue }
+                    map[occurrence.sentenceId, default: []].append(
+                        (expression.id, occurrence.startOffset, occurrence.endOffset))
+                }
+            }
+            // Sorted here rather than per row: same order the unindexed path used,
+            // longest-wins on a tie.
+            bySentence = map.mapValues { matches in
+                matches.sorted {
+                    $0.start == $1.start ? ($0.end - $0.start) > ($1.end - $1.start) : $0.start < $1.start
+                }
+            }
+        }
+
+        func has(sentenceId: Int) -> Bool { bySentence[sentenceId] != nil }
+    }
+
+    /// Indexed variant. Same result as the scanning version, without the per-row
+    /// scan over every expression.
+    static func segments(for source: String, sentenceId: Int, index: Index) -> [Segment] {
+        guard let candidates = index.bySentence[sentenceId] else {
+            return [Segment(text: source, expressionID: nil)]
+        }
+        let characters = Array(source)
+        var accepted: [(expressionID: Int, start: Int, end: Int)] = []
+        var cursor = 0
+        for match in candidates where match.start >= cursor && match.end <= characters.count {
+            accepted.append(match)
+            cursor = match.end
+        }
+        guard !accepted.isEmpty else { return [Segment(text: source, expressionID: nil)] }
+
+        // Slicing an Array<Character> rather than dropFirst/prefix on the String:
+        // those walk from the start every time, making the cost quadratic in the
+        // number of highlights.
+        var output: [Segment] = []
+        cursor = 0
+        for match in accepted {
+            if cursor < match.start {
+                output.append(Segment(text: String(characters[cursor..<match.start]), expressionID: nil))
+            }
+            output.append(Segment(text: String(characters[match.start..<match.end]), expressionID: match.expressionID))
+            cursor = match.end
+        }
+        if cursor < characters.count {
+            output.append(Segment(text: String(characters[cursor...]), expressionID: nil))
+        }
+        return output
+    }
+
     static func segments(for source: String, sentenceId: Int, expressions: [LearningExpressionDTO]) -> [Segment] {
         struct Match {
             let expressionID: Int

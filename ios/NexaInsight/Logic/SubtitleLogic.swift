@@ -1,21 +1,41 @@
 import CoreGraphics
 import Foundation
 
-func activeSentence(_ sentences: [SentenceDTO], _ currentMs: Int) -> SentenceDTO? {
-    var active: SentenceDTO?
-    for item in sentences {
-        if item.startMs <= currentMs { active = item } else { break }
+/// Index of the last sentence that has started by `currentMs`, or nil before the
+/// first one.
+///
+/// Binary search, because this runs on every position tick — the player publishes
+/// every 200ms — and it decides which row is highlighted, so it drives a redraw of
+/// the transcript five times a second. A linear pass over 681 sentences there is
+/// the difference between a smooth scroll and a stuttering one.
+///
+/// Relies on `sentences` being ordered by `startMs`, which is how the pipeline
+/// writes them and how `position` is assigned.
+func activeSentenceIndex(_ sentences: [SentenceDTO], _ currentMs: Int) -> Int? {
+    var low = 0
+    var high = sentences.count - 1
+    var found: Int?
+    while low <= high {
+        let mid = (low + high) / 2
+        if sentences[mid].startMs <= currentMs {
+            found = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
     }
-    return active
+    return found
+}
+
+func activeSentence(_ sentences: [SentenceDTO], _ currentMs: Int) -> SentenceDTO? {
+    activeSentenceIndex(sentences, currentMs).map { sentences[$0] }
 }
 
 func subtitleWindow(_ sentences: [SentenceDTO], _ currentMs: Int, radius: Int = 2) -> [SentenceDTO] {
     if sentences.isEmpty { return [] }
-    var precedingIndex = -1
-    for (index, item) in sentences.enumerated() where item.startMs <= currentMs {
-        precedingIndex = index
-    }
-    let index = max(0, precedingIndex)
+    // The old version had no early exit at all: it walked every sentence to find
+    // the last match, on every tick.
+    let index = activeSentenceIndex(sentences, currentMs) ?? 0
     let lower = max(0, index - radius)
     let upper = min(sentences.count - 1, index + radius)
     return Array(sentences[lower...upper])

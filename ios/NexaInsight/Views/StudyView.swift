@@ -23,13 +23,47 @@ struct StudyView: View {
     @State private var loop: SentenceLoop = .off
     @State private var speed: Double = 1
     @State private var savedPositionMs: Int?
-    // Nil until the header capsule is used: annotations then follow the persisted
-    // setting, and the capsule overrides it for this sitting only.
-    @State private var annotationsOverride: Bool?
+    // Nil until the header capsule is used: the mode then follows the persisted
+    // preference, and the capsule overrides it for this sitting only.
+    @State private var modeOverride: StudyMode?
     @State private var expandedExpressionID: Int?
+    // Which paragraphs have their card stack open. A set, not a single id: several
+    // paragraphs can be open at once, and closing one should not close the rest.
+    @State private var expandedCardSentenceIds: Set<Int> = []
+    @State private var paragraphNotes: [StoredParagraphNote] = []
     @State private var practiceExpression: LearningExpressionDTO?
+    // On-demand notes. The sentence awaiting a request drives the sheet; the id
+    // being extracted drives the spinner on that one row, so the rest of the
+    // transcript stays usable while the model answers.
+    @State private var noteRequestSentence: SentenceDTO?
+    // The paragraph currently held down. Drives the row's own waveform, so the
+    // question happens in place rather than under a sheet.
+    @State private var askingSentence: SentenceDTO?
+    @State private var composingNote = false
+    @State private var voiceRecorder = VoiceNoteRecorder()
+    @State private var extractingSentenceId: Int?
+    @State private var noteError: String?
+    @State private var manualExpressions: [LearningExpressionDTO] = []
     private let sentences: [SentenceDTO]
-    private let learningExpressions: [LearningExpressionDTO]
+    // Read once at init, so a note made during this sitting would not appear.
+    // `manualExpressions` carries those, and `learningExpressions` is the union —
+    // which is what every annotation path already consumes.
+    private let storedExpressions: [LearningExpressionDTO]
+
+    // Cached, not computed per redraw. The player publishes its position every
+    // 200ms, so a computed property here runs five times a second for the whole
+    // episode — with 681 sentences and 137 expressions that was the stutter.
+    @State private var cachedIndex = LearningExpressionLogic.Index([])
+    @State private var cachedVisible: [SentenceDTO] = []
+
+    /// Concatenation is cheap; the INDEX was the expensive part, and that is what
+    /// is cached. Reading the cache here instead made this empty on the first
+    /// frame — before `onAppear` filled it — so `annotated` was false exactly when
+    /// the rows were first built, and the reading branch that carries the tap and
+    /// hold gestures was never taken.
+    private var learningExpressions: [LearningExpressionDTO] {
+        storedExpressions + manualExpressions
+    }
     private let episode: EpisodeDTO?
 
     init(episodeId: Int, store: EpisodeStore, backendBaseURL: URL, settings: AppSettings) {
@@ -38,7 +72,7 @@ struct StudyView: View {
         self.backendBaseURL = backendBaseURL
         self.settings = settings
         self.sentences = store.sentences(for: episodeId)
-        self.learningExpressions = store.learningExpressions(for: episodeId)
+        self.storedExpressions = store.learningExpressions(for: episodeId)
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
         let relative = store.localAudioPath(for: episodeId) ?? "audio/\(episodeId).mp3"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -52,13 +86,20 @@ struct StudyView: View {
             initialPositionMs: resumeMs))
     }
 
-    var visible: [SentenceDTO] { vm.search(query, in: sentences) }
+    /// The unfiltered list is the common case and needs no work; only a live query
+    /// costs anything, and that is what the cache holds. Reading the cache
+    /// unconditionally showed an empty transcript on the first frame.
+    var visible: [SentenceDTO] { query.isEmpty ? sentences : cachedVisible }
 
-    /// Annotations show when the preference allows and this episode actually has
-    /// expressions to mark. The capsule overrides the preference for this sitting.
-    private var annotated: Bool {
-        (annotationsOverride ?? settings.showReadingAnnotations) && !learningExpressions.isEmpty
+    /// The mode in force: this sitting's override, else the persisted preference.
+    private var mode: StudyMode {
+        modeOverride ?? (settings.showReadingAnnotations ? .reading : .listening)
     }
+
+    /// Whether expressions are marked in the transcript. Both modes annotate — the
+    /// modes differ in the controls a sentence offers, not in how the text looks —
+    /// so this is now only about whether there is anything to mark.
+    private var annotated: Bool { !learningExpressions.isEmpty }
     var current: SentenceDTO? { vm.currentSentence(sentences: sentences, cursorMs: player.currentMs) }
 
     var body: some View {
@@ -70,7 +111,14 @@ struct StudyView: View {
             audioRefreshState: audioRefreshState,
             following: vm.following,
             player: player,
-            onSentenceTap: { sentence in playIntent(seekTo: sentence.startMs) },
+            onSentenceTap: { sentence in
+                switch SentencePlaybackToggle.action(
+                    tapped: sentence, playingId: current?.id,
+                    isPlaying: player.playbackState == .playing) {
+                case .play(let ms): playIntent(seekTo: ms)
+                case .stop: player.pause()
+                }
+            },
             onShadow: { sentence in shadowingSentence = sentence },
             onSync: { vm.syncNow() },
             onRefreshAudio: { Task { await refreshAudio() } },
@@ -87,12 +135,41 @@ struct StudyView: View {
                 speed = IntensiveListening.cycledSpeed(after: speed)
                 player.speed(speed)
             },
+            mode: mode,
             annotated: annotated,
             annotationsAvailable: !learningExpressions.isEmpty,
-            onToggleAnnotations: { annotationsOverride = !annotated },
+            onToggleAnnotations: {
+                let next = mode.toggled
+                modeOverride = next
+                // Leaving reading closes any open card: its controls are gone, and a
+                // card with no way to practise from it is a dead end.
+                if next == .listening { expandedExpressionID = nil }
+            },
             learningExpressions: learningExpressions,
+            expressionIndex: cachedIndex,
             expandedExpressionID: $expandedExpressionID,
             onPracticeExpression: { practiceExpression = $0 },
+            extractingSentenceId: extractingSentenceId,
+            onExtractNote: { sentence in
+                noteRequestSentence = sentence
+                composingNote = true
+            },
+            noteRows: paragraphNotes.map {
+                (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+            },
+            expandedCardSentenceIds: expandedCardSentenceIds,
+            onToggleCards: { id in
+                if expandedCardSentenceIds.contains(id) {
+                    expandedCardSentenceIds.remove(id)
+                } else {
+                    expandedCardSentenceIds.insert(id)
+                }
+            },
+            onDeleteCard: deleteCard,
+            askingSentenceId: askingSentence?.id,
+            askSamples: voiceRecorder.samples,
+            onHoldStart: beginAsking,
+            onHoldEnd: endAsking,
             discussionSession: liveSession,
             onEndDiscussion: endDiscussion
         )
@@ -110,6 +187,12 @@ struct StudyView: View {
                 store.savePlaybackPosition(ms, for: episodeId)
             }
         }
+        // The caches, refreshed on their real inputs rather than on the 200ms
+        // position tick. Rebuilding the index and re-filtering 681 sentences five
+        // times a second was the reading-mode stutter.
+        .onAppear { refreshCaches() }
+        .onChange(of: query) { _, _ in cachedVisible = vm.search(query, in: sentences) }
+        .onChange(of: manualExpressions.count) { _, _ in refreshExpressionCaches() }
         // Leaving mid-sentence is the common case, so the exact position is
         // written on the way out rather than only at throttle boundaries.
         .onDisappear {
@@ -151,6 +234,230 @@ struct StudyView: View {
                     player.pause()
                 })
             }
+        }
+        .sheet(isPresented: $composingNote) {
+            NoteComposer(
+                sentence: noteRequestSentence,
+                recorder: voiceRecorder,
+                onSpeak: startSpeaking,
+                onRelease: finishSpeaking,
+                onCancel: {
+                    voiceRecorder.cancel()
+                    composingNote = false
+                },
+                onType: { request in
+                    let target = noteRequestSentence
+                    composingNote = false
+                    Task { await extractNote(for: target, request: request) }
+                })
+            .presentationDetents([.height(300)])
+        }
+        // Bound to the value, not `.constant(...)`: a constant binding cannot be
+        // written back, so dismissing left `noteError` set and the alert could
+        // never be shown a second time — the first failure was the only one you
+        // ever saw.
+        .alert(
+            "\u{8bb0}\u{7b14}\u{8bb0}\u{5931}\u{8d25}",
+            isPresented: Binding(get: { noteError != nil }, set: { if !$0 { noteError = nil } }),
+            presenting: noteError
+        ) { _ in
+            Button("\u{597d}") { noteError = nil }
+        } message: { message in
+            Text(message)
+        }
+    }
+
+    /// Deletes one card. Only what the learner made by hand can go: automatic rows
+    /// are replaced by a reprocess, so removing one would not stick.
+    private func deleteCard(_ card: ParagraphCards.Card) {
+        do {
+            switch card {
+            case .expression(let expression):
+                guard card.isDeletable else { return }
+                try store.deleteManualExpression(expression.id)
+                manualExpressions.removeAll { $0.id == expression.id }
+                refreshExpressionCaches()
+            case .note(let id, _, _):
+                try store.deleteParagraphNote(id)
+                paragraphNotes.removeAll { $0.noteId == id }
+            }
+        } catch {
+            noteError = error.localizedDescription
+        }
+    }
+
+    private func refreshCaches() {
+        cachedVisible = vm.search(query, in: sentences)
+        refreshExpressionCaches()
+    }
+
+    private func refreshExpressionCaches() {
+        cachedIndex = LearningExpressionLogic.Index(learningExpressions)
+        paragraphNotes = store.paragraphNotes(for: episodeId)
+    }
+
+    /// Holding a paragraph starts a spoken question about that paragraph.
+    ///
+    /// Playback pauses for the duration: otherwise the recording is the episode
+    /// mixed with your voice, and the model has to pick your question out of the
+    /// audio it is being asked about.
+    private func beginAsking(_ sentence: SentenceDTO) {
+        guard askingSentence == nil else { return }
+        if player.playbackState == .playing { player.pause() }
+        askingSentence = sentence
+        do {
+            try voiceRecorder.start()
+        } catch {
+            askingSentence = nil
+            noteError = error.localizedDescription
+        }
+    }
+
+    private func endAsking() {
+        guard let sentence = askingSentence else { return }
+        askingSentence = nil
+        // Nil means the take held no speech — a press that read as a hold for a few
+        // milliseconds. Silence is a slip, not an error worth a dialog.
+        guard let audio = voiceRecorder.stop() else { return }
+        Task { await extractSpokenNote(audio: audio, around: sentence) }
+    }
+
+    private func startSpeaking() {
+        do {
+            try voiceRecorder.start()
+        } catch {
+            noteError = error.localizedDescription
+            composingNote = false
+        }
+    }
+
+    private func finishSpeaking() {
+        // Nil means the take held no speech — a press that registered as a hold for
+        // a few milliseconds, or a muted mic. Closing without a request is right;
+        // reporting an error for a slip is not.
+        guard let audio = voiceRecorder.stop() else {
+            composingNote = false
+            return
+        }
+        let target = noteRequestSentence
+        composingNote = false
+        Task { await extractSpokenNote(audio: audio, around: target) }
+    }
+
+    /// Lines offered to the model when the question was spoken.
+    ///
+    /// Holding a paragraph names its subject exactly, so the window is that
+    /// paragraph plus one line either side — enough for a question whose answer
+    /// straddles a sentence break ("what does *this* refer to"), without inviting
+    /// the model to answer about a line you were not pointing at.
+    ///
+    /// Falling back to the playing position needs a wider net: nothing was pointed
+    /// at, and by the time you notice you did not follow something it has gone by,
+    /// so the window leans backwards.
+    private func contextWindow(around sentence: SentenceDTO?) -> [SentenceDTO] {
+        guard let anchor = sentence ?? current,
+              let index = sentences.firstIndex(where: { $0.id == anchor.id })
+        else { return Array(sentences.prefix(8)) }
+
+        let pointedAt = sentence != nil
+        let start = max(0, index - (pointedAt ? 1 : 5))
+        let end = min(sentences.count, index + (pointedAt ? 2 : 3))
+        return Array(sentences[start..<end])
+    }
+
+    private func extractSpokenNote(audio: URL, around sentence: SentenceDTO?) async {
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            extractingSentenceId = nil
+        }
+        let window = contextWindow(around: sentence)
+        extractingSentenceId = (sentence ?? current)?.id
+
+        let keychain = KeychainStore()
+        let client = OnDemandExtractionClient(
+            apiKey: keychain.get(.dashscopeKey) ?? "",
+            workspaceId: keychain.get(.dashscopeWorkspaceId) ?? "")
+        do {
+            // Routed, not assumed: the question may have been about a phrase or
+            // about what the passage means, and only the reply says which.
+            let outcome = try await client.ask(
+                audioURL: audio,
+                candidates: window.map(\.sourceText),
+                materialKind: episode?.materialKind ?? "native")
+
+            // The model's chosen line, mapped back to the real sentence. Falling
+            // back to the held paragraph keeps a general question attached to where
+            // it was asked rather than dropping it.
+            func host(_ position: Int?) -> SentenceDTO? {
+                position.flatMap { window.indices.contains($0) ? window[$0] : nil }
+                    ?? sentence ?? current
+            }
+
+            switch outcome {
+            case .vocabulary(let items):
+                for item in items {
+                    store(item, on: host(item.sentencePosition), request: nil)
+                }
+            case .answer(let note):
+                guard let target = host(note.sentencePosition) else { break }
+                let stored = try store.addParagraphNote(
+                    episodeId: episodeId, sentenceId: target.id,
+                    question: note.question, answer: note.answer)
+                paragraphNotes.append(stored)
+                // Opened, so the answer is on screen rather than behind a summary
+                // row you would have to notice and tap.
+                expandedCardSentenceIds.insert(target.id)
+            }
+        } catch {
+            noteError = error.localizedDescription
+        }
+    }
+
+    /// Extracts a note for one sentence on the device, then stores it.
+    ///
+    /// Deliberately independent of the backend: the moment you want a note is
+    /// mid-listen, and the backend is only needed to transcode and translate.
+    private func extractNote(for sentence: SentenceDTO?, request: String?) async {
+        guard let sentence = sentence ?? current else { return }
+        extractingSentenceId = sentence.id
+        defer { extractingSentenceId = nil }
+
+        let keychain = KeychainStore()
+        let client = OnDemandExtractionClient(
+            apiKey: keychain.get(.dashscopeKey) ?? "",
+            workspaceId: keychain.get(.dashscopeWorkspaceId) ?? "")
+        do {
+            let extracted = try await client.extract(
+                sentence: sentence.sourceText,
+                materialKind: episode?.materialKind ?? "native",
+                request: request)
+            for item in extracted {
+                store(item, on: sentence, request: request)
+            }
+        } catch {
+            noteError = error.localizedDescription
+        }
+    }
+
+    /// Persists one extracted expression as a manual note and reveals it.
+    private func store(_ item: ExtractedExpression, on sentence: SentenceDTO?, request: String?) {
+        guard let sentence else { return }
+        let dto = LearningExpressionDTO(
+            id: 0, text: item.text, kind: item.type.impliedKind, type: item.type,
+            chinese: item.chinese, pronunciation: item.pronunciation,
+            example: item.example, exampleChinese: item.exampleChinese,
+            heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
+            whenToUse: item.whenToUse, commonMistake: item.commonMistake,
+            formality: item.formality, source: "manual", request: request)
+        do {
+            if let stored = try store.addManualExpression(
+                episodeId: episodeId, sentenceId: sentence.id, expression: dto, request: request) {
+                manualExpressions.append(store.expressionDTO(stored))
+                // Open it, so the answer is visible without hunting for a highlight.
+                expandedExpressionID = manualExpressions.last?.id
+            }
+        } catch {
+            noteError = error.localizedDescription
         }
     }
 
@@ -320,12 +627,24 @@ private struct StudyWorkspace: View {
     var onToggleLoop: (SentenceDTO) -> Void = { _ in }
     var onStep: (SentenceDTO) -> Void = { _ in }
     var onCycleSpeed: () -> Void = {}
+    var mode: StudyMode = .listening
     let annotated: Bool
     let annotationsAvailable: Bool
     let onToggleAnnotations: () -> Void
     let learningExpressions: [LearningExpressionDTO]
+    let expressionIndex: LearningExpressionLogic.Index
     @Binding var expandedExpressionID: Int?
     let onPracticeExpression: (LearningExpressionDTO) -> Void
+    var extractingSentenceId: Int?
+    var onExtractNote: (SentenceDTO) -> Void = { _ in }
+    var noteRows: [(id: Int, sentenceId: Int, question: String, answer: String)] = []
+    var expandedCardSentenceIds: Set<Int> = []
+    var onToggleCards: (Int) -> Void = { _ in }
+    var onDeleteCard: (ParagraphCards.Card) -> Void = { _ in }
+    var askingSentenceId: Int?
+    var askSamples: [Float] = []
+    var onHoldStart: (SentenceDTO) -> Void = { _ in }
+    var onHoldEnd: () -> Void = {}
     let discussionSession: LiveClassSession?
     let onEndDiscussion: () -> Void
     @Environment(\.colorScheme) private var scheme
@@ -344,6 +663,7 @@ private struct StudyWorkspace: View {
                 onRefreshAudio: onRefreshAudio,
                 onSeekIntent: onSeekIntent,
                 speed: speed,
+                mode: mode,
                 annotated: annotated,
                 annotationsAvailable: annotationsAvailable,
                 onToggleAnnotations: onToggleAnnotations
@@ -364,9 +684,11 @@ private struct StudyWorkspace: View {
                 // measure; 680 keeps lines readable and leaves the width for a
                 // second column later.
                 contentMaxWidth: compact ? .infinity : 680,
-                // Clears the persistent bottom bar plus breathing room, so
-                // scrolling to the end never strands text beneath it.
-                bottomInset: 140
+                // Clears the bottom bar plus breathing room, so scrolling to the
+                // end never strands text beneath it. Reading hides that bar, so the
+                // same inset would leave a screen-third of dead space under the last
+                // paragraph — it shrinks to the breathing room alone.
+                bottomInset: mode.showsPlaybackControls ? 140 : 32
             )
 
             // Floats over the transcript at the top, so searching does not require
@@ -403,7 +725,11 @@ private struct StudyWorkspace: View {
                 .transition(.opacity)
             }
 
-            if let discussionSession {
+            // Reading hides it entirely. The bar is a voice class — a teacher
+            // talking, a floor to take — and reading is eye work, so its controls
+            // are chrome you are not going to use. The class keeps running; switch
+            // back to 精听 to reach it.
+            if let discussionSession, mode.showsPlaybackControls {
                 // Edge-to-edge, pinned to the bottom: the bar is part of the page
                 // chrome, not a card floating on top of it. No outer padding.
                 DiscussionBar(session: discussionSession, player: player)
@@ -446,11 +772,23 @@ private struct StudyWorkspace: View {
                 onToggleLoop: onToggleLoop,
                 onStep: onStep,
                 onCycleSpeed: onCycleSpeed,
+                mode: mode,
                 annotated: annotated,
                 annotationsAvailable: annotationsAvailable,
                 learningExpressions: learningExpressions,
+                expressionIndex: expressionIndex,
                 expandedExpressionID: $expandedExpressionID,
-                onPracticeExpression: onPracticeExpression
+                onPracticeExpression: onPracticeExpression,
+                extractingSentenceId: extractingSentenceId,
+                onExtractNote: onExtractNote,
+                noteRows: noteRows,
+                expandedCardSentenceIds: expandedCardSentenceIds,
+                onToggleCards: onToggleCards,
+                onDeleteCard: onDeleteCard,
+                askingSentenceId: askingSentenceId,
+                askSamples: askSamples,
+                onHoldStart: onHoldStart,
+                onHoldEnd: onHoldEnd
             )
         }
     }
@@ -468,6 +806,7 @@ private struct WorkspaceTopBar: View {
     // intent rather than the player so a connected class moves the floor.
     var onSeekIntent: (Int) -> Void = { _ in }
     var speed: Double = 1
+    var mode: StudyMode = .listening
     let annotated: Bool
     let annotationsAvailable: Bool
     let onToggleAnnotations: () -> Void
@@ -531,24 +870,26 @@ private struct WorkspaceTopBar: View {
                         .foregroundStyle(NXColor.primary)
                 }
 
-                // Hidden when this episode has nothing marked up: a toggle that
-                // visibly changes nothing reads as broken.
-                if annotationsAvailable {
-                    Button(action: onToggleAnnotations) {
-                        HStack(spacing: 4) {
-                            Image(systemName: annotated ? "text.book.closed.fill" : "text.book.closed")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("\u{7cbe}\u{8bfb}")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .foregroundStyle(annotated ? NXColor.primary : NXColor.textSecondary(scheme))
-                        .padding(.horizontal, NXSpacing.x2)
-                        .frame(height: 28)
-                        .background(annotated ? NXColor.primary.opacity(0.1) : NXColor.surface2(scheme), in: Capsule())
+                // Names the mode you are IN, not the one you would switch to. The
+                // old capsule always read 精读 and used tint to say whether it was
+                // on, which meant reading the colour to know where you were.
+                Button(action: onToggleAnnotations) {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode.icon)
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(mode.label)
+                            .font(.system(size: 12, weight: .semibold))
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(annotated ? "\u{9690}\u{85cf}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}" : "\u{663e}\u{793a}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}")
+                    .foregroundStyle(mode == .reading ? NXColor.primary : NXColor.textSecondary(scheme))
+                    .padding(.horizontal, NXSpacing.x2)
+                    .frame(height: 28)
+                    .background(
+                        mode == .reading ? NXColor.primary.opacity(0.1) : NXColor.surface2(scheme),
+                        in: Capsule())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\u{5f53}\u{524d}\(mode.label)\u{ff0c}\u{5207}\u{6362}\u{5230}\(mode.toggled.label)")
+
             }
 
             if shouldShowCompactStatus {
@@ -1246,12 +1587,28 @@ private struct TranscriptBlock: View {
     var onToggleLoop: (SentenceDTO) -> Void = { _ in }
     var onStep: (SentenceDTO) -> Void = { _ in }
     var onCycleSpeed: () -> Void = {}
+    var mode: StudyMode = .listening
     let annotated: Bool
     let annotationsAvailable: Bool
     let learningExpressions: [LearningExpressionDTO]
+    /// Supplied by the owner, not rebuilt here. The player publishes its position
+    /// every 200ms, so anything computed in a redraw runs five times a second for
+    /// as long as audio plays; the index depends only on the expression list.
+    let expressionIndex: LearningExpressionLogic.Index
     @Binding var expandedExpressionID: Int?
     let onPracticeExpression: (LearningExpressionDTO) -> Void
+    var extractingSentenceId: Int?
+    var onExtractNote: (SentenceDTO) -> Void = { _ in }
+    var noteRows: [(id: Int, sentenceId: Int, question: String, answer: String)] = []
+    var expandedCardSentenceIds: Set<Int> = []
+    var onToggleCards: (Int) -> Void = { _ in }
+    var onDeleteCard: (ParagraphCards.Card) -> Void = { _ in }
+    var askingSentenceId: Int?
+    var askSamples: [Float] = []
+    var onHoldStart: (SentenceDTO) -> Void = { _ in }
+    var onHoldEnd: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
@@ -1277,16 +1634,31 @@ private struct TranscriptBlock: View {
                     .padding(.vertical, NXSpacing.x4)
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(sentences) { sentence in
-                        let previous = IntensiveListening.previousSentence(sentences, from: sentence)
-                        let next = IntensiveListening.nextSentence(sentences, from: sentence)
+                    // Enumerated, so a row's neighbours are an index step rather
+                    // than a search. previousSentence/nextSentence each ran
+                    // firstIndex(where:) over all 681 sentences, for every visible
+                    // row, on every redraw — two more full scans per row on top of
+                    // the expression scan.
+                    //
+                    // They only feed the listening controls, which reading never
+                    // shows, so reading skips them entirely.
+                    ForEach(Array(sentences.enumerated()), id: \.element.id) { offset, sentence in
+                        let selected = sentence.id == current?.id
+                        let stepping = selected && mode.showsPlaybackControls
+                        let previous = stepping && offset > 0 ? sentences[offset - 1] : nil
+                        let next = stepping && offset + 1 < sentences.count ? sentences[offset + 1] : nil
                         TranscriptRow(
                             sentence: sentence,
-                            selected: sentence.id == current?.id,
+                            selected: selected,
                             onTap: { onSentenceTap(sentence) },
                             onShadow: { onShadow(sentence) },
-                            looping: loop.isLooping(sentence),
-                            speed: speed,
+                            // Only the selected row uses these, and only it should
+                            // depend on them: passing the live speed and loop state
+                            // to all 681 rows meant every rate change, and every
+                            // 200ms position tick, re-evaluated the whole list to
+                            // discover that 679 rows had not changed.
+                            looping: selected && loop.isLooping(sentence),
+                            speed: selected ? speed : 1,
                             canStepBack: previous != nil,
                             canStepForward: next != nil,
                             onReplay: onReplay,
@@ -1294,16 +1666,41 @@ private struct TranscriptBlock: View {
                             onPrevious: { if let previous { onStep(previous) } },
                             onNext: { if let next { onStep(next) } },
                             onCycleSpeed: onCycleSpeed,
+                            mode: mode,
                             annotated: annotated,
-                            expressionSegments: annotated
+                            // Indexed, and only for rows that actually carry a
+                            // highlight: the scan-every-expression version ran for
+                            // every visible row on every frame.
+                            // Always at least one segment: an empty list renders an
+                            // empty Text, so a cold index would blank the whole
+                            // transcript for a frame. Rows with no highlight skip
+                            // the segmentation entirely and pass the line as-is.
+                            expressionSegments: annotated && expressionIndex.has(sentenceId: sentence.id)
                                 ? LearningExpressionLogic.segments(
-                                    for: sentence.sourceText, sentenceId: sentence.id, expressions: learningExpressions)
-                                : [],
-                            expandedExpression: learningExpressions.first { $0.id == expandedExpressionID },
+                                    for: sentence.sourceText, sentenceId: sentence.id, index: expressionIndex)
+                                : [.init(text: sentence.sourceText, expressionID: nil)],
+                            expandedExpression: expandedExpressionID.flatMap { id in
+                                learningExpressions.first { $0.id == id }
+                            },
                             onSelectExpression: { id in
                                 expandedExpressionID = expandedExpressionID == id ? nil : id
                             },
-                            onPracticeExpression: onPracticeExpression
+                            onPracticeExpression: onPracticeExpression,
+                            extracting: extractingSentenceId == sentence.id,
+                            onExtractNote: { onExtractNote(sentence) },
+                            cards: ParagraphCards.cards(
+                                sentenceId: sentence.id,
+                                expressions: learningExpressions,
+                                notes: noteRows),
+                            cardsExpanded: expandedCardSentenceIds.contains(sentence.id),
+                            onToggleCards: { onToggleCards(sentence.id) },
+                            onDeleteCard: onDeleteCard,
+                            asking: askingSentenceId == sentence.id,
+                            // Same reason as speed above: the meter updates 10×/s
+                            // while recording, and only the held row draws it.
+                            askSamples: askingSentenceId == sentence.id ? askSamples : [],
+                            onHoldStart: { onHoldStart(sentence) },
+                            onHoldEnd: onHoldEnd
                         )
                         .id(sentence.id)
                         if sentence.id != sentences.last?.id {
@@ -1331,41 +1728,82 @@ private struct TranscriptRow: View {
     var onPrevious: () -> Void = {}
     var onNext: () -> Void = {}
     var onCycleSpeed: () -> Void = {}
+    var mode: StudyMode = .listening
     let annotated: Bool
     let expressionSegments: [LearningExpressionLogic.Segment]
     let expandedExpression: LearningExpressionDTO?
     let onSelectExpression: (Int) -> Void
     let onPracticeExpression: (LearningExpressionDTO) -> Void
+    var extracting: Bool = false
+    var onExtractNote: () -> Void = {}
+    var cards: [ParagraphCards.Card] = []
+    var cardsExpanded: Bool = false
+    var onToggleCards: () -> Void = {}
+    var onDeleteCard: (ParagraphCards.Card) -> Void = { _ in }
+    /// True while this paragraph is the one being asked about.
+    var asking: Bool = false
+    var askSamples: [Float] = []
+    var onHoldStart: () -> Void = {}
+    var onHoldEnd: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
+    /// Set the instant a finger lands, cleared shortly after it lifts. Without it
+    /// neither gesture acknowledged anything: reading has no buttons, so the text
+    /// itself has to say it was touched.
+    @State private var pressed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if annotated {
-                // A tap gesture, not a Button: the annotated text carries its own
+                // Gestures, not a Button: the annotated text carries its own
                 // per-expression links, and wrapping it in a Button would swallow
-                // them. Seeking to the sentence stays available either way —
-                // annotations add the definitions, they do not remove playback.
+                // them. Three targets coexist on the same text — a link opens its
+                // card, a tap plays or stops the line, a hold asks about it.
                 readingContent
                     .contentShape(Rectangle())
-                    .onTapGesture(perform: onTap)
+                    .onTapGesture {
+                        // A brief flash, distinct from the sustained tint a hold
+                        // gets: one says "registered", the other says "listening".
+                        flashPress()
+                        onTap()
+                    }
+                    .onLongPressGesture(
+                        minimumDuration: 0.35,
+                        perform: {
+                            // Fires once the threshold passes, which is exactly when
+                            // recording has begun — the moment worth a tap on the
+                            // wrist, since the finger is still down and nothing has
+                            // moved on screen.
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        },
+                        onPressingChanged: { pressing in
+                            // Recording starts on the press and ends on the release,
+                            // which `perform:` alone cannot express — it fires once
+                            // the threshold passes, with no matching release.
+                            pressed = pressing
+                            if pressing { onHoldStart() } else { onHoldEnd() }
+                        })
             } else {
                 Button(action: onTap) { listeningContent }
                     .buttonStyle(.plain)
             }
 
-            if annotated,
-               let expandedExpression,
-               expressionSegments.contains(where: { $0.expressionID == expandedExpression.id }) {
-                ExpressionInlineCard(expression: expandedExpression, onPractice: { onPracticeExpression(expandedExpression) })
-                    .padding(.horizontal, NXSpacing.x4)
-                    .padding(.bottom, NXSpacing.x4)
+            // Collapsed to one line by default. A paragraph can carry several
+            // cards — a word looked up, then a question about the grammar, then one
+            // about the argument — and stacking them all open pushes the text you
+            // are reading off the screen.
+            if annotated, !cards.isEmpty {
+                cardStack
             }
 
             // One row, on one sentence. Putting these in the bottom bar would mean
             // seven controls in a 50pt capsule; putting them on every row would
             // repeat them hundreds of times. The sentence you are working on is
             // the only place they mean anything.
-            if selected {
+            //
+            // Reading shows none of them: a page you are reading with a button bar
+            // under one line is a page with a button bar in it. Tap plays, hold
+            // asks, and the gestures carry what the buttons used to.
+            if selected, mode.showsPlaybackControls {
                 actions
             }
         }
@@ -1375,6 +1813,87 @@ private struct TranscriptRow: View {
                 .fill(selected ? NXColor.primary : Color.clear)
                 .frame(width: 2)
         }
+        // Held while asking: the paragraph lifts instead of a sheet covering it, so
+        // the text you are asking about stays in front of you. `pressed` is the
+        // lighter, shorter-lived version — the finger is down but the hold has not
+        // yet become a question.
+        .background(asking ? NXColor.primary.opacity(0.10)
+                    : pressed ? NXColor.primary.opacity(0.06) : Color.clear)
+        .animation(.easeOut(duration: 0.12), value: pressed)
+        .animation(.easeOut(duration: 0.15), value: asking)
+        .overlay(alignment: .bottomTrailing) {
+            if asking { askingIndicator }
+        }
+    }
+
+    @ViewBuilder private var cardStack: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onToggleCards) {
+                HStack(spacing: NXSpacing.x2) {
+                    Text(ParagraphCards.summary(count: cards.count) ?? "")
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.primary)
+                    Spacer(minLength: 0)
+                    Image(systemName: cardsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                }
+                .padding(.vertical, NXSpacing.x2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if cardsExpanded {
+                VStack(alignment: .leading, spacing: NXSpacing.x2) {
+                    ForEach(cards) { card in
+                        switch card {
+                        case .expression(let expression):
+                            ExpressionInlineCard(
+                                expression: expression,
+                                onPractice: { onPracticeExpression(expression) },
+                                onDelete: card.isDeletable ? { onDeleteCard(card) } : nil)
+                        case .note(_, let question, let answer):
+                            ParagraphNoteCard(
+                                question: question, answer: answer,
+                                onDelete: { onDeleteCard(card) })
+                        }
+                    }
+                }
+                .padding(.bottom, NXSpacing.x2)
+            }
+        }
+        .padding(.horizontal, NXSpacing.x4)
+        .padding(.bottom, NXSpacing.x2)
+    }
+
+    /// Tints the row briefly, so a tap is acknowledged even though reading mode
+    /// shows no buttons to depress.
+    private func flashPress() {
+        pressed = true
+        Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            pressed = false
+        }
+    }
+
+    /// A waveform where the row's own controls used to be, so holding shows it is
+    /// listening without moving anything on the page.
+    private var askingIndicator: some View {
+        HStack(spacing: 3) {
+            ForEach(Array(askSamples.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(NXColor.primary)
+                    .frame(width: 2.5, height: max(3, CGFloat(level) * 22))
+            }
+        }
+        .frame(height: 26)
+        .padding(.horizontal, NXSpacing.x3)
+        .padding(.vertical, NXSpacing.x1)
+        .background(NXColor.surface1(scheme), in: Capsule())
+        .nxFloatingShadow(scheme)
+        .padding(.trailing, NXSpacing.x4)
+        .padding(.bottom, NXSpacing.x2)
+        .transition(.opacity)
     }
 
     private var timestamp: some View {
@@ -1418,6 +1937,8 @@ private struct TranscriptRow: View {
         }
     }
 
+    /// Listening only. Reading shows no control row at all — tap plays, hold asks —
+    /// so there is nothing to branch on here.
     private var actions: some View {
         HStack(spacing: NXSpacing.x1) {
             action("arrow.left.to.line", "上一句", enabled: canStepBack, action: onPrevious)
@@ -1518,9 +2039,66 @@ private struct InlineExpressionText: View {
     }
 }
 
+/// A free-form question and its answer.
+///
+/// Deliberately plainer than a vocabulary card: there is no pronunciation to show,
+/// nothing to shadow, and no highlight in the text above — the subject was the
+/// passage, so the card is just what was asked and what came back.
+private struct ParagraphNoteCard: View {
+    let question: String
+    let answer: String
+    let onDelete: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x2) {
+            HStack(alignment: .firstTextBaseline, spacing: NXSpacing.x2) {
+                Image(systemName: "quote.opening")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+                Text(question.isEmpty ? "\u{63d0}\u{95ee}" : question)
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                CardDeleteButton(action: onDelete)
+            }
+            Text(answer)
+                .font(NXFont.body)
+                .foregroundStyle(NXColor.text(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(NXSpacing.x3)
+        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.surface))
+        .overlay(
+            RoundedRectangle(cornerRadius: NXRadius.surface)
+                .stroke(NXColor.border(scheme), lineWidth: 1))
+    }
+}
+
+private struct CardDeleteButton: View {
+    let action: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(NXColor.textTertiary(scheme))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\u{5220}\u{9664}\u{5361}\u{7247}")
+    }
+}
+
 private struct ExpressionInlineCard: View {
     let expression: LearningExpressionDTO
     let onPractice: () -> Void
+    /// Nil for cards from batch extraction: a reprocess replaces those, so a delete
+    /// would not stay deleted and offering one would be a lie.
+    var onDelete: (() -> Void)?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -1533,6 +2111,9 @@ private struct ExpressionInlineCard: View {
                 Spacer()
                 Text(ExpressionCardCopy.typeLabel(expression.type))
                     .font(NXFont.auxiliary).foregroundStyle(NXColor.primary)
+                if let onDelete {
+                    CardDeleteButton(action: onDelete)
+                }
             }
             Text(expression.chinese).font(NXFont.body).foregroundStyle(NXColor.textSecondary(scheme))
 
@@ -1621,6 +2202,149 @@ private func stageDisplayName(_ stage: String) -> String {
         return "Complete"
     default:
         return stage.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+/// Asks what the learner wants from this line before extracting.
+///
+/// The request is optional and the sheet leads with the plain "just extract"
+/// action, because most of the time the answer is "whatever is hard here". The
+/// text field exists for the times it is not — the whole reason to extract on
+/// demand is that automatic extraction cannot know you are asking about the tense.
+/// The note composer: hold to speak, release to extract.
+///
+/// Replaces a sheet that had three controls asking one question — a text field, a
+/// row of suggestion chips, and a submit button. The chips taught you how to ask
+/// when you already knew what you wanted to ask, and the button restated a
+/// gesture. What is left is one target: press it and talk.
+///
+/// Typing remains for quiet places, one tap away, as a single field with no
+/// chrome around it.
+private struct NoteComposer: View {
+    let sentence: SentenceDTO?
+    let recorder: VoiceNoteRecorder
+    let onSpeak: () -> Void
+    let onRelease: () -> Void
+    let onCancel: () -> Void
+    let onType: (String) -> Void
+    @State private var typing = false
+    @State private var typed = ""
+    @FocusState private var focused: Bool
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(spacing: NXSpacing.x6) {
+            if let sentence {
+                Text(sentence.sourceText)
+                    .font(NXFont.bodyMedium)
+                    .foregroundStyle(NXColor.text(scheme))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // No sentence chosen: the question travels with the lines around
+                // where you are, and the model decides which one you meant.
+                Text("\u{8bf4}\u{51fa}\u{4f60}\u{7684}\u{7591}\u{95ee}\u{ff0c}\u{4e0d}\u{5fc5}\u{5148}\u{9009}\u{53e5}")
+                    .font(NXFont.bodyMedium)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+            }
+
+            if typing {
+                // Single-line, so Return submits. On a vertical-axis field Return
+                // inserts a newline and `onSubmit` never fires, which left the
+                // typed path with no way to submit at all — the request was typed
+                // and then silently dropped.
+                HStack(spacing: NXSpacing.x2) {
+                    TextField("\u{60f3}\u{95ee}\u{4ec0}\u{4e48}\u{ff1f}", text: $typed)
+                        .font(NXFont.body)
+                        .focused($focused)
+                        .submitLabel(.send)
+                        .padding(.horizontal, NXSpacing.x3)
+                        .padding(.vertical, NXSpacing.x2)
+                        .background(NXColor.surface2(scheme), in: RoundedRectangle(cornerRadius: NXRadius.control))
+                        .modifier(NXFocusModifier(focused: focused))
+                        .onSubmit { submitTyped() }
+                        .onAppear { focused = true }
+
+                    // A visible target as well as the keyboard's: the field can lose
+                    // focus, and then Return is not available at all.
+                    Button(action: submitTyped) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                             ? NXColor.textTertiary(scheme) : NXColor.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("\u{62bd}\u{53d6}\u{7b14}\u{8bb0}")
+                }
+            } else {
+                waveform
+                microphone
+                Button("\u{6539}\u{4e3a}\u{6253}\u{5b57}") { typing = true }
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+                    .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(NXSpacing.x6)
+        .background(NXColor.background(scheme))
+    }
+
+    /// Bars, not a spinner: a spinner says "working", a waveform says "I can hear
+    /// you" — which is the one thing you cannot otherwise confirm while talking.
+    private var waveform: some View {
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(Array(recorder.samples.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(NXColor.primary)
+                    .frame(width: 3, height: max(3, CGFloat(level) * 40))
+            }
+        }
+        .frame(height: 44)
+        .animation(.linear(duration: 0.1), value: recorder.samples.count)
+        .opacity(recorder.isRecording ? 1 : 0)
+    }
+
+    private var microphone: some View {
+        VStack(spacing: NXSpacing.x2) {
+            Circle()
+                .fill(recorder.isRecording ? NXColor.primary : NXColor.surface2(scheme))
+                .frame(width: 68, height: 68)
+                .overlay {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(recorder.isRecording ? .white : NXColor.textSecondary(scheme))
+                }
+                .scaleEffect(recorder.isRecording ? 1.08 : 1)
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: recorder.isRecording)
+                // A long-press gesture, not a Button: the press has to begin
+                // recording and the release has to end it, which a tap cannot
+                // express.
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in if !recorder.isRecording { onSpeak() } }
+                        .onEnded { value in
+                            // Dragging well away from the button cancels, the
+                            // standard escape hatch for a hold you regret.
+                            if abs(value.translation.height) > 80 { onCancel() } else { onRelease() }
+                        })
+                .accessibilityLabel("\u{6309}\u{4f4f}\u{8bf4}\u{51fa}\u{7591}\u{95ee}")
+
+            Text(recorder.isRecording
+                 ? "\u{677e}\u{5f00}\u{5373}\u{62bd}\u{53d6}"
+                 : "\u{6309}\u{4f4f}\u{8bf4}\u{8bdd}")
+                .font(NXFont.auxiliary)
+                .foregroundStyle(NXColor.textTertiary(scheme))
+                .contentTransition(.opacity)
+        }
+    }
+
+    private func submitTyped() {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        onType(trimmed)
     }
 }
 

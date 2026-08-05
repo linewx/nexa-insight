@@ -8,7 +8,7 @@ final class EpisodeStore {
 
     init(inMemory: Bool = false) throws {
         let config = ModelConfiguration(isStoredInMemoryOnly: inMemory)
-        container = try ModelContainer(for: StoredEpisode.self, StoredChapter.self, StoredSentence.self, StoredRecording.self, StoredInsight.self, StoredLearningExpression.self, StoredExpressionOccurrence.self, StoredExamplePractice.self, configurations: config)
+        container = try ModelContainer(for: StoredEpisode.self, StoredChapter.self, StoredSentence.self, StoredRecording.self, StoredInsight.self, StoredLearningExpression.self, StoredExpressionOccurrence.self, StoredExamplePractice.self, StoredParagraphNote.self, configurations: config)
     }
 
     private func episode(_ id: Int) -> StoredEpisode? {
@@ -21,15 +21,34 @@ final class EpisodeStore {
         if let existing = episode(e.id) {
             existing.sentences.forEach(context.delete)
             existing.chapters.forEach(context.delete)
-            existing.learningExpressions.forEach(context.delete)
-            existing.sentences = []; existing.chapters = []; existing.learningExpressions = []
+            // Manual notes are the learner's own work and nothing can regenerate
+            // them, so a bundle download replaces only what extraction produced.
+            // Deleting all of them here meant every resync — and every reinstall
+            // that re-downloaded — silently threw away hand-made notes.
+            //
+            // A note already archived to the backend comes back inside the bundle,
+            // so keeping the local copy too would double it. Those are dropped by
+            // remoteId and re-attached from the payload below.
+            let (archived, unsynced) = existing.learningExpressions.reduce(
+                into: ([StoredLearningExpression](), [StoredLearningExpression]())
+            ) { partial, item in
+                guard item.isManual else { return }
+                if item.remoteId == nil { partial.1.append(item) } else { partial.0.append(item) }
+            }
+            existing.learningExpressions
+                .filter { !$0.isManual }
+                .forEach(context.delete)
+            archived.forEach(context.delete)
+            existing.sentences = []; existing.chapters = []; existing.learningExpressions = unsynced
             existing.title = e.title; existing.channel = e.channel; existing.status = e.status
+            existing.materialKind = e.materialKind ?? existing.materialKind
             if let localAudioPath { existing.localAudioPath = localAudioPath }
             try attach(bundle, to: existing)
             try context.save()
             return existing
         }
         let stored = StoredEpisode(episodeId: e.id, sourceUrl: e.sourceUrl, youtubeId: e.youtubeId, title: e.title, channel: e.channel, durationMs: e.durationMs, thumbnailUrl: e.thumbnailUrl, localAudioPath: localAudioPath, status: e.status)
+        stored.materialKind = e.materialKind
         context.insert(stored)
         try attach(bundle, to: stored)
         try context.save()
@@ -53,7 +72,12 @@ final class EpisodeStore {
                 example: item.example, exampleChinese: item.exampleChinese,
                 heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
                 whenToUse: item.whenToUse, commonMistake: item.commonMistake,
-                formality: item.formality)
+                formality: item.formality,
+                // A manual note that round-tripped through the backend carries its
+                // id, which is what marks it archived and stops the uploader from
+                // sending it twice.
+                source: item.source, request: item.request,
+                remoteId: item.source == "manual" ? item.id : nil)
             context.insert(expression)
             for item in item.occurrences {
                 let occurrence = StoredExpressionOccurrence(
@@ -93,10 +117,116 @@ final class EpisodeStore {
                 heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
                 whenToUse: item.whenToUse, commonMistake: item.commonMistake,
                 formality: item.formality,
+                source: item.source, request: item.request,
                 occurrences: item.occurrences.map {
                     ExpressionOccurrenceDTO(sentenceId: $0.sentenceId, startOffset: $0.startOffset, endOffset: $0.endOffset)
                 })
         }
+    }
+
+    /// Stores a note the learner asked for, anchored by searching the sentence for
+    /// the expression text.
+    ///
+    /// The id is local and negative. Backend ids are positive and assigned on
+    /// upload, so a negative one cannot collide with a row that arrives in a
+    /// bundle later, and its sign says "not archived yet" without a second field
+    /// to keep in sync.
+    @discardableResult
+    func addManualExpression(
+        episodeId: Int, sentenceId: Int, expression: LearningExpressionDTO, request: String?
+    ) throws -> StoredLearningExpression? {
+        guard let stored = episode(episodeId) else { return nil }
+        let nextLocalId = (stored.learningExpressions.map(\.expressionId).min() ?? 0) - 1
+        let note = StoredLearningExpression(
+            expressionId: min(nextLocalId, -1), episodeId: episodeId, text: expression.text,
+            kind: expression.kind.rawValue, type: expression.type.rawValue,
+            chinese: expression.chinese, pronunciation: expression.pronunciation,
+            example: expression.example, exampleChinese: expression.exampleChinese,
+            heardAs: expression.heardAs, restored: expression.restored, whyHard: expression.whyHard,
+            whenToUse: expression.whenToUse, commonMistake: expression.commonMistake,
+            formality: expression.formality, source: "manual", request: request)
+        context.insert(note)
+
+        // Anchored by text, not by any offset the model reported: those were wrong
+        // ~97% of the time in the batch pipeline, and the same model answers here.
+        if let sentence = stored.sentences.first(where: { $0.sentenceId == sentenceId }),
+           let range = ExpressionLocator.locate(expression.text, in: sentence.sourceText) {
+            let occurrence = StoredExpressionOccurrence(
+                sentenceId: sentenceId, startOffset: range.lowerBound, endOffset: range.upperBound)
+            context.insert(occurrence)
+            note.occurrences.append(occurrence)
+        }
+        stored.learningExpressions.append(note)
+        try context.save()
+        return note
+    }
+
+    /// The DTO for one stored expression, so a freshly made note can be shown
+    /// without re-reading the whole episode.
+    func expressionDTO(_ item: StoredLearningExpression) -> LearningExpressionDTO {
+        LearningExpressionDTO(
+            id: item.expressionId, text: item.text,
+            kind: LearningExpressionKind(fallbackFrom: item.kind),
+            type: LearningExpressionType(rawValue: item.type) ?? .phrase,
+            chinese: item.chinese, pronunciation: item.pronunciation,
+            example: item.example, exampleChinese: item.exampleChinese,
+            heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
+            whenToUse: item.whenToUse, commonMistake: item.commonMistake,
+            formality: item.formality, source: item.source, request: item.request,
+            occurrences: item.occurrences.map {
+                ExpressionOccurrenceDTO(sentenceId: $0.sentenceId, startOffset: $0.startOffset, endOffset: $0.endOffset)
+            })
+    }
+
+    // MARK: - Paragraph notes
+
+    @discardableResult
+    func addParagraphNote(
+        episodeId: Int, sentenceId: Int, question: String, answer: String
+    ) throws -> StoredParagraphNote {
+        let existing = paragraphNotes(for: episodeId)
+        let note = StoredParagraphNote(
+            noteId: min((existing.map(\.noteId).min() ?? 0) - 1, -1),
+            episodeId: episodeId, sentenceId: sentenceId, question: question, answer: answer)
+        context.insert(note)
+        try context.save()
+        return note
+    }
+
+    /// Oldest first, so a paragraph's cards read in the order they were asked.
+    func paragraphNotes(for episodeId: Int) -> [StoredParagraphNote] {
+        let notes = (try? context.fetch(FetchDescriptor<StoredParagraphNote>(
+            predicate: #Predicate { $0.episodeId == episodeId },
+            sortBy: [SortDescriptor(\.createdAt)]))) ?? []
+        return notes
+    }
+
+    func deleteParagraphNote(_ noteId: Int) throws {
+        let matches = (try? context.fetch(FetchDescriptor<StoredParagraphNote>(
+            predicate: #Predicate { $0.noteId == noteId }))) ?? []
+        matches.forEach(context.delete)
+        try context.save()
+    }
+
+    /// Deletes a note the learner made by hand.
+    ///
+    /// Refuses anything from batch extraction: those are replaced wholesale by a
+    /// reprocess, so "deleting" one would only make it reappear on the next sync —
+    /// a delete that does not stay deleted is worse than no delete.
+    func deleteManualExpression(_ expressionId: Int) throws {
+        let matches = (try? context.fetch(FetchDescriptor<StoredLearningExpression>(
+            predicate: #Predicate { $0.expressionId == expressionId }))) ?? []
+        for match in matches where match.isManual {
+            match.occurrences.forEach(context.delete)
+            context.delete(match)
+        }
+        try context.save()
+    }
+
+    /// Manual notes that have not reached the backend yet.
+    func unsyncedManualExpressions(for episodeId: Int) -> [StoredLearningExpression] {
+        guard let stored = episode(episodeId) else { return [] }
+        return stored.learningExpressions.filter { $0.isManual && $0.remoteId == nil }
     }
 
     func localAudioPath(for episodeId: Int) -> String? { episode(episodeId)?.localAudioPath }
@@ -115,7 +245,7 @@ final class EpisodeStore {
     func downloadedEpisodes() -> [EpisodeDTO] {
         let all = (try? context.fetch(FetchDescriptor<StoredEpisode>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
         return all.map {
-            EpisodeDTO(id: $0.episodeId, sourceUrl: $0.sourceUrl, youtubeId: $0.youtubeId, title: $0.title, channel: $0.channel, durationMs: $0.durationMs, thumbnailUrl: $0.thumbnailUrl, audioPath: $0.localAudioPath, status: $0.status, error: nil, positionMs: $0.positionMs)
+            EpisodeDTO(id: $0.episodeId, sourceUrl: $0.sourceUrl, youtubeId: $0.youtubeId, title: $0.title, channel: $0.channel, durationMs: $0.durationMs, thumbnailUrl: $0.thumbnailUrl, audioPath: $0.localAudioPath, status: $0.status, error: nil, positionMs: $0.positionMs, materialKind: $0.materialKind)
         }
     }
 
