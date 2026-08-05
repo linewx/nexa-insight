@@ -28,6 +28,27 @@ final class AppSettingsTests: XCTestCase {
         return d
     }
 
+    func testReadingAnnotationsDefaultOn() {
+        let settings = AppSettings(defaults: isolatedDefaults("AppSettingsTests.readingDefault"))
+        XCTAssertTrue(settings.showReadingAnnotations)
+    }
+
+    func testReadingAnnotationsPersistWhenTurnedOff() {
+        // The off state is the one a plain bool(forKey:) default would lose: false
+        // is also what an unwritten key returns, so it must survive a round trip.
+        let d = isolatedDefaults("AppSettingsTests.readingPersist")
+        AppSettings(defaults: d).showReadingAnnotations = false
+        XCTAssertFalse(AppSettings(defaults: d).showReadingAnnotations)
+    }
+
+    func testReadingAnnotationsPersistWhenTurnedBackOn() {
+        let d = isolatedDefaults("AppSettingsTests.readingReenable")
+        let first = AppSettings(defaults: d)
+        first.showReadingAnnotations = false
+        first.showReadingAnnotations = true
+        XCTAssertTrue(AppSettings(defaults: d).showReadingAnnotations)
+    }
+
     // Off by default: a ja-JP device would otherwise show "3\u{65e5}\u{524d}" next to
     // English titles.
     func testLocalizedBylinesDefaultsOff() {

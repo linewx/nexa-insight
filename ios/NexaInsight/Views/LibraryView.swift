@@ -123,7 +123,7 @@ struct LibraryView: View {
             // what made the wordmark unreadable mid-scroll.
             content()
             .background(NXColor.background(colorScheme))            .navigationDestination(for: Int.self) { id in
-                StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL)
+                StudyView(episodeId: id, store: store, backendBaseURL: vm.backendBaseURL, settings: settings)
             }
             .navigationDestination(for: ChannelTarget.self) { target in
                 ChannelDetailView(
@@ -395,13 +395,17 @@ private struct LibraryVideoCard: View {
             Label("Waiting to parse", systemImage: "clock")
                 .font(NXFont.auxiliary)
                 .foregroundStyle(NXColor.textSecondary(scheme))
+        } else if task.isComplete {
+            // The backend is finished; the local bundle + audio download is what
+            // is left. Saying "preparing learning material" here, next to a full
+            // bar, described a finished import as a stuck one.
+            Label("Saving to your library", systemImage: "arrow.down.circle")
+                .font(NXFont.auxiliary)
+                .foregroundStyle(NXColor.primary)
         } else {
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                Text("Preparing learning material · \(processingStageTitle(task.job.stage))")
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.primary)
-                NXProgressIndicator(value: task.progress, label: "\(task.progress)%")
-            }
+            // The indicator prints the percentage itself, so the label carries the
+            // stage instead — passing the percentage here showed it twice.
+            NXProgressIndicator(value: task.progress, label: processingStageTitle(task.job.stage))
         }
     }
 

@@ -118,6 +118,19 @@ struct SettingsView: View {
                             }
                         }
                         .tint(NXColor.primary)
+
+                        Toggle(isOn: $settings.showReadingAnnotations) {
+                            VStack(alignment: .leading, spacing: NXSpacing.x1) {
+                                Text("\u{663e}\u{793a}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}")
+                                    .font(NXFont.bodyMedium)
+                                    .foregroundStyle(NXColor.text(scheme))
+                                Text("\u{8f6c}\u{5199}\u{91cc}\u{7684}\u{91cd}\u{70b9}\u{8bcd}\u{7ec4}\u{6807}\u{84dd}，\u{70b9}\u{5f00}\u{770b}\u{91ca}\u{4e49}\u{3002}\u{7cbe}\u{542c}\u{7684}\u{64ad}\u{653e}\u{548c}\u{8ddf}\u{8bfb}\u{4e0d}\u{53d7}\u{5f71}\u{54cd}\u{3002}")
+                                    .font(NXFont.auxiliary)
+                                    .foregroundStyle(NXColor.textSecondary(scheme))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .tint(NXColor.primary)
                     }
 
                     if let savedMessage {

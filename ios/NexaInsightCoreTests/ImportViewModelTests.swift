@@ -46,6 +46,29 @@ final class ImportViewModelTests: XCTestCase {
         XCTAssertLessThan(task.jobId, 0)
     }
 
+    func testCompleteJobIsATerminalStateDistinctFromInProgress() {
+        // The card used to read "Preparing learning material · Ready to discuss"
+        // with two 100% labels for the whole bundle+audio download, because
+        // "complete" fell through to the in-progress branch.
+        let task = ImportTask(
+            episode: episode(id: 1, youtubeId: "first"),
+            job: JobDTO(id: 30, episodeId: 1, stage: "complete", status: "complete", progress: 100, error: nil),
+            kind: .importing)
+
+        XCTAssertTrue(task.isComplete)
+        XCTAssertFalse(task.isQueued)
+        XCTAssertFalse(task.isFailed)
+    }
+
+    func testRunningJobIsNotReportedComplete() {
+        let task = ImportTask(
+            episode: episode(id: 1, youtubeId: "first"),
+            job: JobDTO(id: 31, episodeId: 1, stage: "learning", status: "running", progress: 98, error: nil),
+            kind: .importing)
+
+        XCTAssertFalse(task.isComplete)
+    }
+
     func testPlaybackTargetEmbedsYouTubeAndUsesSourcePageOtherwise() {
         XCTAssertEqual(
             LibraryPlaybackTarget.forEpisode(episode(id: 1, youtubeId: "abcdefghijk")),

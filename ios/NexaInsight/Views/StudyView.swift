@@ -7,6 +7,7 @@ struct StudyView: View {
     let episodeId: Int
     let store: EpisodeStore
     let backendBaseURL: URL
+    @ObservedObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
     @StateObject private var vm = StudyViewModel()
     @StateObject private var player: LocalAudioPlayback
@@ -22,17 +23,20 @@ struct StudyView: View {
     @State private var loop: SentenceLoop = .off
     @State private var speed: Double = 1
     @State private var savedPositionMs: Int?
-    @State private var studyMode: StudyMode = .listening
+    // Nil until the header capsule is used: annotations then follow the persisted
+    // setting, and the capsule overrides it for this sitting only.
+    @State private var annotationsOverride: Bool?
     @State private var expandedExpressionID: Int?
     @State private var practiceExpression: LearningExpressionDTO?
     private let sentences: [SentenceDTO]
     private let learningExpressions: [LearningExpressionDTO]
     private let episode: EpisodeDTO?
 
-    init(episodeId: Int, store: EpisodeStore, backendBaseURL: URL) {
+    init(episodeId: Int, store: EpisodeStore, backendBaseURL: URL, settings: AppSettings) {
         self.episodeId = episodeId
         self.store = store
         self.backendBaseURL = backendBaseURL
+        self.settings = settings
         self.sentences = store.sentences(for: episodeId)
         self.learningExpressions = store.learningExpressions(for: episodeId)
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
@@ -49,6 +53,12 @@ struct StudyView: View {
     }
 
     var visible: [SentenceDTO] { vm.search(query, in: sentences) }
+
+    /// Annotations show when the preference allows and this episode actually has
+    /// expressions to mark. The capsule overrides the preference for this sitting.
+    private var annotated: Bool {
+        (annotationsOverride ?? settings.showReadingAnnotations) && !learningExpressions.isEmpty
+    }
     var current: SentenceDTO? { vm.currentSentence(sentences: sentences, cursorMs: player.currentMs) }
 
     var body: some View {
@@ -77,7 +87,9 @@ struct StudyView: View {
                 speed = IntensiveListening.cycledSpeed(after: speed)
                 player.speed(speed)
             },
-            studyMode: $studyMode,
+            annotated: annotated,
+            annotationsAvailable: !learningExpressions.isEmpty,
+            onToggleAnnotations: { annotationsOverride = !annotated },
             learningExpressions: learningExpressions,
             expandedExpressionID: $expandedExpressionID,
             onPracticeExpression: { practiceExpression = $0 },
@@ -105,8 +117,9 @@ struct StudyView: View {
                 store.savePlaybackPosition(player.currentMs, for: episodeId)
             }
         }
-        .onChange(of: studyMode) { _, mode in
-            if mode == .listening { expandedExpressionID = nil }
+        .onChange(of: annotated) { _, showing in
+            // A card left open with no highlight to anchor it would float free.
+            if !showing { expandedExpressionID = nil }
         }
         .navigationBarTitleDisplayMode(.inline)
         // Hidden, not merely transparent. Every attempt to keep the bar present for
@@ -277,10 +290,11 @@ private enum AudioRefreshState: Equatable {
     case failed(String)
 }
 
-private enum StudyMode: Hashable {
-    case listening
-    case reading
-}
+// Annotations layer over intensive listening rather than replacing it. As an
+// exclusive StudyMode, turning reading on removed tap-to-seek and the
+// per-sentence controls — the very things a definition makes you want, since the
+// reason to read the note is usually to hear the line again.
+
 
 private struct StudyWorkspace: View {
     let episode: EpisodeDTO?
@@ -306,7 +320,9 @@ private struct StudyWorkspace: View {
     var onToggleLoop: (SentenceDTO) -> Void = { _ in }
     var onStep: (SentenceDTO) -> Void = { _ in }
     var onCycleSpeed: () -> Void = {}
-    @Binding var studyMode: StudyMode
+    let annotated: Bool
+    let annotationsAvailable: Bool
+    let onToggleAnnotations: () -> Void
     let learningExpressions: [LearningExpressionDTO]
     @Binding var expandedExpressionID: Int?
     let onPracticeExpression: (LearningExpressionDTO) -> Void
@@ -328,7 +344,9 @@ private struct StudyWorkspace: View {
                 onRefreshAudio: onRefreshAudio,
                 onSeekIntent: onSeekIntent,
                 speed: speed,
-                studyMode: $studyMode
+                annotated: annotated,
+                annotationsAvailable: annotationsAvailable,
+                onToggleAnnotations: onToggleAnnotations
             )
             studySurface
         }
@@ -428,7 +446,8 @@ private struct StudyWorkspace: View {
                 onToggleLoop: onToggleLoop,
                 onStep: onStep,
                 onCycleSpeed: onCycleSpeed,
-                studyMode: studyMode,
+                annotated: annotated,
+                annotationsAvailable: annotationsAvailable,
                 learningExpressions: learningExpressions,
                 expandedExpressionID: $expandedExpressionID,
                 onPracticeExpression: onPracticeExpression
@@ -449,7 +468,9 @@ private struct WorkspaceTopBar: View {
     // intent rather than the player so a connected class moves the floor.
     var onSeekIntent: (Int) -> Void = { _ in }
     var speed: Double = 1
-    @Binding var studyMode: StudyMode
+    let annotated: Bool
+    let annotationsAvailable: Bool
+    let onToggleAnnotations: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -510,22 +531,24 @@ private struct WorkspaceTopBar: View {
                         .foregroundStyle(NXColor.primary)
                 }
 
-                Button {
-                    studyMode = studyMode == .listening ? .reading : .listening
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: studyMode == .reading ? "headphones" : "text.book.closed")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(studyMode == .reading ? "精听" : "精读")
-                            .font(.system(size: 12, weight: .semibold))
+                // Hidden when this episode has nothing marked up: a toggle that
+                // visibly changes nothing reads as broken.
+                if annotationsAvailable {
+                    Button(action: onToggleAnnotations) {
+                        HStack(spacing: 4) {
+                            Image(systemName: annotated ? "text.book.closed.fill" : "text.book.closed")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("\u{7cbe}\u{8bfb}")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(annotated ? NXColor.primary : NXColor.textSecondary(scheme))
+                        .padding(.horizontal, NXSpacing.x2)
+                        .frame(height: 28)
+                        .background(annotated ? NXColor.primary.opacity(0.1) : NXColor.surface2(scheme), in: Capsule())
                     }
-                    .foregroundStyle(studyMode == .reading ? NXColor.primary : NXColor.textSecondary(scheme))
-                    .padding(.horizontal, NXSpacing.x2)
-                    .frame(height: 28)
-                    .background(studyMode == .reading ? NXColor.primary.opacity(0.1) : NXColor.surface2(scheme), in: Capsule())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(annotated ? "\u{9690}\u{85cf}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}" : "\u{663e}\u{793a}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(studyMode == .reading ? "切换到精听" : "进入精读")
             }
 
             if shouldShowCompactStatus {
@@ -1223,7 +1246,8 @@ private struct TranscriptBlock: View {
     var onToggleLoop: (SentenceDTO) -> Void = { _ in }
     var onStep: (SentenceDTO) -> Void = { _ in }
     var onCycleSpeed: () -> Void = {}
-    let studyMode: StudyMode
+    let annotated: Bool
+    let annotationsAvailable: Bool
     let learningExpressions: [LearningExpressionDTO]
     @Binding var expandedExpressionID: Int?
     let onPracticeExpression: (LearningExpressionDTO) -> Void
@@ -1232,13 +1256,16 @@ private struct TranscriptBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
             NXSectionHeader(title: "Transcript")
-            if studyMode == .reading && learningExpressions.isEmpty {
-                Text("精读内容会在新导入或重新解析的视频中生成。当前内容仍可正常精听。")
+            // Said only when there is nothing to mark: annotations are on by
+            // default, so silence here would look like the feature is missing
+            // rather than the content.
+            if !annotationsAvailable {
+                Text("\u{7cbe}\u{8bfb}\u{5185}\u{5bb9}\u{4f1a}\u{5728}\u{65b0}\u{5bfc}\u{5165}\u{6216}\u{91cd}\u{65b0}\u{89e3}\u{6790}\u{7684}\u{89c6}\u{9891}\u{4e2d}\u{751f}\u{6210}\u{3002}\u{5f53}\u{524d}\u{5185}\u{5bb9}\u{4ecd}\u{53ef}\u{6b63}\u{5e38}\u{7cbe}\u{542c}\u{3002}")
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .padding(.bottom, NXSpacing.x2)
-            } else if studyMode == .reading {
-                Text("已标注 \(learningExpressions.count) 个重点，点击蓝色词组展开精读卡片。")
+            } else if annotated {
+                Text("\u{5df2}\u{6807}\u{6ce8} \(learningExpressions.count) \u{4e2a}\u{91cd}\u{70b9}，\u{70b9}\u{51fb}\u{84dd}\u{8272}\u{8bcd}\u{7ec4}\u{5c55}\u{5f00}\u{7cbe}\u{8bfb}\u{5361}\u{7247}\u{3002}")
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .padding(.bottom, NXSpacing.x2)
@@ -1267,9 +1294,11 @@ private struct TranscriptBlock: View {
                             onPrevious: { if let previous { onStep(previous) } },
                             onNext: { if let next { onStep(next) } },
                             onCycleSpeed: onCycleSpeed,
-                            studyMode: studyMode,
-                            expressionSegments: LearningExpressionLogic.segments(
-                                for: sentence.sourceText, sentenceId: sentence.id, expressions: learningExpressions),
+                            annotated: annotated,
+                            expressionSegments: annotated
+                                ? LearningExpressionLogic.segments(
+                                    for: sentence.sourceText, sentenceId: sentence.id, expressions: learningExpressions)
+                                : [],
                             expandedExpression: learningExpressions.first { $0.id == expandedExpressionID },
                             onSelectExpression: { id in
                                 expandedExpressionID = expandedExpressionID == id ? nil : id
@@ -1302,7 +1331,7 @@ private struct TranscriptRow: View {
     var onPrevious: () -> Void = {}
     var onNext: () -> Void = {}
     var onCycleSpeed: () -> Void = {}
-    let studyMode: StudyMode
+    let annotated: Bool
     let expressionSegments: [LearningExpressionLogic.Segment]
     let expandedExpression: LearningExpressionDTO?
     let onSelectExpression: (Int) -> Void
@@ -1311,14 +1340,20 @@ private struct TranscriptRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if studyMode == .reading {
+            if annotated {
+                // A tap gesture, not a Button: the annotated text carries its own
+                // per-expression links, and wrapping it in a Button would swallow
+                // them. Seeking to the sentence stays available either way —
+                // annotations add the definitions, they do not remove playback.
                 readingContent
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onTap)
             } else {
                 Button(action: onTap) { listeningContent }
                     .buttonStyle(.plain)
             }
 
-            if studyMode == .reading,
+            if annotated,
                let expandedExpression,
                expressionSegments.contains(where: { $0.expressionID == expandedExpression.id }) {
                 ExpressionInlineCard(expression: expandedExpression, onPractice: { onPracticeExpression(expandedExpression) })
@@ -1453,48 +1488,32 @@ private struct InlineExpressionText: View {
     let onSelect: (Int) -> Void
     @Environment(\.colorScheme) private var scheme
 
+    // One native Text, not a subview per word. Wrapping is SwiftUI's job: the
+    // hand-rolled flow this replaced could only break *between* subviews, so a
+    // long run overflowed the row instead of wrapping. Highlighted expressions
+    // carry a custom-scheme link that OpenURLAction turns back into a selection,
+    // which is what lets a single Text hold many tap targets.
     var body: some View {
-        InlineTextFlow(spacing: 0) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                if let expressionID = segment.expressionID {
-                    Button(action: { onSelect(expressionID) }) {
-                        Text(segment.text).font(NXFont.body).fontWeight(.semibold).foregroundStyle(NXColor.primary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("展开 \(segment.text) 的释义")
-                } else {
-                    Text(segment.text).font(NXFont.body).foregroundStyle(NXColor.text(scheme))
+        Text(attributed)
+            .font(NXFont.body)
+            .foregroundStyle(NXColor.text(scheme))
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .tint(NXColor.primary)
+            .environment(\.openURL, OpenURLAction { url in
+                guard let expressionID = LearningExpressionLogic.expressionID(fromURL: url) else {
+                    return .systemAction
                 }
-            }
-        }
-        .lineSpacing(2)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-private struct InlineTextFlow: Layout {
-    var spacing: CGFloat
-
-    init(spacing: CGFloat = 0) { self.spacing = spacing }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .greatestFiniteMagnitude
-        var x: CGFloat = 0; var y: CGFloat = 0; var lineHeight: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > 0 && x + size.width > width { x = 0; y += lineHeight; lineHeight = 0 }
-            x += size.width + spacing; lineHeight = max(lineHeight, size.height)
-        }
-        return CGSize(width: proposal.width ?? x, height: y + lineHeight)
+                onSelect(expressionID)
+                return .handled
+            })
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX; var y = bounds.minY; var lineHeight: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX && x + size.width > bounds.maxX { x = bounds.minX; y += lineHeight; lineHeight = 0 }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing; lineHeight = max(lineHeight, size.height)
+    private var attributed: AttributedString {
+        LearningExpressionLogic.attributedSentence(segments: segments) { run in
+            run.foregroundColor = NXColor.primary
+            run.font = NXFont.body.weight(.semibold)
+            run.underlineStyle = nil
         }
     }
 }

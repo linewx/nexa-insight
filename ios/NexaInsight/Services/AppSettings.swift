@@ -25,12 +25,25 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(localizedBylines, forKey: "localizedBylines") }
     }
 
+    // Whether the transcript marks up its learning expressions.
+    //
+    // On by default, and additive rather than a mode: annotations appear on top of
+    // intensive listening instead of replacing it. Reading used to be an exclusive
+    // mode, which removed tap-to-seek and the per-sentence controls — exactly the
+    // things you want when a definition explains why you misheard a line.
+    @Published var showReadingAnnotations: Bool {
+        didSet { defaults.set(showReadingAnnotations, forKey: "showReadingAnnotations") }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let stored = defaults.string(forKey: "backendBaseURL")
         let resolved = Self.resolveBackendBaseURL(stored)
         self.backendBaseURL = resolved
         self.localizedBylines = defaults.bool(forKey: "localizedBylines")
+        // `bool(forKey:)` returns false for a key that was never written, so the
+        // default has to be established explicitly rather than inferred.
+        self.showReadingAnnotations = defaults.object(forKey: "showReadingAnnotations") as? Bool ?? true
         if stored != resolved {
             defaults.set(resolved, forKey: "backendBaseURL")
         }
