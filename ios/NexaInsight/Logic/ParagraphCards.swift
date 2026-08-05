@@ -32,22 +32,51 @@ enum ParagraphCards {
         }
     }
 
+    /// Every paragraph's cards, grouped by sentence in one pass.
+    ///
+    /// Built once per transcript, not once per row. Calling `cards(sentenceId:…)`
+    /// inside the row loop measured 31.6ms for 681 rows against 209 expressions —
+    /// on its own nearly twice a 60fps frame budget, and by a wide margin the
+    /// largest cost in reading mode. Every other candidate (segmenting a screenful,
+    /// the active-sentence lookup, building this index) sits under 0.4ms.
+    struct Index {
+        private let bySentence: [Int: [Card]]
+
+        init(
+            expressions: [LearningExpressionDTO],
+            notes: [(id: Int, sentenceId: Int, question: String, answer: String)]
+        ) {
+            var map: [Int: [Card]] = [:]
+            // Expressions first, so a paragraph reads from the highlighted word in
+            // the line down to the card explaining it.
+            for expression in expressions {
+                // A distinct expression can occur twice in one line; the card should
+                // appear once.
+                for sentenceId in Set(expression.occurrences.map(\.sentenceId)) {
+                    map[sentenceId, default: []].append(.expression(expression))
+                }
+            }
+            for note in notes {
+                map[note.sentenceId, default: []].append(
+                    .note(id: note.id, question: note.question, answer: note.answer))
+            }
+            bySentence = map
+        }
+
+        func cards(for sentenceId: Int) -> [Card] { bySentence[sentenceId] ?? [] }
+        func hasCards(for sentenceId: Int) -> Bool { bySentence[sentenceId] != nil }
+    }
+
     /// Cards for one sentence: its manual and automatic expressions, then its notes.
     ///
-    /// Expressions come first because they have a highlight in the line above, so
-    /// reading order matches the eye's path from the marked word down to the card.
+    /// Kept for tests and one-off lookups. Anything looping over rows must use
+    /// `Index` — see the note there.
     static func cards(
         sentenceId: Int,
         expressions: [LearningExpressionDTO],
         notes: [(id: Int, sentenceId: Int, question: String, answer: String)]
     ) -> [Card] {
-        let anchored = expressions
-            .filter { $0.occurrences.contains { $0.sentenceId == sentenceId } }
-            .map(Card.expression)
-        let attached = notes
-            .filter { $0.sentenceId == sentenceId }
-            .map { Card.note(id: $0.id, question: $0.question, answer: $0.answer) }
-        return anchored + attached
+        Index(expressions: expressions, notes: notes).cards(for: sentenceId)
     }
 
     /// The collapsed label. Nil when there is nothing to show, so a paragraph with

@@ -54,6 +54,7 @@ struct StudyView: View {
     // 200ms, so a computed property here runs five times a second for the whole
     // episode — with 681 sentences and 137 expressions that was the stutter.
     @State private var cachedIndex = LearningExpressionLogic.Index([])
+    @State private var cachedCardIndex = ParagraphCards.Index(expressions: [], notes: [])
     @State private var cachedVisible: [SentenceDTO] = []
 
     /// Concatenation is cheap; the INDEX was the expensive part, and that is what
@@ -147,6 +148,7 @@ struct StudyView: View {
             },
             learningExpressions: learningExpressions,
             expressionIndex: cachedIndex,
+            cardIndex: cachedCardIndex,
             expandedExpressionID: $expandedExpressionID,
             onPracticeExpression: { practiceExpression = $0 },
             extractingSentenceId: extractingSentenceId,
@@ -294,6 +296,11 @@ struct StudyView: View {
     private func refreshExpressionCaches() {
         cachedIndex = LearningExpressionLogic.Index(learningExpressions)
         paragraphNotes = store.paragraphNotes(for: episodeId)
+        cachedCardIndex = ParagraphCards.Index(
+            expressions: learningExpressions,
+            notes: paragraphNotes.map {
+                (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+            })
     }
 
     /// Holding a paragraph starts a spoken question about that paragraph.
@@ -633,6 +640,7 @@ private struct StudyWorkspace: View {
     let onToggleAnnotations: () -> Void
     let learningExpressions: [LearningExpressionDTO]
     let expressionIndex: LearningExpressionLogic.Index
+    let cardIndex: ParagraphCards.Index
     @Binding var expandedExpressionID: Int?
     let onPracticeExpression: (LearningExpressionDTO) -> Void
     var extractingSentenceId: Int?
@@ -777,6 +785,7 @@ private struct StudyWorkspace: View {
                 annotationsAvailable: annotationsAvailable,
                 learningExpressions: learningExpressions,
                 expressionIndex: expressionIndex,
+                cardIndex: cardIndex,
                 expandedExpressionID: $expandedExpressionID,
                 onPracticeExpression: onPracticeExpression,
                 extractingSentenceId: extractingSentenceId,
@@ -1595,6 +1604,9 @@ private struct TranscriptBlock: View {
     /// every 200ms, so anything computed in a redraw runs five times a second for
     /// as long as audio plays; the index depends only on the expression list.
     let expressionIndex: LearningExpressionLogic.Index
+    /// Same reason, and this one mattered most: grouping cards per row cost 31.6ms
+    /// for the transcript, nearly two frames on its own.
+    let cardIndex: ParagraphCards.Index
     @Binding var expandedExpressionID: Int?
     let onPracticeExpression: (LearningExpressionDTO) -> Void
     var extractingSentenceId: Int?
@@ -1688,10 +1700,7 @@ private struct TranscriptBlock: View {
                             onPracticeExpression: onPracticeExpression,
                             extracting: extractingSentenceId == sentence.id,
                             onExtractNote: { onExtractNote(sentence) },
-                            cards: ParagraphCards.cards(
-                                sentenceId: sentence.id,
-                                expressions: learningExpressions,
-                                notes: noteRows),
+                            cards: cardIndex.cards(for: sentence.id),
                             cardsExpanded: expandedCardSentenceIds.contains(sentence.id),
                             onToggleCards: { onToggleCards(sentence.id) },
                             onDeleteCard: onDeleteCard,
