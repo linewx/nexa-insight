@@ -117,6 +117,14 @@ class LearningExpression(Base):
     when_to_use: Mapped[str | None] = mapped_column(Text)
     common_mistake: Mapped[str | None] = mapped_column(Text)
     formality: Mapped[str | None] = mapped_column(String(16))
+    # "auto" for batch extraction, "manual" for one the learner asked for. A
+    # reprocess replaces everything it produced, so without this a re-parse would
+    # also delete the notes the learner made by hand — the one kind of row here
+    # that cannot be regenerated.
+    source: Mapped[str] = mapped_column(String(16), default="auto", server_default="auto")
+    # What the learner asked for, when they asked for something specific
+    # ("只讲时态"). Kept so a note can say why it looks the way it does.
+    request: Mapped[str | None] = mapped_column(Text)
     occurrences: Mapped[list[ExpressionOccurrence]] = relationship(cascade="all, delete-orphan", order_by="ExpressionOccurrence.id")
 
 

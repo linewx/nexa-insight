@@ -435,3 +435,100 @@ def test_set_audio_path(repo):
 def test_get_missing_episode_raises(repo):
     with pytest.raises(LookupError):
         repo.get_episode(999)
+
+
+def _chapters():
+    return [{"title": "Intro", "summary": "s", "start_ms": 0, "end_ms": 2000}]
+
+
+def _sentences():
+    return [
+        {"start_ms": 0, "end_ms": 1000, "speaker": None,
+         "source_text": "We need to rethink how we work.", "chinese": "我们需要重新思考如何工作。"},
+        {"start_ms": 1000, "end_ms": 2000, "speaker": None,
+         "source_text": "It worked out fine.", "chinese": "结果不错。"},
+    ]
+
+
+def _manual(text="rethink how", request="只讲时态"):
+    return {
+        "text": text, "kind": "phrase", "type": "pattern", "chinese": "重新思考如何",
+        "pronunciation": None, "example": "We need to rethink how we work.",
+        "example_chinese": "我们需要重新思考如何工作。", "source": "manual", "request": request,
+        "sentence_position": 0,
+    }
+
+
+def _auto(text="worked out"):
+    return {
+        "text": text, "kind": "phrase", "type": "idiom", "chinese": "顺利解决",
+        "pronunciation": None, "example": "It worked out fine.",
+        "example_chinese": "结果不错。", "sentence_position": 1,
+    }
+
+
+def test_batch_extraction_defaults_to_auto_source(repo):
+    episode_id = _seed_episode(repo)
+    repo.replace_learning_content(episode_id, _chapters(), _sentences(), [_auto()])
+    stored = repo.list_learning_expressions(episode_id)
+    assert [e.source for e in stored] == ["auto"]
+
+
+def test_reprocess_keeps_manual_notes_and_replaces_auto_ones(repo):
+    """A re-parse must not delete what the learner asked for by hand."""
+    episode_id = _seed_episode(repo)
+    repo.replace_learning_content(episode_id, _chapters(), _sentences(), [_manual(), _auto()])
+    assert sorted(e.source for e in repo.list_learning_expressions(episode_id)) == ["auto", "manual"]
+
+    # Second pass: batch extraction found something different this time.
+    repo.replace_learning_content(episode_id, _chapters(), _sentences(), [_auto("fine")])
+
+    stored = repo.list_learning_expressions(episode_id)
+    by_source = {e.source: e for e in stored}
+    assert set(by_source) == {"auto", "manual"}
+    assert by_source["manual"].text == "rethink how"
+    assert by_source["manual"].request == "只讲时态"
+    assert by_source["auto"].text == "fine"
+
+
+def test_preserved_manual_note_is_reanchored_to_the_new_sentence_rows(repo):
+    """Sentence ids change on reprocess, so a kept note must re-locate by text."""
+    episode_id = _seed_episode(repo)
+    repo.replace_learning_content(episode_id, _chapters(), _sentences(), [_manual()])
+    first = repo.list_learning_expressions(episode_id)[0]
+    assert [(o.start_offset, o.end_offset) for o in first.occurrences] == [(11, 22)]
+    old_sentence_ids = {o.sentence_id for o in first.occurrences}
+
+    repo.replace_learning_content(episode_id, _chapters(), _sentences(), [])
+
+    kept = repo.list_learning_expressions(episode_id)
+    assert len(kept) == 1
+    assert kept[0].source == "manual"
+    # Still highlighted, and pointing at the rebuilt sentence rather than a
+    # dangling id from the deleted ones.
+    assert [(o.start_offset, o.end_offset) for o in kept[0].occurrences] == [(11, 22)]
+
+    # Not asserting the ids changed: SQLite reuses rowids after a delete, so the
+    # rebuilt sentence can legitimately land on the old id. What must hold is that
+    # every occurrence points at a sentence that exists now AND whose text really
+    # contains the expression at those offsets — a dangling or stale anchor fails
+    # one of the two.
+    live = {s.id: s for s in repo.list_sentences(episode_id)}
+    for occurrence in kept[0].occurrences:
+        assert occurrence.sentence_id in live
+        host = live[occurrence.sentence_id].source_text
+        assert host[occurrence.start_offset:occurrence.end_offset].lower() == "rethink how"
+
+
+def test_manual_note_absent_from_the_new_transcript_survives_without_a_highlight(repo):
+    """Better an un-highlighted note than a deleted one, or a wrong highlight."""
+    episode_id = _seed_episode(repo)
+    repo.replace_learning_content(episode_id, _chapters(), _sentences(), [_manual()])
+
+    rewritten = [{"start_ms": 0, "end_ms": 1000, "speaker": None,
+                  "source_text": "Completely different words now.", "chinese": "完全不同。"}]
+    repo.replace_learning_content(episode_id, _chapters(), rewritten, [])
+
+    kept = repo.list_learning_expressions(episode_id)
+    assert [e.text for e in kept] == ["rethink how"]
+    assert kept[0].occurrences == []

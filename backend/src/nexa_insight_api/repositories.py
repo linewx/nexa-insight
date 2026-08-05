@@ -12,6 +12,9 @@ from .settings import Settings
 EXPRESSION_FIELDS = (
     "text", "kind", "type", "chinese", "pronunciation", "example", "example_chinese",
     "heard_as", "restored", "why_hard", "when_to_use", "common_mistake", "formality",
+    # Not model-supplied: set by the caller so a re-parse knows what it may
+    # replace, and so a note can show what was asked for.
+    "source", "request",
 )
 
 # The iOS LearningExpressionKind enum decodes exactly these three, and one
@@ -156,6 +159,10 @@ class Repository:
                 "when_to_use": "TEXT",
                 "common_mistake": "TEXT",
                 "formality": "VARCHAR(16)",
+                # Existing rows all came from batch extraction, so defaulting to
+                # "auto" describes them correctly and keeps them replaceable.
+                "source": "VARCHAR(16) DEFAULT 'auto'",
+                "request": "TEXT",
             },
         }
         with self.engine.begin() as connection:
@@ -287,6 +294,37 @@ class Repository:
 
     def replace_learning_content(self, episode_id: int, chapters: list[dict], sentences: list[dict], learning_expressions: list[dict] | None = None) -> None:
         with self.session() as session:
+            # Manual notes survive a reprocess: the learner asked for them, and
+            # nothing here can regenerate them. Only what batch extraction
+            # produced is replaced.
+            #
+            # Their occurrences cannot survive, though — every sentence row is
+            # about to be deleted and recreated with new ids, so an occurrence
+            # would dangle. The expression text is kept and re-anchored against
+            # the new sentences below, which is the same rule the rest of this
+            # method follows: text is the anchor, offsets are derived.
+            preserved = [
+                {
+                    "text": row.text,
+                    "kind": row.kind,
+                    "type": row.type,
+                    "chinese": row.chinese,
+                    "pronunciation": row.pronunciation,
+                    "example": row.example,
+                    "example_chinese": row.example_chinese,
+                    "heard_as": row.heard_as,
+                    "restored": row.restored,
+                    "why_hard": row.why_hard,
+                    "when_to_use": row.when_to_use,
+                    "common_mistake": row.common_mistake,
+                    "formality": row.formality,
+                    "source": "manual",
+                    "request": row.request,
+                }
+                for row in session.query(LearningExpression)
+                .filter_by(episode_id=episode_id, source="manual")
+                .all()
+            ]
             session.query(ExpressionOccurrence).filter(ExpressionOccurrence.expression_id.in_(select(LearningExpression.id).where(LearningExpression.episode_id == episode_id))).delete(synchronize_session=False)
             session.query(LearningExpression).filter_by(episode_id=episode_id).delete()
             session.query(Sentence).filter_by(episode_id=episode_id).delete()
@@ -306,13 +344,24 @@ class Repository:
             session.flush()
             expressions_by_text: dict[str, LearningExpression] = {}
             stored_occurrences: dict[str, set[tuple[int, int, int]]] = {}
-            for item in learning_expressions or []:
+            # Preserved notes go through the same loop as fresh extraction: they
+            # need re-anchoring against the new sentence rows, and the loop already
+            # locates by text. They go first so that if batch extraction happens to
+            # find the same expression, the manual row is the one that survives
+            # dedup by text and keeps its request.
+            for item in preserved + list(learning_expressions or []):
                 # The extraction prompts report one position per item; the older
                 # prompt nested a list. Reading only the list dropped every
                 # highlight and left the transcript unmarked.
                 occurrences = item.get("occurrences") or []
                 if not occurrences and item.get("sentence_position") is not None:
                     occurrences = [{"sentence_position": item["sentence_position"]}]
+                # A preserved note has no position to report — the sentence it was
+                # anchored to no longer exists. An out-of-range sentinel sends it
+                # straight to the full-text search below, which is where every
+                # occurrence ends up anyway when the reported index is wrong.
+                if not occurrences:
+                    occurrences = [{"sentence_position": -1}]
                 # The model invents extra keys ("confidence", "difficulty"), and
                 # one of those reaching the constructor fails the whole import.
                 expression_data = {key: item[key] for key in EXPRESSION_FIELDS if key in item}

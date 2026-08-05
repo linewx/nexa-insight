@@ -84,6 +84,10 @@ class LearningExpressionView(ORMModel):
     when_to_use: str | None = None
     common_mistake: str | None = None
     formality: str | None = None
+    # "auto" or "manual". The client needs it to know which rows it may drop when
+    # a bundle arrives, and to mark a note as the learner's own.
+    source: str = "auto"
+    request: str | None = None
     occurrences: list[ExpressionOccurrenceView]
 
 
