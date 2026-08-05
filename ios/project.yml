@@ -24,7 +24,7 @@ targets:
       properties:
         CFBundleDisplayName: Nexa Insight
         CFBundleName: Nexa Insight
-        NSMicrophoneUsageDescription: "Nexa Insight records your shadowing practice and voice-class speech."
+        NSMicrophoneUsageDescription: "Nexa Insight records your shadowing practice, your spoken questions about a line, and voice-class speech."
         NSLocalNetworkUsageDescription: "Nexa Insight connects to your development backend on the local network."
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

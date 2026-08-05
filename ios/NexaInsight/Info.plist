@@ -53,7 +53,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Nexa Insight connects to your development backend on the local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Nexa Insight records your shadowing practice and voice-class speech.</string>
+	<string>Nexa Insight records your shadowing practice, your spoken questions about a line, and voice-class speech.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
