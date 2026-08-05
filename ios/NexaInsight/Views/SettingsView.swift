@@ -19,127 +19,84 @@ struct SettingsView: View {
         // One header per screen: the brand row above. Left visible, the navigation
         // bar drew a second band behind it in a different tone.
         .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(for: SettingsDestination.self) { destination in
+            switch destination {
+            case .backend:
+                BackendSettingsPage(settings: settings)
+            case .credentials:
+                CredentialsPage(
+                    openAIKey: $openAIKey,
+                    youtubeAPIKey: $youtubeAPIKey,
+                    dashscopeKey: $dashscopeKey,
+                    workspaceId: $workspaceId,
+                    onSave: save,
+                    savedMessage: savedMessage)
+            }
+        }
     }
 
     // No NavigationStack of its own: this is a tab, so the caller supplies the
     // stack. The old close button belonged to a sheet that no longer exists.
+    private var services: [CredentialSummary.Service] {
+        CredentialSummary.services(
+            dashscopeKey: dashscopeKey, workspaceId: workspaceId,
+            youtubeAPIKey: youtubeAPIKey, openAIKey: openAIKey)
+    }
+
+    // The root holds what you actually come here to change. Credentials are
+    // fill-once-and-forget, and inline they cost five bordered cards and three
+    // screens of scrolling to reach a toggle — so they move behind one row that
+    // reports its own state.
     private var form: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NXSpacing.x8) {
-                    SettingsSection(
-                        title: "Backend",
-                        subtitle: "Used for importing and downloading prepared sources."
-                    ) {
-                        SettingsTextField(
-                            title: "Base URL",
-                            text: $settings.backendBaseURL,
-                            placeholder: AppSettings.defaultBackendBaseURL,
-                            systemName: "network"
-                        )
-                        HStack(spacing: NXSpacing.x3) {
-                            ConnectionStatus(urlString: settings.backendBaseURL)
-                            Spacer()
-                            NXTextButton(title: "Reset default", systemName: "arrow.counterclockwise") {
-                                settings.backendBaseURL = AppSettings.defaultBackendBaseURL
-                            }
-                        }
-                    }
-
-                    SettingsSection(
-                        title: "Realtime classroom",
-                        subtitle: "DashScope powers voice discussion around the current source."
-                    ) {
-                        SettingsSecureField(
-                            title: "DashScope API key",
-                            text: $dashscopeKey,
-                            placeholder: "Stored in Keychain",
-                            systemName: "key"
-                        )
-                        SettingsTextField(
-                            title: "Workspace ID",
-                            text: $workspaceId,
-                            placeholder: "llm-...",
-                            systemName: "rectangle.connected.to.line.below"
-                        )
-                        ReadinessRow(
-                            ready: !dashscopeKey.isEmpty && !workspaceId.isEmpty,
-                            readyText: "Realtime discussion configured",
-                            missingText: "Add DashScope key and workspace ID to use Talk"
-                        )
-                    }
-
-                    SettingsSection(
-                        title: "Channel browsing",
-                        subtitle: "A YouTube Data API key lets a channel page list its whole catalog instead of the 15 most recent uploads."
-                    ) {
-                        SettingsSecureField(
-                            title: "YouTube API key",
-                            text: $youtubeAPIKey,
-                            placeholder: "Stored in Keychain",
-                            systemName: "key"
-                        )
-                        ReadinessRow(
-                            ready: !youtubeAPIKey.isEmpty,
-                            readyText: "Full channel catalog available",
-                            missingText: "Without a key, channels show their 15 most recent uploads"
-                        )
-                    }
-
-                    SettingsSection(
-                        title: "Optional services",
-                        subtitle: "OpenAI is only needed for features that explicitly use it."
-                    ) {
-                        SettingsSecureField(
-                            title: "OpenAI API key",
-                            text: $openAIKey,
-                            placeholder: "Stored in Keychain",
-                            systemName: "key"
-                        )
-                        ReadinessRow(
-                            ready: !openAIKey.isEmpty,
-                            readyText: "OpenAI key saved",
-                            missingText: "No OpenAI key saved"
-                        )
-                    }
-
-                    SettingsSection(
-                        title: "Display",
-                        subtitle: "Discover content is English, so dates and view counts default to English too."
-                    ) {
-                        Toggle(isOn: $settings.localizedBylines) {
-                            VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                                Text("Use device language for dates")
-                                    .font(NXFont.bodyMedium)
-                                    .foregroundStyle(NXColor.text(scheme))
-                                Text("On a Japanese device this shows \u{300c}3\u{65e5}\u{524d}\u{300d} instead of \u{201c}3d ago\u{201d}.")
-                                    .font(NXFont.auxiliary)
-                                    .foregroundStyle(NXColor.textSecondary(scheme))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .tint(NXColor.primary)
-
+                    // No subtitles, and no caption under either toggle. A switch
+                    // labelled "显示精读标注" does not need a sentence explaining
+                    // that annotations get shown; the explanation was taller than
+                    // the control it described.
+                    SettingsSection(title: "\u{9605}\u{8bfb}\u{4e0e}\u{663e}\u{793a}") {
                         Toggle(isOn: $settings.showReadingAnnotations) {
-                            VStack(alignment: .leading, spacing: NXSpacing.x1) {
-                                Text("\u{663e}\u{793a}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}")
-                                    .font(NXFont.bodyMedium)
-                                    .foregroundStyle(NXColor.text(scheme))
-                                Text("\u{8f6c}\u{5199}\u{91cc}\u{7684}\u{91cd}\u{70b9}\u{8bcd}\u{7ec4}\u{6807}\u{84dd}，\u{70b9}\u{5f00}\u{770b}\u{91ca}\u{4e49}\u{3002}\u{7cbe}\u{542c}\u{7684}\u{64ad}\u{653e}\u{548c}\u{8ddf}\u{8bfb}\u{4e0d}\u{53d7}\u{5f71}\u{54cd}\u{3002}")
-                                    .font(NXFont.auxiliary)
-                                    .foregroundStyle(NXColor.textSecondary(scheme))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            Text("\u{663e}\u{793a}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}")
+                                .font(NXFont.bodyMedium)
+                                .foregroundStyle(NXColor.text(scheme))
                         }
                         .tint(NXColor.primary)
+                        .padding(.vertical, NXSpacing.x2)
+
+                        Toggle(isOn: $settings.localizedBylines) {
+                            Text("\u{65e5}\u{671f}\u{8ddf}\u{968f}\u{7cfb}\u{7edf}\u{8bed}\u{8a00}")
+                                .font(NXFont.bodyMedium)
+                                .foregroundStyle(NXColor.text(scheme))
+                        }
+                        .tint(NXColor.primary)
+                        .padding(.vertical, NXSpacing.x2)
                     }
 
-                    if let savedMessage {
-                        SaveNotice(message: savedMessage)
-                    }
+                    SettingsSection(title: "\u{8fde}\u{63a5}\u{4e0e}\u{51ed}\u{636e}") {
+                        NavigationLink(value: SettingsDestination.backend) {
+                            SettingsDisclosureRow(
+                                title: "\u{540e}\u{7aef}",
+                                systemName: "network",
+                                trailing: { ConnectionStatus(urlString: settings.backendBaseURL) })
+                        }
+                        .buttonStyle(.plain)
 
-                    // Save is the only action left. "Close" dismissed a sheet that
-                    // no longer exists — you leave by tapping another tab.
-                    NXPrimaryButton(title: "Save changes", systemName: "checkmark", action: save)
+                        Rectangle()
+                            .fill(NXColor.border(scheme))
+                            .frame(height: 1)
+
+                        NavigationLink(value: SettingsDestination.credentials) {
+                            SettingsDisclosureRow(
+                                title: "\u{51ed}\u{636e}",
+                                systemName: "key",
+                                trailing: {
+                                    Text(CredentialSummary.rootSummary(services))
+                                        .font(NXFont.auxiliary)
+                                        .foregroundStyle(NXColor.textSecondary(scheme))
+                                })
+                        }
+                        .buttonStyle(.plain)
+                    }
             }
             .frame(maxWidth: 760, alignment: .leading)
             .padding(.horizontal, NXSpacing.x4)
@@ -162,7 +119,7 @@ struct SettingsView: View {
         saveOrDelete(youtubeAPIKey, for: .youtubeAPIKey)
         saveOrDelete(dashscopeKey, for: .dashscopeKey)
         saveOrDelete(workspaceId, for: .dashscopeWorkspaceId)
-        savedMessage = "Settings saved"
+        savedMessage = "\u{51ed}\u{636e}\u{5df2}\u{4fdd}\u{5b58}"
     }
 
     private func saveOrDelete(_ value: String, for key: SecretKey) {
@@ -175,9 +132,144 @@ struct SettingsView: View {
     }
 }
 
+enum SettingsDestination: Hashable {
+    case backend
+    case credentials
+}
+
+/// A root row that names a group and reports its state, so you can tell whether
+/// anything needs attention without opening the page.
+private struct SettingsDisclosureRow<Trailing: View>: View {
+    let title: String
+    let systemName: String
+    @ViewBuilder let trailing: Trailing
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(spacing: NXSpacing.x3) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(NXColor.textTertiary(scheme))
+                .frame(width: 16)
+            Text(title)
+                .font(NXFont.bodyMedium)
+                .foregroundStyle(NXColor.text(scheme))
+            Spacer(minLength: NXSpacing.x3)
+            trailing
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(NXColor.textTertiary(scheme))
+        }
+        .padding(.vertical, NXSpacing.x3)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct BackendSettingsPage: View {
+    @ObservedObject var settings: AppSettings
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NXSpacing.x8) {
+                SettingsSection(title: "\u{540e}\u{7aef}") {
+                    SettingsTextField(
+                        title: "Base URL",
+                        text: $settings.backendBaseURL,
+                        placeholder: AppSettings.defaultBackendBaseURL,
+                        systemName: "network")
+                    HStack(spacing: NXSpacing.x3) {
+                        ConnectionStatus(urlString: settings.backendBaseURL)
+                        Spacer()
+                        NXTextButton(title: "\u{6062}\u{590d}\u{9ed8}\u{8ba4}", systemName: "arrow.counterclockwise") {
+                            settings.backendBaseURL = AppSettings.defaultBackendBaseURL
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, NXSpacing.x4)
+            .padding(.vertical, NXSpacing.x4)
+            .frame(maxWidth: .infinity)
+        }
+        .background(NXColor.background(scheme))
+        .navigationTitle("\u{540e}\u{7aef}")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// One page for every secret. Each field says whether it already holds a value —
+/// a secure field whose placeholder always read "Stored in Keychain" could not
+/// distinguish a saved key from an empty one.
+private struct CredentialsPage: View {
+    @Binding var openAIKey: String
+    @Binding var youtubeAPIKey: String
+    @Binding var dashscopeKey: String
+    @Binding var workspaceId: String
+    let onSave: () -> Void
+    let savedMessage: String?
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NXSpacing.x8) {
+                // The one subtitle worth keeping on this page: that both fields are
+                // required is not visible from the fields themselves, and getting
+                // it wrong leaves Talk unable to connect.
+                SettingsSection(
+                    title: "\u{5b9e}\u{65f6}\u{8bfe}\u{5802}",
+                    subtitle: "\u{4e24}\u{9879}\u{90fd}\u{8981}\u{586b}\u{3002}"
+                ) {
+                    SettingsSecureField(
+                        title: "DashScope API key",
+                        text: $dashscopeKey,
+                        placeholder: CredentialSummary.fieldState(dashscopeKey).label,
+                        systemName: "key")
+                    SettingsTextField(
+                        title: "Workspace ID",
+                        text: $workspaceId,
+                        placeholder: "llm-...",
+                        systemName: "rectangle.connected.to.line.below")
+                }
+
+                SettingsSection(title: "\u{9891}\u{9053}\u{6d4f}\u{89c8}") {
+                    SettingsSecureField(
+                        title: "YouTube API key",
+                        text: $youtubeAPIKey,
+                        placeholder: CredentialSummary.fieldState(youtubeAPIKey).label,
+                        systemName: "key")
+                }
+
+                SettingsSection(title: "\u{8ddf}\u{8bfb}\u{53cd}\u{9988}") {
+                    SettingsSecureField(
+                        title: "OpenAI API key",
+                        text: $openAIKey,
+                        placeholder: CredentialSummary.fieldState(openAIKey).label,
+                        systemName: "key")
+                }
+
+                if let savedMessage {
+                    SaveNotice(message: savedMessage)
+                }
+
+                NXPrimaryButton(title: "\u{4fdd}\u{5b58}\u{51ed}\u{636e}", systemName: "checkmark", action: onSave)
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, NXSpacing.x4)
+            .padding(.vertical, NXSpacing.x4)
+            .frame(maxWidth: .infinity)
+        }
+        .background(NXColor.background(scheme))
+        .navigationTitle("\u{51ed}\u{636e}")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 private struct SettingsSection<Content: View>: View {
     let title: String
-    let subtitle: String
+    // Optional, and usually absent. Most groups are self-evident from their title
+    // and the control inside; a sentence per group turned this screen into prose.
+    var subtitle: String?
     @ViewBuilder let content: Content
     @Environment(\.colorScheme) private var scheme
 
@@ -187,9 +279,12 @@ private struct SettingsSection<Content: View>: View {
                 Text(title)
                     .font(NXFont.sectionTitle)
                     .foregroundStyle(NXColor.text(scheme))
-                Text(subtitle)
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.textSecondary(scheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             VStack(spacing: 0) {
@@ -288,26 +383,6 @@ private struct ConnectionStatus: View {
             Text(valid ? "Backend URL looks valid" : "Enter a valid http or https URL")
                 .font(NXFont.auxiliary)
                 .foregroundStyle(valid ? NXColor.textTertiary(scheme) : NXColor.error)
-        }
-        .padding(.top, NXSpacing.x2)
-    }
-}
-
-private struct ReadinessRow: View {
-    let ready: Bool
-    let readyText: String
-    let missingText: String
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(spacing: NXSpacing.x2) {
-            Image(systemName: ready ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(ready ? NXColor.success : NXColor.textTertiary(scheme))
-            Text(ready ? readyText : missingText)
-                .font(NXFont.auxiliary)
-                .foregroundStyle(NXColor.textSecondary(scheme))
-            Spacer()
         }
         .padding(.top, NXSpacing.x2)
     }
