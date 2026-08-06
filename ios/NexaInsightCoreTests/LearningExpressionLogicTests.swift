@@ -33,26 +33,41 @@ final class LearningExpressionLogicTests: XCTestCase {
         XCTAssertNil(LearningExpressionLogic.expressionID(fromURL: URL(string: "nexa-expression://notanumber")!))
     }
 
-    func testAttributedSentencePreservesTextAndLinksOnlyExpressions() {
+    func testAttributedSentenceStylesOnlyTheExpression() {
+        let segments = LearningExpressionLogic.segments(
+            for: "We need to rethink how we work.", sentenceId: 7, expressions: [expression])
+        // The highlight callback marks the run; here it records which text it was
+        // handed, which is what the view uses to apply colour and weight.
+        var styled: [String] = []
+        let attributed = LearningExpressionLogic.attributedSentence(segments: segments) { run in
+            styled.append(String(run.characters))
+        }
+
+        XCTAssertEqual(String(attributed.characters), "We need to rethink how we work.")
+        XCTAssertEqual(styled, ["rethink how"])
+    }
+
+    func testNoLinksAreEmbeddedInTheTranscript() {
+        // A link makes SwiftUI treat the Text as interactive, and that is what an
+        // episode with expressions paid on every row of every frame — the difference
+        // between a transcript with highlights scrolling badly and one without
+        // scrolling fine. The card stack reaches the same cards.
         let segments = LearningExpressionLogic.segments(
             for: "We need to rethink how we work.", sentenceId: 7, expressions: [expression])
         let attributed = LearningExpressionLogic.attributedSentence(segments: segments)
 
-        XCTAssertEqual(String(attributed.characters), "We need to rethink how we work.")
-
-        var linked: [String] = []
-        for run in attributed.runs where run.link != nil {
-            linked.append(String(attributed[run.range].characters))
-            XCTAssertEqual(LearningExpressionLogic.expressionID(fromURL: run.link!), 1)
-        }
-        XCTAssertEqual(linked, ["rethink how"])
+        XCTAssertTrue(attributed.runs.allSatisfy { $0.link == nil })
     }
 
-    func testAttributedSentenceWithoutExpressionsCarriesNoLinks() {
+    func testAttributedSentenceWithoutExpressionsIsUntouched() {
+        var styled: [String] = []
         let segments = LearningExpressionLogic.segments(for: "Nothing notable here.", sentenceId: 7, expressions: [])
-        let attributed = LearningExpressionLogic.attributedSentence(segments: segments)
+        let attributed = LearningExpressionLogic.attributedSentence(segments: segments) { run in
+            styled.append(String(run.characters))
+        }
 
         XCTAssertEqual(String(attributed.characters), "Nothing notable here.")
+        XCTAssertTrue(styled.isEmpty)
         XCTAssertTrue(attributed.runs.allSatisfy { $0.link == nil })
     }
 

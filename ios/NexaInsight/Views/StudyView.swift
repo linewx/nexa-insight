@@ -1712,7 +1712,9 @@ private struct TranscriptBlock: View {
                             onHoldEnd: onHoldEnd
                         )
                         .id(sentence.id)
-                        if sentence.id != sentences.last?.id {
+                        // By index: `sentences.last` walks the array for every
+                        // row, on every redraw.
+                        if offset + 1 < sentences.count {
                             Divider().overlay(NXColor.border(scheme))
                         }
                     }
@@ -1816,23 +1818,31 @@ private struct TranscriptRow: View {
                 actions
             }
         }
-        .background(selected ? NXColor.primary.opacity(0.045) : Color.clear)
+        // One background and one tint for four states. Every row carried two
+        // backgrounds, two overlays and two animations whose values are constant for
+        // all but the one or two rows that are selected, pressed or being asked
+        // about — and each modifier is a node SwiftUI walks per row, per frame.
+        .background(rowTint)
         .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(selected ? NXColor.primary : Color.clear)
-                .frame(width: 2)
+            if selected {
+                Rectangle().fill(NXColor.primary).frame(width: 2)
+            }
         }
-        // Held while asking: the paragraph lifts instead of a sheet covering it, so
-        // the text you are asking about stays in front of you. `pressed` is the
-        // lighter, shorter-lived version — the finger is down but the hold has not
-        // yet become a question.
-        .background(asking ? NXColor.primary.opacity(0.10)
-                    : pressed ? NXColor.primary.opacity(0.06) : Color.clear)
-        .animation(.easeOut(duration: 0.12), value: pressed)
-        .animation(.easeOut(duration: 0.15), value: asking)
         .overlay(alignment: .bottomTrailing) {
             if asking { askingIndicator }
         }
+        .animation(.easeOut(duration: 0.12), value: pressed)
+    }
+
+    /// Held while asking, the paragraph lifts instead of a sheet covering it, so the
+    /// text stays in front of you. `pressed` is the lighter, shorter-lived version —
+    /// the finger is down but the hold has not yet become a question — and
+    /// `selected` is faintest, since it merely follows playback.
+    private var rowTint: Color {
+        if asking { return NXColor.primary.opacity(0.10) }
+        if pressed { return NXColor.primary.opacity(0.06) }
+        if selected { return NXColor.primary.opacity(0.045) }
+        return .clear
     }
 
     @ViewBuilder private var cardStack: some View {
@@ -1915,7 +1925,7 @@ private struct TranscriptRow: View {
 
     private var listeningContent: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            HStack(spacing: NXSpacing.x2) { timestamp }
+            timestamp
             VStack(alignment: .leading, spacing: NXSpacing.x2) {
                 Text(sentence.sourceText)
                     .font(NXFont.body).fontWeight(selected ? .medium : .regular)
@@ -1930,7 +1940,7 @@ private struct TranscriptRow: View {
 
     private var readingContent: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            HStack(spacing: NXSpacing.x2) { timestamp }
+            timestamp
             VStack(alignment: .leading, spacing: NXSpacing.x2) {
                 InlineExpressionText(segments: expressionSegments, onSelect: onSelectExpression)
                 chineseText
@@ -2023,20 +2033,38 @@ private struct InlineExpressionText: View {
     // long run overflowed the row instead of wrapping. Highlighted expressions
     // carry a custom-scheme link that OpenURLAction turns back into a selection,
     // which is what lets a single Text hold many tap targets.
+    /// True when this line carries no highlight, which is most of them: 209
+    /// expressions over 681 sentences leaves roughly two thirds plain.
+    private var isPlain: Bool {
+        segments.count == 1 && segments[0].expressionID == nil
+    }
+
     var body: some View {
-        Text(attributed)
-            .font(NXFont.body)
-            .foregroundStyle(NXColor.text(scheme))
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .tint(NXColor.primary)
-            .environment(\.openURL, OpenURLAction { url in
-                guard let expressionID = LearningExpressionLogic.expressionID(fromURL: url) else {
-                    return .systemAction
-                }
-                onSelect(expressionID)
-                return .handled
-            })
+        if isPlain {
+            // A plain line needs no AttributedString at all. Building one for every
+            // row meant paying the annotated path on the majority of rows with
+            // nothing annotated.
+            Text(segments[0].text)
+                .font(NXFont.body)
+                .foregroundStyle(NXColor.text(scheme))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            // Styled runs, and no link. A link makes SwiftUI treat the Text as
+            // interactive, and that machinery is what an episode with expressions
+            // paid on every row of every frame — the difference the learner noticed
+            // between a transcript with highlights and one without. Building the
+            // string is not the cost (0.148ms for a screenful); rendering an
+            // interactive one is.
+            //
+            // Nothing is lost: the card stack under each paragraph lists every card,
+            // so tapping a highlight had become a second door to the same room.
+            Text(attributed)
+                .font(NXFont.body)
+                .foregroundStyle(NXColor.text(scheme))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var attributed: AttributedString {
