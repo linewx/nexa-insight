@@ -1780,18 +1780,27 @@ private struct TranscriptRow: View {
                     .onLongPressGesture(
                         minimumDuration: 0.35,
                         perform: {
-                            // Fires once the threshold passes, which is exactly when
-                            // recording has begun — the moment worth a tap on the
-                            // wrist, since the finger is still down and nothing has
-                            // moved on screen.
+                            // Recording starts HERE, not on the press. `onPressingChanged`
+                            // fires the instant a finger lands — before the threshold, and
+                            // therefore on every scroll — and starting the recorder there
+                            // put `AVAudioSession.setActive` plus an `AVAudioRecorder` on
+                            // the main thread at the start of every swipe: measured on
+                            // device at 203-353ms a touch, ten touches over one scroll.
+                            // That was the reading-mode stutter.
+                            //
+                            // The haptic belongs at the same moment for the same reason it
+                            // always did: the threshold passing is when the hold became a
+                            // question, and now it is also when the mic opened.
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            onHoldStart()
                         },
                         onPressingChanged: { pressing in
-                            // Recording starts on the press and ends on the release,
-                            // which `perform:` alone cannot express — it fires once
-                            // the threshold passes, with no matching release.
+                            // Release still has to be seen here — `perform:` fires once
+                            // the threshold passes with no matching release. A release
+                            // with no recording in flight is a no-op, which is what a
+                            // scroll or a tap now produces.
                             pressed = pressing
-                            if pressing { onHoldStart() } else { onHoldEnd() }
+                            if !pressing { onHoldEnd() }
                         })
             } else {
                 Button(action: onTap) { listeningContent }
