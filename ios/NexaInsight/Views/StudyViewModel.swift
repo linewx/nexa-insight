@@ -10,12 +10,6 @@ final class StudyViewModel: ObservableObject {
         activeSentence(sentences, cursorMs) ?? sentences.first
     }
 
-    func search(_ query: String, in sentences: [SentenceDTO]) -> [SentenceDTO] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        if q.isEmpty { return sentences }
-        return sentences.filter { "\($0.sourceText) \($0.chinese)".lowercased().contains(q) }
-    }
-
     func onManualScroll(currentOffset: CGFloat, targetOffset: CGFloat) {
         guard isManualScrollAway(currentScrollTop: currentOffset, targetScrollTop: targetOffset, tolerancePx: 24) else { return }
         following = false

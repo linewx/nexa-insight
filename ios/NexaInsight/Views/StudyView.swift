@@ -12,7 +12,6 @@ struct StudyView: View {
     @StateObject private var vm = StudyViewModel()
     @StateObject private var player: LocalAudioPlayback
     @State private var audioRefreshState: AudioRefreshState = .idle
-    @State private var query = ""
     @State private var shadowingSentence: SentenceDTO?
     @State private var liveSession: LiveClassSession?
     // How far the screen is dragged during a back-swipe. Drives the follow-the-finger
@@ -43,28 +42,27 @@ struct StudyView: View {
     @State private var voiceRecorder = VoiceNoteRecorder()
     @State private var extractingSentenceId: Int?
     @State private var noteError: String?
-    @State private var manualExpressions: [LearningExpressionDTO] = []
     private let sentences: [SentenceDTO]
-    // Read once at init, so a note made during this sitting would not appear.
-    // `manualExpressions` carries those, and `learningExpressions` is the union —
-    // which is what every annotation path already consumes.
-    private let storedExpressions: [LearningExpressionDTO]
+
+    /// Every expression on this episode, automatic and hand-made alike, as the store
+    /// currently holds them.
+    ///
+    /// One list read from the store, not an init snapshot unioned with this sitting's
+    /// additions. That split could not express a delete: `store.learningExpressions`
+    /// already returns the manual rows, so a card made in an earlier sitting lived in
+    /// the immutable snapshot, and removing it from the additions list left the card
+    /// on screen until the episode was reopened.
+    ///
+    /// Seeded in `init` rather than filled by `onAppear`: empty on the first frame
+    /// would make `annotated` false exactly when the rows are first built, and the
+    /// reading branch that carries the tap and hold gestures would never be taken.
+    @State private var learningExpressions: [LearningExpressionDTO]
 
     // Cached, not computed per redraw. The player publishes its position every
     // 200ms, so a computed property here runs five times a second for the whole
     // episode — with 681 sentences and 137 expressions that was the stutter.
     @State private var cachedIndex = LearningExpressionLogic.Index([])
     @State private var cachedCardIndex = ParagraphCards.Index(expressions: [], notes: [])
-    @State private var cachedVisible: [SentenceDTO] = []
-
-    /// Concatenation is cheap; the INDEX was the expensive part, and that is what
-    /// is cached. Reading the cache here instead made this empty on the first
-    /// frame — before `onAppear` filled it — so `annotated` was false exactly when
-    /// the rows were first built, and the reading branch that carries the tap and
-    /// hold gestures was never taken.
-    private var learningExpressions: [LearningExpressionDTO] {
-        storedExpressions + manualExpressions
-    }
     private let episode: EpisodeDTO?
 
     init(episodeId: Int, store: EpisodeStore, backendBaseURL: URL, settings: AppSettings) {
@@ -73,7 +71,7 @@ struct StudyView: View {
         self.backendBaseURL = backendBaseURL
         self.settings = settings
         self.sentences = store.sentences(for: episodeId)
-        self.storedExpressions = store.learningExpressions(for: episodeId)
+        _learningExpressions = State(initialValue: store.learningExpressions(for: episodeId))
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
         let relative = store.localAudioPath(for: episodeId) ?? "audio/\(episodeId).mp3"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -86,11 +84,6 @@ struct StudyView: View {
             fileURL: base.appendingPathComponent(relative),
             initialPositionMs: resumeMs))
     }
-
-    /// The unfiltered list is the common case and needs no work; only a live query
-    /// costs anything, and that is what the cache holds. Reading the cache
-    /// unconditionally showed an empty transcript on the first frame.
-    var visible: [SentenceDTO] { query.isEmpty ? sentences : cachedVisible }
 
     /// The mode in force: this sitting's override, else the persisted preference.
     private var mode: StudyMode {
@@ -106,9 +99,8 @@ struct StudyView: View {
     var body: some View {
         StudyWorkspace(
             episode: episode,
-            visible: visible,
+            sentences: sentences,
             current: current,
-            query: $query,
             audioRefreshState: audioRefreshState,
             following: vm.following,
             player: player,
@@ -189,12 +181,11 @@ struct StudyView: View {
                 store.savePlaybackPosition(ms, for: episodeId)
             }
         }
-        // The caches, refreshed on their real inputs rather than on the 200ms
-        // position tick. Rebuilding the index and re-filtering 681 sentences five
-        // times a second was the reading-mode stutter.
-        .onAppear { refreshCaches() }
-        .onChange(of: query) { _, _ in cachedVisible = vm.search(query, in: sentences) }
-        .onChange(of: manualExpressions.count) { _, _ in refreshExpressionCaches() }
+        // The notes, and the indexes built from them, read once on appear rather
+        // than on the 200ms position tick. Rebuilding the index five times a second
+        // was the reading-mode stutter. Every writer calls the same refresh, so
+        // there is no count to watch.
+        .onAppear { refreshExpressionCaches() }
         // Leaving mid-sentence is the common case, so the exact position is
         // written on the way out rather than only at throttle boundaries.
         .onDisappear {
@@ -277,25 +268,26 @@ struct StudyView: View {
             case .expression(let expression):
                 guard card.isDeletable else { return }
                 try store.deleteManualExpression(expression.id)
-                manualExpressions.removeAll { $0.id == expression.id }
-                refreshExpressionCaches()
             case .note(let id, _, _):
                 try store.deleteParagraphNote(id)
-                paragraphNotes.removeAll { $0.noteId == id }
             }
+            // Both branches rebuild. The note branch used to only drop the row from
+            // `paragraphNotes`, and the rows read from `cachedCardIndex` — so the
+            // card stayed on screen, looking like the delete had done nothing.
+            refreshExpressionCaches()
         } catch {
             noteError = error.localizedDescription
         }
     }
 
-    private func refreshCaches() {
-        cachedVisible = vm.search(query, in: sentences)
-        refreshExpressionCaches()
-    }
-
+    /// Re-reads both lists from the store and rebuilds the indexes the rows draw from.
+    ///
+    /// The store is the source of truth for both; anything that mutates either must
+    /// come through here, or the rows keep drawing the previous index.
     private func refreshExpressionCaches() {
-        cachedIndex = LearningExpressionLogic.Index(learningExpressions)
+        learningExpressions = store.learningExpressions(for: episodeId)
         paragraphNotes = store.paragraphNotes(for: episodeId)
+        cachedIndex = LearningExpressionLogic.Index(learningExpressions)
         cachedCardIndex = ParagraphCards.Index(
             expressions: learningExpressions,
             notes: paragraphNotes.map {
@@ -407,10 +399,12 @@ struct StudyView: View {
                 }
             case .answer(let note):
                 guard let target = host(note.sentencePosition) else { break }
-                let stored = try store.addParagraphNote(
+                try store.addParagraphNote(
                     episodeId: episodeId, sentenceId: target.id,
                     question: note.question, answer: note.answer)
-                paragraphNotes.append(stored)
+                // Through the refresh, so the card index the rows draw from includes
+                // the new note. Appending to `paragraphNotes` alone left it out.
+                refreshExpressionCaches()
                 // Opened, so the answer is on screen rather than behind a summary
                 // row you would have to notice and tap.
                 expandedCardSentenceIds.insert(target.id)
@@ -459,9 +453,13 @@ struct StudyView: View {
         do {
             if let stored = try store.addManualExpression(
                 episodeId: episodeId, sentenceId: sentence.id, expression: dto, request: request) {
-                manualExpressions.append(store.expressionDTO(stored))
-                // Open it, so the answer is visible without hunting for a highlight.
-                expandedExpressionID = manualExpressions.last?.id
+                // Through the refresh, so the highlight index and the card index both
+                // see the new expression.
+                refreshExpressionCaches()
+                // Opened, so the answer is on screen rather than behind a summary row
+                // you would have to notice and tap.
+                expandedCardSentenceIds.insert(sentence.id)
+                expandedExpressionID = stored.expressionId
             }
         } catch {
             noteError = error.localizedDescription
@@ -612,9 +610,8 @@ private enum AudioRefreshState: Equatable {
 
 private struct StudyWorkspace: View {
     let episode: EpisodeDTO?
-    let visible: [SentenceDTO]
+    let sentences: [SentenceDTO]
     let current: SentenceDTO?
-    @Binding var query: String
     let audioRefreshState: AudioRefreshState
     let following: Bool
     @ObservedObject var player: LocalAudioPlayback
@@ -699,18 +696,7 @@ private struct StudyWorkspace: View {
                 bottomInset: mode.showsPlaybackControls ? 140 : 32
             )
 
-            // Floats over the transcript at the top, so searching does not require
-            // scrolling back to find the field. It used to be the first item INSIDE
-            // the scroll view, which meant a search box you could only reach from
-            // the top of a four-hour transcript.
-            VStack {
-                SearchInput(query: $query)
-                    .padding(.horizontal, compact ? NXSpacing.x4 : NXSpacing.x8)
-                    .padding(.top, NXSpacing.x2)
-                Spacer(minLength: 0)
-            }
-
-            // Also floating, and pinned above the dock rather than sitting at the
+            // Floating, and pinned above the dock rather than sitting at the
             // end of the transcript — where you had to scroll to the bottom to
             // find the button that takes you back to the middle.
             if !following {
@@ -753,9 +739,9 @@ private struct StudyWorkspace: View {
                 transcriptContent
                     .frame(maxWidth: contentMaxWidth, alignment: .leading)
                     .padding(.horizontal, horizontalPadding)
-                    // Clears the floating search field, so the first sentence is
-                    // never hidden beneath it at rest.
-                    .padding(.top, 64)
+                    // Breathing room under the header. Was 64 to clear a floating
+                    // search field; with the field gone that much is dead space.
+                    .padding(.top, NXSpacing.x4)
                     .padding(.bottom, bottomInset)
                     .frame(maxWidth: .infinity)
             }
@@ -770,7 +756,7 @@ private struct StudyWorkspace: View {
     private var transcriptContent: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x6) {
             TranscriptBlock(
-                sentences: visible,
+                sentences: sentences,
                 current: current,
                 onSentenceTap: onSentenceTap,
                 onShadow: onShadow,
@@ -1551,40 +1537,6 @@ private struct VoiceActivityIcon: View {
     }
 }
 
-private struct SearchInput: View {
-    @Binding var query: String
-    @FocusState private var focused: Bool
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(spacing: NXSpacing.x2) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(focused ? NXColor.primary : NXColor.textTertiary(scheme))
-            TextField("Search transcript", text: $query)
-                .font(NXFont.body)
-                .focused($focused)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if !query.isEmpty {
-                Button {
-                    query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, NXSpacing.x3)
-        .frame(height: 40)
-        .background(NXColor.surface1(scheme), in: RoundedRectangle(cornerRadius: NXRadius.control))
-        .modifier(NXFocusModifier(focused: focused))
-    }
-}
-
 private struct TranscriptBlock: View {
     let sentences: [SentenceDTO]
     let current: SentenceDTO?
@@ -1640,7 +1592,10 @@ private struct TranscriptBlock: View {
                     .padding(.bottom, NXSpacing.x2)
             }
             if sentences.isEmpty {
-                Text("No transcript matches this search.")
+                // Reachable only for an episode with no transcript at all. It used
+                // to also cover a search that matched nothing, which is why it read
+                // as being about a search.
+                Text("\u{8fd9}\u{4e2a}\u{8282}\u{76ee}\u{8fd8}\u{6ca1}\u{6709}\u{6587}\u{7a3f}\u{3002}")
                     .font(NXFont.body)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .padding(.vertical, NXSpacing.x4)

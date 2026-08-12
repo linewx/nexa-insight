@@ -24,13 +24,6 @@ final class StudyViewModelTests: XCTestCase {
         XCTAssertEqual(vm.currentSentence(sentences: lines, cursorMs: 999)?.id, 0)
     }
 
-    func testSearchFiltersBilingual() {
-        let vm = StudyViewModel()
-        XCTAssertEqual(vm.search("再见", in: lines).map(\.id), [2])
-        XCTAssertEqual(vm.search("how", in: lines).map(\.id), [1])
-        XCTAssertEqual(vm.search("", in: lines).count, 3)
-    }
-
     func testManualScrollLeavesFollowThenSyncRestores() {
         let vm = StudyViewModel()
         XCTAssertTrue(vm.following)

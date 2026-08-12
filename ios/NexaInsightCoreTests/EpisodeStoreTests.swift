@@ -298,4 +298,49 @@ final class ParagraphNoteStoreTests: XCTestCase {
 
         XCTAssertEqual(s.learningExpressions(for: 1).count, 1, "an auto row must survive")
     }
+
+    /// The round trip the transcript rows actually draw from: delete, re-read the
+    /// store, rebuild the card index.
+    ///
+    /// Both deletes worked at the store layer and neither reached the screen. The
+    /// note branch never rebuilt the index, and the expression branch was rebuilding
+    /// from an init-time snapshot unioned with this sitting's additions — and since
+    /// `learningExpressions` already returns the manual rows, a card made in an
+    /// earlier sitting sat in the immutable half and came straight back.
+    func testDeletedCardsLeaveTheRebuiltCardIndex() throws {
+        let s = try store()
+        _ = try s.saveBundle(bundle(), localAudioPath: nil)
+        let dto = LearningExpressionDTO(
+            id: 0, text: "Hi", kind: .phrase, type: .idiom, chinese: "\u{55e8}",
+            pronunciation: nil, example: "Hi there", exampleChinese: "\u{55e8}")
+        let expression = try XCTUnwrap(
+            try s.addManualExpression(episodeId: 1, sentenceId: 10, expression: dto, request: nil))
+        let note = try s.addParagraphNote(
+            episodeId: 1, sentenceId: 10, question: "\u{4e3a}\u{4ec0}\u{4e48}", answer: "\u{56e0}\u{4e3a}")
+
+        func rebuild() -> ParagraphCards.Index {
+            ParagraphCards.Index(
+                expressions: s.learningExpressions(for: 1),
+                notes: s.paragraphNotes(for: 1).map {
+                    (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+                })
+        }
+
+        // This bundle carries no automatic expressions, so the paragraph holds
+        // exactly the two hand-made cards. Auto rows surviving a delete is pinned
+        // by testAutoExpressionsCannotBeDeleted.
+        XCTAssertEqual(rebuild().cards(for: 10).count, 2)
+
+        try s.deleteParagraphNote(note.noteId)
+        XCTAssertFalse(
+            rebuild().cards(for: 10).contains { $0.id == "n\(note.noteId)" },
+            "a deleted note must not survive the rebuild")
+
+        try s.deleteManualExpression(expression.expressionId)
+        XCTAssertFalse(
+            rebuild().cards(for: 10).contains { $0.id == "e\(expression.expressionId)" },
+            "a deleted manual expression must not come back from a stale snapshot")
+
+        XCTAssertTrue(rebuild().cards(for: 10).isEmpty)
+    }
 }
