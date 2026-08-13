@@ -221,26 +221,21 @@ struct StudyView: View {
                 })
             }
         }
-        // Turns arrive on the controller's transcript, which is the whole episode's and
-        // shared with listening mode. Watching its count and taking the tail is how the
-        // reading conversation picks out the turns belonging to this hold — the
-        // controller has no notion of which paragraph a turn was about.
-        .onChange(of: liveSession?.controller?.transcript.count ?? 0) { old, new in
-            guard readingAsk != nil, new > old,
-                  let all = liveSession?.controller?.transcript else { return }
-            for turn in all.suffix(new - old) {
-                switch turn.role {
-                case .user: readingAsk?.heard(turn.text)
-                case .assistant: readingAsk?.answered(turn.text)
-                case .system: break
+        // Watching the controller has to happen in a view that OBSERVES it. `@State`
+        // holds a reference without subscribing to objectWillChange, so an `.onChange`
+        // on `liveSession?.controller?.transcript` here would never fire — this body is
+        // not re-evaluated when the controller publishes. That is why DiscussionBar
+        // takes an @ObservedObject, and why this needs its own observer.
+        .background {
+            if let controller = liveSession?.controller {
+                ReadingTurnObserver(controller: controller, active: readingAsk != nil) { event in
+                    switch event {
+                    case let .heard(text): readingAsk?.heard(text)
+                    case let .answered(text): readingAsk?.answered(text)
+                    case .turnEnded: readingAsk?.finished()
+                    }
                 }
             }
-        }
-        // The turn is over: land on idle so a follow-up is possible, and say so when
-        // nothing was heard rather than going quiet.
-        .onChange(of: liveSession?.controller?.floor) { _, floor in
-            guard readingAsk != nil, floor != .teacher, floor != .user else { return }
-            readingAsk?.finished()
         }
         // Bound to the value, not `.constant(...)`: a constant binding cannot be
         // written back, so dismissing left `noteError` set and the alert could
@@ -1001,6 +996,52 @@ private struct PressableStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Turns the controller's published changes into reading-conversation events.
+///
+/// Exists because of an ownership detail with teeth: `StudyView` holds the session in
+/// `@State`, which keeps a reference but does NOT subscribe to an ObservableObject. An
+/// `.onChange(of: controller.transcript.count)` written there never fires, because that
+/// body is not re-evaluated when the controller publishes — the conversation would have
+/// stayed empty on screen while working perfectly underneath. Observing requires a view
+/// that declares @ObservedObject, so this is that view.
+///
+/// Renders nothing; it is mounted in a `.background` purely to have somewhere to observe
+/// from.
+private struct ReadingTurnObserver: View {
+    enum Event {
+        case heard(String)
+        case answered(String)
+        case turnEnded
+    }
+
+    @ObservedObject var controller: ClassroomController
+    /// False when no conversation is open, so turns from listening mode's quick-ask are
+    /// ignored rather than appended to a conversation that does not exist.
+    let active: Bool
+    let onEvent: (Event) -> Void
+
+    var body: some View {
+        Color.clear
+            // The transcript is the whole episode's and shared with listening mode, so
+            // only the newly appended tail belongs to this hold.
+            .onChange(of: controller.transcript.count) { old, new in
+                guard active, new > old else { return }
+                for turn in controller.transcript.suffix(new - old) {
+                    switch turn.role {
+                    case .user: onEvent(.heard(turn.text))
+                    case .assistant: onEvent(.answered(turn.text))
+                    case .system: break
+                    }
+                }
+            }
+            // The floor leaving both the learner and the teacher is the turn ending.
+            .onChange(of: controller.floor) { _, floor in
+                guard active, floor != .teacher, floor != .user else { return }
+                onEvent(.turnEnded)
+            }
     }
 }
 
