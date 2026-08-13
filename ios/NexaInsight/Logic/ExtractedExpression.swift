@@ -28,39 +28,6 @@ struct ExtractedExpression: Equatable {
     var sentencePosition: Int?
 }
 
-/// What the learner was asking for.
-///
-/// A spoken question about a paragraph is not always about a word. "What is this
-/// arguing" and "why the passive here" deserve an answer, not a vocabulary card —
-/// and before this existed, extraction threw `noUsableExpression` on both, so every
-/// question that was not about a phrase simply failed.
-enum QuestionIntent: String, Equatable {
-    /// A word or phrase to learn: becomes a highlighted expression card.
-    case vocabulary
-    /// Anything else about the passage: becomes a Q&A note with no highlight.
-    case comprehension
-
-    /// Unknown values fall to comprehension: an answer shown as a note is useful,
-    /// while an answer discarded because the label was unrecognised is not.
-    init(fallbackFrom raw: String?) {
-        self = QuestionIntent(rawValue: raw?.lowercased() ?? "") ?? .comprehension
-    }
-}
-
-/// One answered question about a paragraph.
-struct ParagraphAnswer: Equatable {
-    var question: String
-    var answer: String
-    var sentencePosition: Int?
-}
-
-/// What came back for a spoken question: either vocabulary to highlight, or an
-/// answer to keep as a note.
-enum ExtractionOutcome: Equatable {
-    case vocabulary([ExtractedExpression])
-    case answer(ParagraphAnswer)
-}
-
 enum ExtractionParseError: LocalizedError, Equatable {
     case notJSON
     case noUsableExpression
@@ -114,37 +81,6 @@ enum ExtractionResponse {
 
     /// Routes one reply to either a vocabulary card or a kept answer.
     ///
-    /// Two ways to end up as an answer: the model says the question was about
-    /// comprehension, or it claimed vocabulary but produced nothing usable while
-    /// still answering. The second case is the one that used to throw — a real
-    /// answer discarded because it came with no phrase attached.
-    static func outcome(_ raw: String, candidates: [String]) throws -> ExtractionOutcome {
-        let cleaned = unfenced(raw)
-        guard let data = cleaned.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { throw ExtractionParseError.notJSON }
-
-        let intent = QuestionIntent(fallbackFrom: root["intent"] as? String)
-        let answerText = (root["answer"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let questionText = (root["question"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if intent == .vocabulary, let expressions = try? parse(raw, candidates: candidates) {
-            return .vocabulary(expressions)
-        }
-
-        guard let answerText, !answerText.isEmpty else {
-            throw ExtractionParseError.noUsableExpression
-        }
-        // The model transcribes the spoken question back so the card can show what
-        // was asked; without it the answer would sit there unattributed.
-        let reported = (root["sentence_position"] as? Int)
-            ?? (root["sentence_position"] as? String).flatMap(Int.init)
-        return .answer(ParagraphAnswer(
-            question: questionText?.isEmpty == false ? questionText! : "",
-            answer: answerText,
-            sentencePosition: reported.flatMap { candidates.indices.contains($0) ? $0 : nil }))
-    }
-
     /// - Parameter candidates: the lines offered to the model, in the order they
     ///   were numbered. A spoken question does not say which line it is about, so
     ///   several are sent and `sentence_position` indexes into this list. An

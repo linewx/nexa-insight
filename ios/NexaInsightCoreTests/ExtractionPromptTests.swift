@@ -3,7 +3,7 @@ import XCTest
 
 final class ExtractionPromptTests: XCTestCase {
     func testNativeMaterialAsksForTheListeningTypes() {
-        let prompt = ExtractionPrompt.instruction(materialKind: "native", request: nil)
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
         XCTAssertTrue(prompt.contains("reduction"))
         XCTAssertTrue(prompt.contains("ellipsis"))
         // Teaching-only types must not leak in: they ask for something the learner
@@ -12,62 +12,79 @@ final class ExtractionPromptTests: XCTestCase {
     }
 
     func testTeachingMaterialAsksForTheSpeakingTypes() {
-        let prompt = ExtractionPrompt.instruction(materialKind: "teaching", request: nil)
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "teaching")
         XCTAssertTrue(prompt.contains("collocation"))
-        XCTAssertTrue(prompt.contains("when_to_use"))
         XCTAssertFalse(prompt.contains("reduction"))
     }
 
     func testUnknownMaterialKindFallsBackToNative() {
-        // Episodes imported before material classification carry no kind, and the
-        // backend defaults them to native too.
-        let prompt = ExtractionPrompt.instruction(materialKind: "", request: nil)
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "")
         XCTAssertTrue(prompt.contains("reduction"))
     }
 
+    // The load-bearing part of every extraction prompt. Without it the first version
+    // returned greetings and literal domain nouns on every source.
     func testRejectListIsAlwaysPresent() {
-        // The load-bearing part: without it the model returned "welcome back" and
-        // "thanks so much" on every source.
-        for kind in ["native", "teaching"] {
-            let prompt = ExtractionPrompt.instruction(materialKind: kind, request: nil)
-            XCTAssertTrue(prompt.contains("REJECT"), "missing reject rules for \(kind)")
-            XCTAssertTrue(prompt.contains("welcome back"))
-            XCTAssertTrue(prompt.contains("at most 6 words"))
+        for kind in ["native", "teaching", "nonsense"] {
+            let prompt = ExtractionPrompt.conversationRules(materialKind: kind)
+            XCTAssertTrue(prompt.contains("REJECT"), "missing for \(kind)")
+            XCTAssertTrue(prompt.contains("welcome back"), "missing for \(kind)")
         }
     }
 
-    func testLearnerRequestIsAppendedAndMarkedAsOverriding() {
-        let prompt = ExtractionPrompt.instruction(materialKind: "native", request: "\u{53ea}\u{8bb2}\u{65f6}\u{6001}")
-        XCTAssertTrue(prompt.contains("\u{53ea}\u{8bb2}\u{65f6}\u{6001}"))
-        XCTAssertTrue(prompt.contains("overrides"))
-        // Last, so it is the most recent instruction the model reads — and after
-        // the reject list, which it is explicitly told not to override.
-        XCTAssertTrue(prompt.hasSuffix("field format."), "ends with: \(prompt.suffix(40))")
-        let requestIndex = prompt.range(of: "specifically asked")?.lowerBound
-        let rejectIndex = prompt.range(of: "REJECT")?.lowerBound
-        XCTAssertNotNil(requestIndex)
-        XCTAssertNotNil(rejectIndex)
-        XCTAssertTrue(rejectIndex! < requestIndex!)
+    // The instruction this whole path exists for. A conversation that taught nothing
+    // durable must be allowed to leave nothing behind — every question becoming a card
+    // is what filled the stack with noise.
+    func testKeepingNothingIsExplicitlyPermitted() {
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
+        XCTAssertTrue(prompt.contains("KEEP NOTHING"))
+        XCTAssertTrue(prompt.contains("not a failure"))
+        XCTAssertTrue(prompt.contains("empty"))
     }
 
-    func testBlankRequestIsIgnoredRatherThanSentAsAnEmptyDemand() {
-        let blank = ExtractionPrompt.instruction(materialKind: "native", request: "   ")
-        let none = ExtractionPrompt.instruction(materialKind: "native", request: nil)
-        XCTAssertEqual(blank, none)
-        XCTAssertFalse(blank.contains("specifically asked"))
+    // A follow-up chain about one thing is one card. Recording per turn would shatter
+    // a single understanding into three partial cards.
+    func testFollowUpChainIsAskedForAsOneCard() {
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
+        XCTAssertTrue(prompt.contains("ONE card"))
     }
 
-    func testSingleSentenceExtractionMayReturnNothing() {
-        // The batch prompt caps items per 40 sentences; for one line the risk is
-        // the opposite — inventing something to avoid an empty answer.
-        let prompt = ExtractionPrompt.instruction(materialKind: "native", request: nil)
-        XCTAssertTrue(prompt.contains("empty array"))
+    // Both shapes must be described, or the model picks one and every question about
+    // meaning comes back as a failed vocabulary extraction — the original bug.
+    func testBothCardShapesAreOffered() {
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
+        XCTAssertTrue(prompt.contains("\"kind\":\"vocabulary\""))
+        XCTAssertTrue(prompt.contains("\"kind\":\"question\""))
+        XCTAssertTrue(prompt.contains("\"points\""))
     }
 
+    // The vocabulary shape has to actually list its fields. It once said "the fields
+    // specified below" and then never specified them, so the parser's required fields
+    // were never asked for.
+    func testVocabularyFieldsAreSpelledOut() {
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
+        for field in ["chinese", "example_chinese", "pronunciation", "formality"] {
+            XCTAssertTrue(prompt.contains(field), "missing \(field)")
+        }
+    }
+
+    // Batch extraction wraps items in "expressions", this path in "points". The shared
+    // fields block must not name either, or it contradicts its caller.
+    func testTheSharedFieldsBlockDoesNotNameAWrappingKey() {
+        XCTAssertFalse(ExtractionPrompt.fields.contains("expressions"))
+    }
+
+    // Offsets from the model were wrong ~97% of the time in the pipeline, so they are
+    // computed from the text instead and must never be requested.
     func testOffsetsAreNeverRequested() {
-        // Model-reported offsets were wrong ~97% of the time; the device anchors by
-        // text instead, so asking for them would only invite trusting them.
-        let prompt = ExtractionPrompt.instruction(materialKind: "teaching", request: nil)
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
         XCTAssertTrue(prompt.contains("Do NOT return character offsets"))
+    }
+
+    // An answer read a week later cannot lean on the conversation that produced it.
+    func testAnswersMustStandAloneLater() {
+        let prompt = ExtractionPrompt.conversationRules(materialKind: "native")
+        XCTAssertTrue(prompt.contains("read cold"))
+        XCTAssertTrue(prompt.contains("as mentioned above"))
     }
 }

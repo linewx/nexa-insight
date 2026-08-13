@@ -56,74 +56,15 @@ enum ExtractionPrompt {
         Give common_mistake (the wrong Chinese-English attempt).
         """
 
+    /// The per-item fields. Deliberately says nothing about the wrapping key: batch
+    /// extraction wants "expressions", a reading conversation wants "points", and
+    /// naming one here contradicted the other at the point of use.
     static let fields = """
         For each item return: text, type, chinese, pronunciation (IPA, single \
         words only, no slashes, else null), heard_as, restored, why_hard (one \
         Chinese sentence on why it defeats a listener or reader), when_to_use, \
         common_mistake, formality ("formal"|"neutral"|"spoken"|"technical"), \
-        example (verbatim from the sentence), example_chinese. \
-        Return JSON with key "expressions".
-        """
-
-    /// Asks the model which line the learner meant.
-    ///
-    /// Spoken questions refer to the transcript loosely — "that what-clause a
-    /// moment ago" — because by the time you notice you did not follow a line, it
-    /// has already scrolled past. So the nearby lines travel with the audio and the
-    /// model picks; `sentence_position` is its answer.
-    static let locateFromContext = """
-        The learner is listening and asked about something they just heard, so the \
-        line they mean is usually NOT the last one — it is one they have already \
-        passed. The numbered lines below are the ones around their current \
-        position. Decide which single line the question is about and return its \
-        number as sentence_position. Extract only from THAT line. If the question \
-        is about English in general rather than any of these lines, omit \
-        sentence_position.
-        """
-
-    /// - Parameters:
-    ///   - materialKind: "teaching" selects the say-it-yourself types; anything
-    ///     else assumes native-speed material, matching the backend's default.
-    ///   - request: what the learner asked for. Placed last and marked as
-    ///     overriding, because it is the whole point of extracting on demand —
-    ///     a learner who asks about the tense does not want the idiom.
-    ///   - spokenQuestion: true when the request arrives as audio rather than
-    ///     text, which also means the target line has to be inferred.
-    static func instruction(
-        materialKind: String,
-        request: String?,
-        spokenQuestion: Bool = false
-    ) -> String {
-        var prompt = instruction(materialKind: materialKind, request: request)
-        if spokenQuestion {
-            prompt += "\n\n" + spokenQuestionRules + "\n\n" + locateFromContext
-        }
-        return prompt
-    }
-
-    /// A spoken question is not always about a word, so the reply is routed rather
-    /// than assumed. Asking for one shape only meant every question about meaning,
-    /// grammar or argument came back as a failed vocabulary extraction.
-    static let spokenQuestionRules = """
-        The learner's question arrives as audio. Answer WHAT THEY ACTUALLY ASKED — \
-        it may be about a word, or about grammar, or about what the passage means, \
-        or anything else.
-
-        Decide which it is and return one of two shapes.
-
-        If they are asking about a word or phrase to learn, return: \
-        {"intent":"vocabulary","question":"<their question in Chinese>", \
-        "expressions":[ … as specified above … ]}
-
-        For anything else — meaning, grammar, argument, background, why a choice was \
-        made — return: {"intent":"comprehension", \
-        "question":"<their question, transcribed in Chinese>", \
-        "answer":"<a direct answer in Chinese, 1-3 sentences>", \
-        "sentence_position":<the line it is about>}
-
-        Answer the question rather than describing it, and never repeat the audio \
-        back as the answer. If you can answer but cannot isolate a phrase, use the \
-        comprehension shape — an answer is always better than nothing.
+        example (verbatim from the sentence), example_chinese.
         """
 
     /// What to keep from a finished reading conversation, if anything.
@@ -160,9 +101,12 @@ enum ExtractionPrompt {
 
             Return {"points":[ … ]} where each point is either
 
-            a vocabulary card, when the exchange was about a word or phrase to learn:
-            {"kind":"vocabulary", … the expression fields specified below … , \
-            "question":"<what the learner asked, in Chinese>"}
+            a vocabulary card, when the exchange was about a word or phrase to learn, \
+            carrying the fields below plus \
+            "question":"<what the learner asked, in Chinese>" and \
+            "kind":"vocabulary"
+
+            \(fields)
 
             \(types)
 
@@ -179,35 +123,4 @@ enum ExtractionPrompt {
             """
     }
 
-    private static func instruction(materialKind: String, request: String?) -> String {
-        let framing = materialKind == "teaching"
-            ? """
-              This line is from an English-teaching podcast and the learner's goal \
-              is to SAY these things. Extract, each as exactly one type:
-              \(teachingTypes)
-              """
-            : """
-              This line runs at native speed and was made for native speakers. The \
-              learner can already read slowly; what defeats them is catching and \
-              parsing real speech. Extract only what would make a learner MISS or \
-              MISREAD it, each as exactly one type:
-              \(nativeTypes)
-              """
-
-        var parts = [
-            "Extract what is worth studying from ONE sentence of a transcript.",
-            framing,
-            fields,
-            rejectRules,
-        ]
-        if let request, !request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            parts.append("""
-                The learner specifically asked: "\(request)". \
-                This overrides the type preferences above — answer what they asked \
-                about, even if it is not what you would have picked. Still obey the \
-                reject list and the field format.
-                """)
-        }
-        return parts.joined(separator: "\n\n")
-    }
 }
