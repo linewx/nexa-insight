@@ -458,4 +458,87 @@ final class ClassroomControllerTests: XCTestCase {
         c.handleRealtimeEvent(.responseAudioTranscriptDone("hello learner"))
         XCTAssertEqual(c.transcript.map(\.role), [.user, .assistant])
     }
+
+    // MARK: - Reading
+
+    // The whole reason the scene enum exists. Reading must leave the podcast where it
+    // was: the answer ending is an invitation to follow up, and starting playback over
+    // the reply is the opposite of that. Under `inLive: Bool` there was no way to say
+    // this without also claiming Live's always-open mic.
+    func testReadingDoesNotResumePlaybackAfterAnswer() {
+        let (c, playback, _, _) = make()
+        c.pressReadingAsk(atMs: 2000)
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseReadingAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertEqual(c.floor, .teacher)
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertFalse(playback.didPlay, "reading must not start playing on its own")
+        XCTAssertNotEqual(c.floor, .player)
+    }
+
+    // Self-study is the only scene that resumes, and this is the counterpart to the
+    // test above: the same event sequence, the other scene, the opposite outcome.
+    func testSelfStudyStillResumesSoTheChangeDidNotLeak() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertTrue(playback.didPlay, "listening mode must keep resuming as before")
+        XCTAssertEqual(c.floor, .player)
+    }
+
+    // The question is about the paragraph under the finger, not wherever playback got
+    // to. In reading those routinely differ — you read ahead, or nothing is playing.
+    func testReadingAnchorsContextToTheParagraphNotTheCursor() {
+        let (c, playback, _, box) = make()
+        playback.currentMs = 500          // audio sits early
+        c.pressReadingAsk(atMs: 3000)     // finger is on a much later line
+        XCTAssertEqual(box.refreshes.last, 3000)
+        XCTAssertEqual(c.frozenPositionMs, 3000)
+    }
+
+    // A follow-up keeps answering about the same paragraph: the anchor survives the
+    // first answer, so the second turn does not drift to wherever the cursor is.
+    func testFollowUpKeepsTheSameAnchor() {
+        let (c, playback, _, box) = make()
+        playback.currentMs = 500
+        c.pressReadingAsk(atMs: 3000)
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseReadingAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        c.handleRealtimeEvent(.responseDone)
+        c.pressReadingAsk(atMs: 3000)     // follow up on the same paragraph
+        XCTAssertEqual(box.refreshes.last, 3000)
+        XCTAssertEqual(c.frozenPositionMs, 3000)
+    }
+
+    // Abandoning a reading question must not start playback. Quick-ask's cancel
+    // resumes, because there the podcast was playing and the press interrupted it;
+    // reading was not playing, so resuming would be a surprise.
+    func testCancelReadingAskDoesNotResumePlayback() {
+        let (c, playback, transport, _) = make()
+        c.pressReadingAsk(atMs: 2000)
+        c.handleRealtimeEvent(.speechStarted)
+        let cancels = transport.cancelledTurns
+        c.cancelReadingAsk()
+        XCTAssertGreaterThan(transport.cancelledTurns, cancels, "the turn must be dropped")
+        XCTAssertFalse(playback.didPlay, "an abandoned question must not start playback")
+    }
+
+    // Reading closes the mic once the server has the turn, exactly as quick-ask does.
+    // Only Live holds it open; if reading inherited that, the teacher's own voice
+    // would trip the VAD and chain another answer (the speaker-mode failure).
+    func testReadingClosesMicAfterCommit() {
+        let (c, _, transport, _) = make()
+        c.pressReadingAsk(atMs: 2000)
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseReadingAsk()
+        let stops = transport.stoppedListening
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertGreaterThan(transport.stoppedListening, stops, "reading must close the mic")
+    }
 }

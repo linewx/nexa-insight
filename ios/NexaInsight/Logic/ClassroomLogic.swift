@@ -199,6 +199,33 @@ func playbackTargetPosition(_ name: PlaybackTool, _ args: [String: Double], _ cu
 // waiting on the learner, or the gap between quick-ask turns).
 enum FloorHolder: Equatable { case player, user, teacher, idle }
 
+/// How the learner is working, which decides two things a single bool could not.
+///
+/// It replaced `inLive: Bool`, where "resume the podcast when the teacher finishes"
+/// was written as `!inLive`. Reading needs the podcast to stay exactly where it was
+/// — you asked about a line you are looking at, not about where playback happens to
+/// be — but under a bool the only way to say "don't resume" was to be Live, which
+/// also means holding the mic open for barge-in. The two properties are independent,
+/// so they are now two properties.
+enum ClassroomScene: Equatable {
+    /// Listening, asking by long-press. The podcast is the point, so it comes back
+    /// as soon as the answer ends.
+    case selfStudy
+    /// A continuous class. The mic stays open so the learner can cut in, and the
+    /// podcast waits until they ask for it.
+    case live
+    /// Reading, asking about a paragraph. Nothing auto-resumes: the answer ending is
+    /// an invitation to follow up, not a cue to start playing over the reply.
+    case reading
+
+    /// Whether the mic stays open regardless of who holds the floor. Only a
+    /// continuous class does; the other two open it for the duration of a turn.
+    var holdsMicOpen: Bool { self == .live }
+
+    /// Whether the podcast resumes by itself once the teacher stops talking.
+    var resumesPlaybackAfterAnswer: Bool { self == .selfStudy }
+}
+
 enum FloorEvent {
     case userTookFloor                          // long-press down, or Live VAD hears the learner
     case userReleased                           // long-press up; see note below

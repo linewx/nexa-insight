@@ -71,9 +71,11 @@ final class ClassroomController: ObservableObject {
     // Who currently holds the floor. Drives visuals; every grant enforces the
     // single-voice rule. Starts on the podcast (self-study, source playing).
     @Published var floor: FloorHolder = .player
-    // Quick-ask (long-press) resumes playback when the teacher finishes; Live
-    // stays idle and waits for the learner. This distinguishes the two.
-    private var inLive = false
+    // Which way the learner is working right now. Was `inLive: Bool`, which could
+    // only express two of the three: it made "resume when the teacher finishes" mean
+    // "not Live", so reading — where the podcast must stay put — had no way to say so
+    // without also inheriting Live's open mic.
+    private(set) var scene: ClassroomScene = .selfStudy
     // Whether the server VAD actually heard speech during the current push-to-talk
     // hold. A press with nothing said must not hand the floor to the teacher —
     // there will be no response, so the floor would stick on .teacher forever.
@@ -188,9 +190,9 @@ final class ClassroomController: ObservableObject {
             onContextRefresh(frozenPositionMs ?? cursor())
             // In Live nothing else claims the floor when the learner starts
             // talking, so it would stay .idle and the UI would still read "just
-            // start speaking" while they already are. Quick-ask already took the
-            // floor on press, so only Live needs this.
-            if inLive { grantFloor(to: .user, resumeAtMs: nil) }
+            // start speaking" while they already are. The press-driven scenes
+            // (quick-ask, reading) already took the floor on press.
+            if scene == .live { grantFloor(to: .user, resumeAtMs: nil) }
         case .inputAudioCommitted:
             // The server has taken this turn, so the mic has done its job. In
             // quick-ask close it now — the finger is already up, and leaving it
@@ -201,7 +203,7 @@ final class ClassroomController: ObservableObject {
             // when our local VAD never reported speech_started (seen on device), in
             // which case a response IS coming and the floor must be the teacher's,
             // not held at .idle.
-            guard !inLive else { break }
+            guard !scene.holdsMicOpen else { break }
             // Still holding: the server committed on a mid-sentence pause. Keep the
             // mic open and the floor with the learner — the rest of what they say
             // becomes another turn. Handing off here would cut them off.
@@ -255,10 +257,13 @@ final class ClassroomController: ObservableObject {
             // podcast never came back. A tool call during the answer may already
             // have taken the floor (e.g. a seek resumed playback); if so, leave it.
             guard floor == .teacher else { break }
-            // Live waits for the learner again; quick-ask resumes the podcast from
-            // where it was frozen. That branch IS the reducer's resumePlayback flag.
-            applyFloorEvent(.teacherFinished(resumePlayback: !inLive),
-                            resumeAtMs: inLive ? nil : frozenPositionMs)
+            // Only self-study resumes. Live waits for the learner; reading leaves the
+            // podcast where it was, because the answer ending is an invitation to
+            // follow up — starting playback over the reply is the opposite of that.
+            // This branch IS the reducer's resumePlayback flag.
+            let resumes = scene.resumesPlaybackAfterAnswer
+            applyFloorEvent(.teacherFinished(resumePlayback: resumes),
+                            resumeAtMs: resumes ? frozenPositionMs : nil)
         case let .toolCall(name, args, callId):
             // Dedupe by call_id so a call echoed in both the dedicated event and
             // response.done runs once. A nil call_id can't be tracked, so it runs
@@ -267,7 +272,7 @@ final class ClassroomController: ObservableObject {
                 guard !handledToolCallIds.contains(callId) else { return }
                 handledToolCallIds.insert(callId)
             }
-            NexaLog.log("TOOL \(name.rawValue) args=\(args) floor=\(self.floor) inLive=\(self.inLive)")
+            NexaLog.log("TOOL \(name.rawValue) args=\(args) floor=\(self.floor) scene=\(self.scene)")
             runPlaybackTool(name, args)
             transport.sendToolResult(callId: callId, ok: true)
         }
@@ -326,7 +331,7 @@ final class ClassroomController: ObservableObject {
     // grantFloor's side effects (see .inputAudioCommitted) can reuse the same rule
     // instead of poking the transport directly.
     private func applyMicGate() {
-        if inLive || floor == .user {
+        if scene.holdsMicOpen || floor == .user {
             transport.beginListening()
         } else {
             transport.stopListening()
@@ -358,7 +363,7 @@ final class ClassroomController: ObservableObject {
     // teacher off and starts listening. There is no separate interrupt button.
     func pressQuickAsk() {
         NexaLog.log("pressQuickAsk cursor=\(self.cursor())")
-        inLive = false
+        scene = .selfStudy
         heardSpeechThisTurn = false
         committedThisTurn = false
         holdingQuickAsk = true
@@ -421,6 +426,45 @@ final class ClassroomController: ObservableObject {
         applyFloorEvent(.playbackRequested, resumeAtMs: resumeAt)
     }
 
+    // MARK: - Reading (hold a paragraph)
+
+    /// Hold a paragraph in reading mode: same push-to-talk turn as quick-ask, but the
+    /// question is about the line under the finger rather than wherever playback is.
+    ///
+    /// `atMs` is that paragraph's own start, not the cursor. In reading the two are
+    /// usually different — you scroll ahead of the audio, or the audio is not playing
+    /// at all — and the teacher answers about whichever line the context window is
+    /// centred on. Anchoring to the cursor would answer about a line you are not
+    /// looking at.
+    func pressReadingAsk(atMs: Int) {
+        NexaLog.log("pressReadingAsk atMs=\(atMs)")
+        scene = .reading
+        heardSpeechThisTurn = false
+        committedThisTurn = false
+        holdingQuickAsk = true
+        // Freeze at the paragraph, so a follow-up in the same conversation keeps
+        // answering about the same place even after several turns.
+        freeze(atMs, reason: .speechStarted)
+        onContextRefresh(atMs)
+        applyFloorEvent(.userTookFloor)
+    }
+
+    /// Release a reading hold. Identical to `releaseQuickAsk` — the difference between
+    /// the two scenes is not how a turn ends but what happens after the answer, which
+    /// `scene.resumesPlaybackAfterAnswer` decides in `.responseDone`.
+    func releaseReadingAsk() { releaseQuickAsk() }
+
+    /// Abandon a reading hold. Unlike quick-ask's cancel, this does NOT resume the
+    /// podcast: reading was not playing it in the first place, and starting playback
+    /// because a question was abandoned would be a surprise.
+    func cancelReadingAsk() {
+        holdingQuickAsk = false
+        heardSpeechThisTurn = false
+        committedThisTurn = false
+        transport.cancelTurn()
+        applyFloorEvent(.nothingSaid)
+    }
+
     // MARK: - Live (tap)
 
     // Enter: hand turns to the model's VAD (continuous), pause the podcast, and
@@ -428,10 +472,10 @@ final class ClassroomController: ObservableObject {
     // always-on-mic scene, so open the mic explicitly — it's disabled by default
     // (self-study keeps it closed so the podcast can't self-trigger the VAD).
     func enterLive() {
-        inLive = true
+        scene = .live
         transport.setTurnMode(.continuous)
         freeze(cursor(), reason: .paused)
-        // inLive is already true, so grantFloor opens the mic for us — Live keeps
+        // The scene is already .live, so grantFloor opens the mic for us — Live keeps
         // it open in every floor state. Entering Live holds playback: nobody has
         // the floor until the learner speaks.
         applyFloorEvent(.playbackHeld)
@@ -441,7 +485,7 @@ final class ClassroomController: ObservableObject {
     // return the transport to push-to-talk (the default outside Live).
     func exitLive() {
         let resumeAt = frozenPositionMs
-        inLive = false
+        scene = .selfStudy
         transport.setTurnMode(.pushToTalk)
         applyFloorEvent(.playbackRequested, resumeAtMs: resumeAt)
     }
