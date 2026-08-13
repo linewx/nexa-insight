@@ -320,7 +320,14 @@ struct StudyView: View {
     }
 
     private func endAsking() {
-        guard let controller = liveSession?.controller, readingAsk != nil else { return }
+        // Only a hold that is actually recording can be released. `onHoldEnd` fires on
+        // EVERY release — a scroll, a tap, a press too brief to pass the threshold —
+        // and with a finished conversation still open on this paragraph, releasing it
+        // again would strand the panel: phase would go to `waiting` while the floor
+        // stayed `.idle`, so the observer that lands it back on `idle` never fires and
+        // "在想…" would sit there forever.
+        guard let controller = liveSession?.controller,
+              readingAsk?.phase == .recording else { return }
         readingAsk?.released()
         controller.releaseReadingAsk()
     }

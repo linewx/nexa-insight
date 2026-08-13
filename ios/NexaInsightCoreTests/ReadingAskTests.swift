@@ -78,6 +78,21 @@ final class ReadingAskTests: XCTestCase {
         XCTAssertTrue(a.isEmpty)
     }
 
+    // `onHoldEnd` fires on EVERY release — a scroll, a tap, a press too brief to pass
+    // the threshold — so the caller must only release a hold that is actually recording.
+    // Releasing a finished conversation would move it to `waiting` while the floor sat
+    // at `.idle`, and the event that lands it back on `idle` would never arrive: the
+    // panel would show "thinking" forever. This pins the property the guard relies on.
+    func testOnlyARecordingHoldIsReleasable() {
+        var a = ask()
+        a.released(); a.heard("q"); a.answered("a"); a.finished()
+        XCTAssertEqual(a.phase, .idle)
+        XCTAssertNotEqual(a.phase, .recording, "a settled conversation must not look releasable")
+
+        a.held()
+        XCTAssertEqual(a.phase, .recording, "a real follow-up hold is releasable again")
+    }
+
     func testFollowUpRefusedWhileATurnIsInFlight() {
         var a = ask()
         a.released()
