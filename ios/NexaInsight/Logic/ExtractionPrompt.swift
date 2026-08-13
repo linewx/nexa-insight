@@ -126,6 +126,59 @@ enum ExtractionPrompt {
         comprehension shape — an answer is always better than nothing.
         """
 
+    /// What to keep from a finished reading conversation, if anything.
+    ///
+    /// The input is text, not audio: the realtime session already transcribed both
+    /// sides, so this reads what was actually said rather than listening again. One
+    /// less model hop, and one less chance to mishear.
+    ///
+    /// The load-bearing instruction is permission to keep NOTHING. Reading a
+    /// paragraph produces a lot of talk that is not worth a card — confirming a word
+    /// you already knew, asking where a name comes from, an aside that went nowhere.
+    /// The old path had no way to say so: every question became a card, so the stack
+    /// filled with "I asked about this once" and the real material was lost among it.
+    /// `rejectRules` already said this for batch extraction; it says it here too.
+    ///
+    /// One conversation yields at most a few points, and a follow-up chain usually
+    /// yields ONE: "what does that refer to" then "so why passive" is a single thing
+    /// understood, not two.
+    static func conversationRules(materialKind: String) -> String {
+        let types = materialKind == "teaching" ? teachingTypes : nativeTypes
+        return """
+            You are reviewing a finished exchange between a learner and their teacher \
+            about one paragraph of a transcript. Decide what — IF ANYTHING — is worth \
+            keeping as a study card.
+
+            KEEP NOTHING when the exchange taught nothing durable. Returning an empty \
+            array is a correct and common answer, not a failure. Reject: a word the \
+            learner turned out to already know; a fact about the world with no English \
+            in it; small talk; a question that was never really answered; anything \
+            they would not want to see again in a week. Do not invent a card to be \
+            helpful — an empty result is better than a card that wastes a review.
+
+            A follow-up chain about one thing is ONE card, not one per turn.
+
+            Return {"points":[ … ]} where each point is either
+
+            a vocabulary card, when the exchange was about a word or phrase to learn:
+            {"kind":"vocabulary", … the expression fields specified below … , \
+            "question":"<what the learner asked, in Chinese>"}
+
+            \(types)
+
+            or a question card, for anything else worth remembering — meaning, \
+            grammar, argument, background:
+            {"kind":"question","question":"<what they asked, in Chinese>", \
+            "answer":"<the answer as settled, in Chinese, 1-3 sentences>"}
+
+            The answer must be what the exchange CONCLUDED, written to be read cold in \
+            a week — not a transcript of how they got there, and not a reference to \
+            "as mentioned above".
+
+            \(rejectRules)
+            """
+    }
+
     private static func instruction(materialKind: String, request: String?) -> String {
         let framing = materialKind == "teaching"
             ? """
