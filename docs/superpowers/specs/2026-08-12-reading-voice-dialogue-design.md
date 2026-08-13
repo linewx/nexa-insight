@@ -133,6 +133,12 @@ than padding it"。**拒绝的能力已存在于代码里，只是没用在这�
 | 语音反馈 | 显示识别出的文字 |
 | 对话位置 | 就在段落下方展开 |
 | 播放行为 | 提问时暂停，答完**不自动继续** |
+| 打字提问 | **不做**，纯语音 |
+
+最后一条一度考虑过「隐蔽入口 + 默认不开启」，最终决定不做。这让 `NoteComposer` 那一整
+套（面板、打字路径、`onExtractNote` 的四层参数、`extracting` 指示）成为可以直接删除的
+死代码，而不是一条需要重新接上的路 —— 保留一个默认关闭且没人用的入口，只是把死代码
+换成了睡着的代码。
 
 ## 设计
 
@@ -199,7 +205,23 @@ than padding it"。**拒绝的能力已存在于代码里，只是没用在这�
 **「不记」必须在提示词里被明确许可。** 提炼提示词沿用 `ExtractionPrompt.rejectRules`
 同一套拒绝规则。同时 `noUsableExpression` 不再作为错误弹窗 —— 它是正常结论。
 
-### 五、错误处理
+### 五、顺带删除的死代码
+
+打字提问不做，所以这一整套可以直接删，不必保留一条进不去的路：
+
+- `NoteComposer` 整个面板（说话 + 打字两条路）
+- `onExtractNote` 的四层参数传递，及 `StudyView.swift` 里唯一那个把它接到 sheet 的
+  闭包
+- `extracting` / `extractingSentenceId` —— 加载指示从未渲染过。**注意**：新方案仍需
+  「等回答」的可见状态，但它属于 `ReadingAskSession`，不是复活这一个
+- `StudyMode.showsNoteControls` —— 只有它自己的测试引用它
+- `composingNote` / `noteRequestSentence` 两个 `@State`
+
+`extractNote(for:request:)`（打字路径的网络调用）随之删除。`extractSpokenNote` 则被
+realtime 对话取代，`OnDemandExtractionClient` 是否保留取决于提炼器最终走哪条调用 ——
+留待实现时定，因为它的解析与校验逻辑（`ExtractionResponse`）大概率仍要复用。
+
+### 六、错误处理
 
 | 情况 | 行为 |
 |---|---|
@@ -210,7 +232,7 @@ than padding it"。**拒绝的能力已存在于代码里，只是没用在这�
 | 提炼失败 | 对话内容已看过，静默丢弃不打扰 |
 | 扬声器外放 | 精读答完不续播且是一问一答，不存在 Live 的自激问题 |
 
-### 六、测试
+### 七、测试
 
 纯逻辑层：场景续播规则（**含精听行为不变**）、提炼器在「无值得记」时返回空、追问轮次
 的累积与锚定、转写事件到 UI 状态的映射。
@@ -234,5 +256,3 @@ bug 可能碰到精听。缓解手段是场景枚举 + 钉住精听行为的测�
 - **没有复习入口** —— 独立功能面，是知识点价值的关键（知识点的价值在重复看见）
 - **卡片默认折叠** —— 与复习入口一并考虑更合适
 - **提示文案在说谎**（`StudyView.swift:1589`）—— 一行文案，可随手修
-- **死代码清理** —— `NoteComposer`、`onExtractNote`、`extracting`、`showsNoteControls`。
-  若打字提问要保留，则 `NoteComposer` 需要重新接上而非删除；需先决定要不要打字入口
