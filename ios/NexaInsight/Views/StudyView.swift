@@ -185,6 +185,10 @@ struct StudyView: View {
             if player.currentMs >= Resume.minimumMs {
                 store.savePlaybackPosition(player.currentMs, for: episodeId)
             }
+            // Leaving ends the conversation, so a question asked on the way out still
+            // leaves its knowledge point behind. Without this the only way to keep
+            // anything would be to remember to tap 结束提问 first.
+            finishConversation()
         }
         .onChange(of: annotated) { _, showing in
             // A card left open with no highlight to anchor it would float free.
