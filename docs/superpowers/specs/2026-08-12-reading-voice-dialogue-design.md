@@ -256,3 +256,59 @@ bug 可能碰到精听。缓解手段是场景枚举 + 钉住精听行为的测�
 - **没有复习入口** —— 独立功能面，是知识点价值的关键（知识点的价值在重复看见）
 - **卡片默认折叠** —— 与复习入口一并考虑更合适
 - **提示文案在说谎**（`StudyView.swift:1589`）—— 一行文案，可随手修
+
+## 实现记录（2026-08-14）
+
+已实现并推送到 `feature/inline-intensive-reading`，567 个测试通过，设备构建成功。
+
+| 提交 | 内容 |
+|---|---|
+| `fd44abc` | `inLive: Bool` → `ClassroomScene` 三态枚举，+6 测试 |
+| `12ff9ed` | `ReadingAsk` 对话状态机，+9 测试 |
+| `56ac997` | `KnowledgePointExtractor`，允许什么都不记，+12 测试 |
+| `4e38538` | 接入 `StudyView`，删除旧路径（净 −651 行） |
+| `52e2f72` | 修：从真正观察 controller 的视图里观察 |
+| `487da9a` | 修：只释放真正在录音的长按 |
+| `f83167f` | 修：离开页面时确实结束对话 |
+| `5eb49b1` | 清理过期注释与 `showsNoteControls` |
+
+### 与设计的偏差
+
+**`ReadingAskSession` 最终叫 `ReadingAsk`，且是 struct 而非 class。** 它不需要身份，
+只需要状态，`@State` 持有一个值类型就够了。
+
+**旧的 HTTP 抽取路径整体删除**，比设计预期的更多：`extract(sentence:)`、
+`extract(audioURL:)`、`ask()`、`ExtractionResponse.outcome` 及
+`ExtractionOutcome`/`ParagraphAnswer`/`QuestionIntent` 三个类型、spoken-question 提示
+词规则。`ExtractionResponse.parse` 保留 —— 提炼器复用它的校验（六词上限、文本必须真实
+出现、pattern 保留但不高亮），这是设计里预期的那部分。`VoiceNoteRecorder` 一并删除。
+
+**新增 `ReadingTurnObserver`。** 设计没有预见到这个：`StudyView` 用 `@State` 持有
+session，而 `@State` 只持有引用、不订阅 `ObservableObject`，所以写在它 body 上的
+`.onChange(of: controller.transcript.count)` 永远不会触发。观察必须发生在声明了
+`@ObservedObject` 的视图里。
+
+### 实现中发现并修掉的四个 bug
+
+前三个是我自己刚写的代码，单测全绿也看不到 —— 它们是接线错误，不是逻辑错误：
+
+1. **对话面板会一直空着**（`52e2f72`）—— 上述 `@State` 不订阅的问题。长按能用、问题
+   能送到、老师会出声，但屏幕上什么都不出现。
+2. **面板会永久卡在「在想…」**（`487da9a`）—— `onHoldEnd` 在每次松手时都触发（滑动、
+   点击、过短的按压）。对话已结束时再释放一次，phase 走到 `waiting` 而 floor 停在
+   `.idle`，让它回到 `idle` 的事件永远不来。和滑动卡顿是同一个陷阱，高一层。
+3. **离开页面会静默丢失知识点**（`f83167f`）—— 提交信息声称「离开也会结束对话」，但那
+   个 `.onDisappear` 在同一次编辑里被 observer 的 `.background` 覆盖掉了。
+
+第四个在提示词里，是写测试时发现的（不是读代码发现的）：
+
+4. **词汇卡的字段从未被要求过** —— `conversationRules` 写着「the expression fields
+   specified below」然后根本没写。同时共用的 `fields` 结尾是
+   `Return JSON with key "expressions"`，与 `points` 结构矛盾 —— 现在它不指定任何外层
+   键，因为批量抽取和这条路径用的不是同一个。
+
+### 仍未验证（必须真机）
+
+- **老师语音是否真的播出** —— 有前科，见 `ptt-audio-unverified`
+- **外放下的行为** —— 本方案新增的风险点
+- **提炼质量** —— 「什么都不记」的判断是否合理，只能靠实际用
