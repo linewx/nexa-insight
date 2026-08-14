@@ -2,24 +2,16 @@ import XCTest
 @testable import NexaInsightCore
 
 final class StudyModeTests: XCTestCase {
-    func testListeningKeepsPlaybackControlsAndOffersNoNotes() {
+    func testListeningKeepsThePlaybackControls() {
         XCTAssertTrue(StudyMode.listening.showsPlaybackControls)
-        XCTAssertFalse(StudyMode.listening.showsNoteControls)
     }
 
-    func testReadingOffersNotesWithoutTheFullPlaybackSet() {
-        // Reading still plays single sentences; what it drops is loop, speed,
-        // shadow and previous/next, which are ear work.
+    // Reading still plays single sentences; what it drops is loop, speed, shadow and
+    // previous/next, which are ear work. Asking a question is no longer part of this
+    // distinction — reading asks by holding a paragraph, which is a gesture rather than
+    // a control, so there is nothing for a flag to switch on.
+    func testReadingDropsTheFullPlaybackSet() {
         XCTAssertFalse(StudyMode.reading.showsPlaybackControls)
-        XCTAssertTrue(StudyMode.reading.showsNoteControls)
-    }
-
-    func testTheTwoModesNeverOfferTheSameControlSet() {
-        for mode in StudyMode.allCases {
-            XCTAssertNotEqual(
-                mode.showsPlaybackControls, mode.showsNoteControls,
-                "\(mode) must lean one way or the other")
-        }
     }
 
     func testToggleRoundTrips() {

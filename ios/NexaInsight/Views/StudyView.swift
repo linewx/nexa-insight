@@ -683,10 +683,12 @@ private struct StudyWorkspace: View {
                 .transition(.opacity)
             }
 
-            // Reading hides it entirely. The bar is a voice class — a teacher
-            // talking, a floor to take — and reading is eye work, so its controls
-            // are chrome you are not going to use. The class keeps running; switch
-            // back to 精听 to reach it.
+            // Reading hides the BAR, not the class. It used to hide both, on the
+            // reasoning that reading was eye work with no use for a teacher; reading now
+            // asks the same teacher the same way, it just does it by holding a paragraph
+            // and shows the exchange under that paragraph. The bar's own controls —
+            // hold-to-talk aimed at the playing position, the Live entry — belong to ear
+            // work, and the session they talk to is the one reading is already using.
             if let discussionSession, mode.showsPlaybackControls {
                 // Edge-to-edge, pinned to the bottom: the bar is part of the page
                 // chrome, not a card floating on top of it. No outer padding.

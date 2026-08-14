@@ -44,8 +44,4 @@ enum StudyMode: String, Hashable, CaseIterable {
     /// Whether a selected sentence offers the full set of playback controls.
     var showsPlaybackControls: Bool { self == .listening }
 
-    /// Whether note-taking is offered. Reading is where notes belong: the point of
-    /// reading mode is understanding the text, and a note is what understanding
-    /// leaves behind.
-    var showsNoteControls: Bool { self == .reading }
 }
