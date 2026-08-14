@@ -40,6 +40,12 @@ struct StudyView: View {
     /// it live.
     @State private var readingAsk: ReadingAsk?
     @State private var noteError: String?
+
+    /// One instance for the life of the screen, so rows can compare it with `===`.
+    /// `@State` holds it across body evaluations; its closures are refreshed on each one
+    /// (see `TranscriptBlock.currentActions`). A `let` would be recreated whenever
+    /// SwiftUI re-inits the view struct, which is exactly what must not happen.
+    @State private var rowActions = RowActions()
     private let sentences: [SentenceDTO]
 
     /// Every expression on this episode, automatic and hand-made alike, as the store
@@ -158,7 +164,8 @@ struct StudyView: View {
             onHoldEnd: endAsking,
             onEndConversation: finishConversation,
             discussionSession: liveSession,
-            onEndDiscussion: endDiscussion
+            onEndDiscussion: endDiscussion,
+            rowActions: rowActions
         )
         // Drives the loop. Without this the loop control would toggle a flag and
         // playback would sail past the sentence end — the rewind has to be applied
@@ -616,6 +623,9 @@ private struct StudyWorkspace: View {
     var onEndConversation: () -> Void = {}
     let discussionSession: LiveClassSession?
     let onEndDiscussion: () -> Void
+    /// Passed straight through to the transcript. Owned by `StudyView` so its identity
+    /// survives body evaluations — see `RowActions`.
+    let rowActions: RowActions
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -747,7 +757,8 @@ private struct StudyWorkspace: View {
                 readingAsk: readingAsk,
                 onHoldStart: onHoldStart,
                 onHoldEnd: onHoldEnd,
-                onEndConversation: onEndConversation
+                onEndConversation: onEndConversation,
+                rowActions: rowActions
             )
         }
     }
@@ -1170,7 +1181,7 @@ private struct ConnectedBarContent: View {
         // the content.
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
             statusLine
-            controlRow
+            actions
         }
         // Headphones gone (unplugged, AirPods out) while Live is running: exit
         // immediately. Staying in Live on the speaker means the teacher's voice
@@ -1212,7 +1223,7 @@ private struct ConnectedBarContent: View {
     // long starts a turn instead of toggling playback. Mis-firing playback just
     // starts audio; mis-firing a turn interrupts the teacher, takes the floor and
     // sends a stray turn to the server. So each gesture gets its own region.
-    private var controlRow: some View {
+    private var actions: some View {
         HStack(spacing: 0) {
             // Present in Live too. Voice can drive playback there ("continue",
             // "pause", "go to 10:30"), but that's a slower path when the learner just
@@ -1581,6 +1592,32 @@ private struct TranscriptBlock: View {
     var onEndConversation: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
+    /// Handed to every row so `TranscriptRow ==` can compare it by identity rather than
+    /// being impossible to write. Owned by `StudyView`, which keeps one for the life of
+    /// the screen; see `RowActions` for why the identity has to be stable.
+    let rowActions: RowActions
+
+    /// Refreshes the shared mailbox with this evaluation's callbacks, then returns it.
+    /// Called once per body, above the row loop — the closures change, the identity does
+    /// not, which is exactly the pair of properties the rows need.
+    private func currentActions() -> RowActions {
+        rowActions.tap = onSentenceTap
+        rowActions.shadow = onShadow
+        rowActions.replay = onReplay
+        rowActions.toggleLoop = onToggleLoop
+        rowActions.step = onStep
+        rowActions.cycleSpeed = onCycleSpeed
+        rowActions.selectExpression = { id in
+            expandedExpressionID = expandedExpressionID == id ? nil : id
+        }
+        rowActions.practiceExpression = onPracticeExpression
+        rowActions.toggleCards = onToggleCards
+        rowActions.deleteCard = onDeleteCard
+        rowActions.holdStart = onHoldStart
+        rowActions.holdEnd = onHoldEnd
+        rowActions.endConversation = onEndConversation
+        return rowActions
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
@@ -1608,6 +1645,9 @@ private struct TranscriptBlock: View {
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .padding(.vertical, NXSpacing.x4)
             } else {
+                // Refreshed once here, not per row: the identity the rows compare must
+                // be one instance for the whole list.
+                let actions = currentActions()
                 LazyVStack(alignment: .leading, spacing: 0) {
                     // Enumerated, so a row's neighbours are an index step rather
                     // than a search. previousSentence/nextSentence each ran
@@ -1625,8 +1665,7 @@ private struct TranscriptBlock: View {
                         TranscriptRow(
                             sentence: sentence,
                             selected: selected,
-                            onTap: { onSentenceTap(sentence) },
-                            onShadow: { onShadow(sentence) },
+                            actions: actions,
                             // Only the selected row uses these, and only it should
                             // depend on them: passing the live speed and loop state
                             // to all 681 rows meant every rate change, and every
@@ -1636,11 +1675,6 @@ private struct TranscriptBlock: View {
                             speed: selected ? speed : 1,
                             canStepBack: previous != nil,
                             canStepForward: next != nil,
-                            onReplay: onReplay,
-                            onToggleLoop: { onToggleLoop(sentence) },
-                            onPrevious: { if let previous { onStep(previous) } },
-                            onNext: { if let next { onStep(next) } },
-                            onCycleSpeed: onCycleSpeed,
                             mode: mode,
                             annotated: annotated,
                             // Indexed, and only for rows that actually carry a
@@ -1657,21 +1691,18 @@ private struct TranscriptBlock: View {
                             expandedExpression: expandedExpressionID.flatMap { id in
                                 learningExpressions.first { $0.id == id }
                             },
-                            onSelectExpression: { id in
-                                expandedExpressionID = expandedExpressionID == id ? nil : id
-                            },
-                            onPracticeExpression: onPracticeExpression,
                             cards: cardIndex.cards(for: sentence.id),
                             cardsExpanded: expandedCardSentenceIds.contains(sentence.id),
-                            onToggleCards: { onToggleCards(sentence.id) },
-                            onDeleteCard: onDeleteCard,
                             // Only the paragraph being talked about carries the
                             // conversation, so every other row is unchanged by it.
                             ask: readingAsk?.sentenceId == sentence.id ? readingAsk : nil,
-                            onHoldStart: { onHoldStart(sentence) },
-                            onHoldEnd: onHoldEnd,
-                            onEndConversation: onEndConversation
+                            previous: previous,
+                            next: next
                         )
+                        // The row is Equatable, so this is what lets an unchanged one be
+                        // skipped instead of rebuilt. Without it the conformance is
+                        // inert: SwiftUI only consults == through EquatableView.
+                        .equatable()
                         .id(sentence.id)
                         // By index: `sentences.last` walks the array for every
                         // row, on every redraw.
@@ -1685,37 +1716,95 @@ private struct TranscriptBlock: View {
     }
 }
 
-private struct TranscriptRow: View {
+/// Everything a transcript row can do, as one reference the rows share.
+///
+/// Exists so `TranscriptRow` can be `Equatable`. It carried fourteen closures, and
+/// closures are not comparable — so SwiftUI could never find a row equal to itself and
+/// rebuilt every visible one whenever the parent re-evaluated. Measured while scrolling:
+/// 843-1344 row bodies per second, against 4-8 at rest.
+///
+/// A class, not a struct, so identity is the comparison: one instance is made per
+/// transcript and every row points at the same one, which makes `==` a pointer check
+/// rather than something that cannot be written at all.
+///
+/// Every action takes its subject as a PARAMETER. That is the load-bearing rule, not a
+/// style choice: an equal row keeps the actions it was built with, so a closure that had
+/// captured this row's sentence — or the loop and speed of the moment — would go on
+/// acting on stale values after the row was skipped. Nothing per-row is captured here,
+/// so there is nothing to go stale.
+/// A mailbox, deliberately: one instance lives for the screen's lifetime while its
+/// contents are replaced on every body evaluation.
+///
+/// Both halves are load-bearing, and each fixes what the other would break.
+///
+/// The identity must be STABLE, because rows compare it with `===`. Handing out a fresh
+/// instance per body would leave every row unequal to itself, the conformance would be
+/// decoration, and the rebuilds would continue exactly as they do today.
+///
+/// The closures must be CURRENT, because they are rebuilt by the parent on every body
+/// evaluation and the newer ones may close over newer state. Freezing the set from first
+/// appearance would leave rows acting on a stale snapshot — a subtler bug than the one
+/// being fixed, and much harder to see.
+private final class RowActions {
+    var tap: (SentenceDTO) -> Void = { _ in }
+    var shadow: (SentenceDTO) -> Void = { _ in }
+    var replay: () -> Void = {}
+    var toggleLoop: (SentenceDTO) -> Void = { _ in }
+    var step: (SentenceDTO) -> Void = { _ in }
+    var cycleSpeed: () -> Void = {}
+    var selectExpression: (Int) -> Void = { _ in }
+    var practiceExpression: (LearningExpressionDTO) -> Void = { _ in }
+    var toggleCards: (Int) -> Void = { _ in }
+    var deleteCard: (ParagraphCards.Card) -> Void = { _ in }
+    var holdStart: (SentenceDTO) -> Void = { _ in }
+    var holdEnd: () -> Void = {}
+    var endConversation: () -> Void = {}
+}
+
+private struct TranscriptRow: View, Equatable {
     let sentence: SentenceDTO
     let selected: Bool
-    let onTap: () -> Void
-    let onShadow: () -> Void
+    /// Shared by every row, compared by identity. See `RowActions`.
+    let actions: RowActions
     // Intensive-listening controls, shown only under the sentence being played.
     var looping: Bool = false
     var speed: Double = 1
     var canStepBack: Bool = true
     var canStepForward: Bool = true
-    var onReplay: () -> Void = {}
-    var onToggleLoop: () -> Void = {}
-    var onPrevious: () -> Void = {}
-    var onNext: () -> Void = {}
-    var onCycleSpeed: () -> Void = {}
     var mode: StudyMode = .listening
     let annotated: Bool
     let expressionSegments: [LearningExpressionLogic.Segment]
     let expandedExpression: LearningExpressionDTO?
-    let onSelectExpression: (Int) -> Void
-    let onPracticeExpression: (LearningExpressionDTO) -> Void
     var cards: [ParagraphCards.Card] = []
     var cardsExpanded: Bool = false
-    var onToggleCards: () -> Void = {}
-    var onDeleteCard: (ParagraphCards.Card) -> Void = { _ in }
     /// The conversation about THIS paragraph, or nil when it is about another one.
     var ask: ReadingAsk?
-    var onHoldStart: () -> Void = {}
-    var onHoldEnd: () -> Void = {}
-    var onEndConversation: () -> Void = {}
+    /// The neighbours a step moves to. Values rather than closures over them, so the row
+    /// stays comparable; nil when this row is not the one showing the controls.
+    var previous: SentenceDTO?
+    var next: SentenceDTO?
     @Environment(\.colorScheme) private var scheme
+
+    /// Compares only what the row DRAWS. `actions` is identical for every row, and
+    /// `scheme` is an environment value SwiftUI already invalidates on.
+    static func == (a: TranscriptRow, b: TranscriptRow) -> Bool {
+        a.sentence == b.sentence
+            && a.selected == b.selected
+            && a.looping == b.looping
+            && a.speed == b.speed
+            && a.canStepBack == b.canStepBack
+            && a.canStepForward == b.canStepForward
+            && a.mode == b.mode
+            && a.annotated == b.annotated
+            && a.expressionSegments == b.expressionSegments
+            && a.expandedExpression == b.expandedExpression
+            && a.cards == b.cards
+            && a.cardsExpanded == b.cardsExpanded
+            && a.ask == b.ask
+            && a.previous?.id == b.previous?.id
+            && a.next?.id == b.next?.id
+            && a.actions === b.actions
+    }
     /// Set the instant a finger lands, cleared shortly after it lifts. Without it
     /// neither gesture acknowledged anything: reading has no buttons, so the text
     /// itself has to say it was touched.
@@ -1734,7 +1823,7 @@ private struct TranscriptRow: View {
                         // A brief flash, distinct from the sustained tint a hold
                         // gets: one says "registered", the other says "listening".
                         flashPress()
-                        onTap()
+                        actions.tap(sentence)
                     }
                     .onLongPressGesture(
                         minimumDuration: 0.35,
@@ -1751,7 +1840,7 @@ private struct TranscriptRow: View {
                             // always did: the threshold passing is when the hold became a
                             // question, and now it is also when the mic opened.
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            onHoldStart()
+                            actions.holdStart(sentence)
                         },
                         onPressingChanged: { pressing in
                             // Release still has to be seen here — `perform:` fires once
@@ -1759,10 +1848,10 @@ private struct TranscriptRow: View {
                             // with no recording in flight is a no-op, which is what a
                             // scroll or a tap now produces.
                             pressed = pressing
-                            if !pressing { onHoldEnd() }
+                            if !pressing { actions.holdEnd() }
                         })
             } else {
-                Button(action: onTap) { listeningContent }
+                Button(action: { actions.tap(sentence) }) { listeningContent }
                     .buttonStyle(.plain)
             }
 
@@ -1787,7 +1876,7 @@ private struct TranscriptRow: View {
             // under one line is a page with a button bar in it. Tap plays, hold
             // asks, and the gestures carry what the buttons used to.
             if selected, mode.showsPlaybackControls {
-                actions
+                controlRow
             }
         }
         // One background and one tint for four states. Every row carried two
@@ -1816,20 +1905,29 @@ private struct TranscriptRow: View {
 
     @ViewBuilder private var cardStack: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: onToggleCards) {
-                HStack(spacing: NXSpacing.x2) {
-                    Text(ParagraphCards.summary(count: cards.count) ?? "")
-                        .font(NXFont.auxiliary)
-                        .foregroundStyle(NXColor.primary)
-                    Spacer(minLength: 0)
-                    Image(systemName: cardsExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(NXColor.textTertiary(scheme))
-                }
-                .padding(.vertical, NXSpacing.x2)
-                .contentShape(Rectangle())
+            // A tap gesture, not a Button. The summary is the ONLY thing a collapsed
+            // stack draws, and it is drawn for every card row on every rebuild — a
+            // Button brings hit testing and its own accessibility element to each one.
+            // Measured at 130-282 stack rebuilds per second while scrolling. Same
+            // reasoning as the highlight links, which were removed for the same cost.
+            HStack(spacing: NXSpacing.x2) {
+                Text(ParagraphCards.summary(count: cards.count) ?? "")
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.primary)
+                Spacer(minLength: 0)
+                Image(systemName: cardsExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(NXColor.textTertiary(scheme))
             }
-            .buttonStyle(.plain)
+            .padding(.vertical, NXSpacing.x2)
+            .contentShape(Rectangle())
+            .onTapGesture { actions.toggleCards(sentence.id) }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(ParagraphCards.summary(count: cards.count) ?? "")
+            .accessibilityHint(cardsExpanded
+                               ? "\u{6536}\u{8d77}\u{5361}\u{7247}"
+                               : "\u{5c55}\u{5f00}\u{5361}\u{7247}")
 
             if cardsExpanded {
                 VStack(alignment: .leading, spacing: NXSpacing.x2) {
@@ -1838,12 +1936,12 @@ private struct TranscriptRow: View {
                         case .expression(let expression):
                             ExpressionInlineCard(
                                 expression: expression,
-                                onPractice: { onPracticeExpression(expression) },
-                                onDelete: card.isDeletable ? { onDeleteCard(card) } : nil)
+                                onPractice: { actions.practiceExpression(expression) },
+                                onDelete: card.isDeletable ? { actions.deleteCard(card) } : nil)
                         case .note(_, let question, let answer):
                             ParagraphNoteCard(
                                 question: question, answer: answer,
-                                onDelete: { onDeleteCard(card) })
+                                onDelete: { actions.deleteCard(card) })
                         }
                     }
                 }
@@ -1920,7 +2018,7 @@ private struct TranscriptRow: View {
                 case .idle:
                     // Ending is explicit, because ending is what decides whether this
                     // exchange leaves a card behind.
-                    Button(action: onEndConversation) {
+                    Button(action: actions.endConversation) {
                         Text("\u{7ed3}\u{675f}\u{63d0}\u{95ee}")
                             .font(NXFont.auxiliary)
                             .foregroundStyle(NXColor.primary)
@@ -1961,7 +2059,7 @@ private struct TranscriptRow: View {
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
             timestamp
             VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                InlineExpressionText(segments: expressionSegments, onSelect: onSelectExpression)
+                InlineExpressionText(segments: expressionSegments, onSelect: actions.selectExpression)
                 chineseText
             }
         }
@@ -1977,16 +2075,16 @@ private struct TranscriptRow: View {
 
     /// Listening only. Reading shows no control row at all — tap plays, hold asks —
     /// so there is nothing to branch on here.
-    private var actions: some View {
+    private var controlRow: some View {
         HStack(spacing: NXSpacing.x1) {
-            action("arrow.left.to.line", "上一句", enabled: canStepBack, action: onPrevious)
-            action("arrow.counterclockwise", "重听这句", action: onReplay)
-            action("repeat", "循环这句", on: looping, action: onToggleLoop)
-            action("waveform.badge.mic", "跟读", action: onShadow)
+            action("arrow.left.to.line", "上一句", enabled: canStepBack, action: { if let previous { actions.step(previous) } })
+            action("arrow.counterclockwise", "重听这句", action: actions.replay)
+            action("repeat", "循环这句", on: looping, action: { actions.toggleLoop(sentence) })
+            action("waveform.badge.mic", "跟读", action: { actions.shadow(sentence) })
 
             // The rate lives on a label rather than an icon: the current value IS
             // the information, and it only differs from 1× when you changed it.
-            Button(action: onCycleSpeed) {
+            Button(action: actions.cycleSpeed) {
                 Text(IntensiveListening.speedBadge(speed) ?? "1×")
                     .font(.system(size: 12, weight: .semibold))
                     .monospacedDigit()
@@ -2000,7 +2098,7 @@ private struct TranscriptRow: View {
 
             Spacer(minLength: 0)
 
-            action("arrow.right.to.line", "下一句", enabled: canStepForward, action: onNext)
+            action("arrow.right.to.line", "下一句", enabled: canStepForward, action: { if let next { actions.step(next) } })
         }
         .padding(.leading, NXSpacing.x4)
         .padding(.trailing, NXSpacing.x2)
