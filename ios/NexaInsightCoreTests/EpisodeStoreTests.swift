@@ -219,7 +219,47 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(manual?.occurrences.map(\.endOffset), [2])
     }
 
-    func testManualNoteAbsentFromItsSentenceGetsNoHighlight() throws {
+    // The caller's idea of "the current line" comes from the playback position, while a
+    // saved word comes from whatever the teacher was discussing. In reading those are
+    // routinely different lines — you scroll ahead of the audio — and a strict match meant
+    // the card saved with no occurrence, so nothing was highlighted.
+    func testAWordFromAnotherLineIsStillHighlighted() throws {
+        let store = try makeStore()
+        _ = try store.saveBundle(bundle(), localAudioPath: nil)
+
+        // "Bye" lives in sentence 11, but the position says 10.
+        try store.addManualExpression(
+            episodeId: 1, sentenceId: 10, expression: manualNote(text: "Bye"), request: nil)
+
+        let manual = store.learningExpressions(for: 1).first { $0.source == "manual" }
+        XCTAssertEqual(manual?.occurrences.map(\.sentenceId), [11],
+                       "the highlight belongs on the line the word is actually in")
+    }
+
+    // The named sentence is tried first, so a word appearing in several lines highlights
+    // the one being discussed rather than the earliest in the episode.
+    func testTheNamedSentenceWinsWhenTheWordAppearsTwice() throws {
+        let store = try makeStore()
+        let twice = BundleDTO(
+            episode: EpisodeDTO(id: 1, sourceUrl: "u", youtubeId: "y", title: "T", channel: "C",
+                                durationMs: 1000, thumbnailUrl: nil, audioPath: "a.mp3",
+                                status: "ready", error: nil),
+            chapters: [], sentences: [
+                SentenceDTO(id: 10, episodeId: 1, chapterId: nil, position: 0, startMs: 0, endMs: 500,
+                            speaker: nil, sourceText: "Hi there", chinese: "嗨"),
+                SentenceDTO(id: 11, episodeId: 1, chapterId: nil, position: 1, startMs: 500, endMs: 1000,
+                            speaker: nil, sourceText: "Hi again", chinese: "又见"),
+            ], hasAudio: true, hasLearningPack: false, learningExpressions: [])
+        _ = try store.saveBundle(twice, localAudioPath: nil)
+
+        try store.addManualExpression(
+            episodeId: 1, sentenceId: 11, expression: manualNote(text: "Hi"), request: nil)
+
+        let manual = store.learningExpressions(for: 1).first { $0.source == "manual" }
+        XCTAssertEqual(manual?.occurrences.map(\.sentenceId), [11])
+    }
+
+    func testManualNoteAbsentFromTheEpisodeGetsNoHighlight() throws {
         // Better no highlight than one pointing at unrelated words.
         let store = try makeStore()
         _ = try store.saveBundle(bundle(), localAudioPath: nil)

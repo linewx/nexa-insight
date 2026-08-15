@@ -149,12 +149,28 @@ final class EpisodeStore {
 
         // Anchored by text, not by any offset the model reported: those were wrong
         // ~97% of the time in the batch pipeline, and the same model answers here.
-        if let sentence = stored.sentences.first(where: { $0.sentenceId == sentenceId }),
-           let range = ExpressionLocator.locate(expression.text, in: sentence.sourceText) {
+        //
+        // Searched across the whole episode, not only in `sentenceId`. The caller's idea
+        // of "the current line" comes from the playback position, while a saved word comes
+        // from whatever the teacher was just discussing — in reading those are routinely
+        // different lines, and a strict match meant the card saved with NO occurrence and
+        // therefore no highlight. The named sentence is still tried FIRST, so a word that
+        // appears in several lines highlights the one being talked about.
+        let host = stored.sentences.first { $0.sentenceId == sentenceId }
+        let ordered = [host].compactMap { $0 } + stored.sentences.filter { $0.sentenceId != sentenceId }
+        if let found = ordered.lazy.compactMap({ sentence -> (Int, Range<Int>)? in
+            ExpressionLocator.locate(expression.text, in: sentence.sourceText)
+                .map { (sentence.sentenceId, $0) }
+        }).first {
             let occurrence = StoredExpressionOccurrence(
-                sentenceId: sentenceId, startOffset: range.lowerBound, endOffset: range.upperBound)
+                sentenceId: found.0, startOffset: found.1.lowerBound, endOffset: found.1.upperBound)
             context.insert(occurrence)
             note.occurrences.append(occurrence)
+        } else {
+            // A word the teacher paraphrased rather than quoted cannot be found in the
+            // transcript. The card is still worth keeping — it just carries no highlight,
+            // which is the same thing the batch pipeline does for a {slot} pattern.
+            NexaLog.log("addManualExpression: no occurrence for \(expression.text)")
         }
         stored.learningExpressions.append(note)
         try context.save()

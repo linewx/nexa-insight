@@ -331,18 +331,23 @@ struct StudyView: View {
             noteError = "\u{8bfe}\u{5802}\u{8fd8}\u{6ca1}\u{8fde}\u{4e0a}\u{ff0c}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{63d0}\u{95ee}\u{3002}"
             return
         }
-        // The server ends an idle stream after five minutes, and nothing noticed: a hold
-        // after that went through every motion against a closed channel and produced no
-        // answer and no error. Rebuild first, then ask.
+        // The server ends an idle stream after five minutes and nothing notices, so a
+        // stale session has to be rebuilt before it can carry a turn.
+        //
+        // Reconnecting takes seconds, and the finger is DOWN now — it will be long gone
+        // before the new channel opens, so there is no turn left to start and the hold is
+        // lost. The earlier version returned here and said nothing on success, which made
+        // every hold on a timed-out session feel like the gesture had stopped working.
+        //
+        // So say what is happening, and do not pretend the question was heard. Asking
+        // again once connected is one more press; a press that silently does nothing is
+        // indistinguishable from a broken app.
         guard let controller = session.controller, session.canCarryATurn else {
+            noteError = "\u{8bfe}\u{5802}\u{8fde}\u{63a5}\u{5df2}\u{65ad}\u{5f00}\u{ff0c}\u{6b63}\u{5728}\u{91cd}\u{8fde}\u{ff0c}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{3002}"
             Task {
                 await session.reconnectIfNeeded()
-                // Only report a failure the reconnect could not fix. Succeeding silently
-                // is the point: the learner asked once and should not have to ask twice
-                // to work around a timeout they never saw.
-                if !session.canCarryATurn {
-                    noteError = session.error
-                        ?? "\u{8bfe}\u{5802}\u{8fde}\u{63a5}\u{5df2}\u{65ad}\u{5f00}\u{ff0c}\u{6b63}\u{5728}\u{91cd}\u{8fde}\u{ff0c}\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{3002}"
+                if !session.canCarryATurn, let reason = session.error {
+                    noteError = reason
                 }
             }
             return
@@ -1799,11 +1804,17 @@ private struct TranscriptRow: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if annotated {
-                // Gestures, not a Button: the annotated text carries its own
-                // per-expression links, and wrapping it in a Button would swallow
-                // them. Three targets coexist on the same text — a link opens its
-                // card, a tap plays or stops the line, a hold asks about it.
+            // Gestures, not a Button, on EVERY row. A Button would swallow the long
+            // press, so an un-annotated episode had no way to ask about a paragraph at
+            // all — holding did nothing, by construction. That was survivable only while
+            // reading was the default mode and you entered it on annotated episodes;
+            // making listening the default landed people on episodes where the hold had
+            // never been wired, which reads as "hold-to-talk stopped working".
+            //
+            // Asking about a line has nothing to do with whether the episode happens to
+            // carry highlights, so the branch that decided it is gone. `readingContent`
+            // renders plain text when there is nothing to mark (see `attributed`).
+            Group {
                 readingContent
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -1837,9 +1848,6 @@ private struct TranscriptRow: View, Equatable {
                             pressed = pressing
                             if !pressing { actions.holdEnd() }
                         })
-            } else {
-                Button(action: { actions.tap(sentence) }) { listeningContent }
-                    .buttonStyle(.plain)
             }
 
             // The live conversation, above the settled cards: it is what is happening
@@ -2028,30 +2036,21 @@ private struct TranscriptRow: View, Equatable {
             .frame(width: 52, alignment: .leading)
     }
 
-    private var listeningContent: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x2) {
-            timestamp
-            VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                Text(sentence.sourceText)
-                    .font(NXFont.body).fontWeight(selected ? .medium : .regular)
-                    .foregroundStyle(NXColor.text(scheme)).lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                chineseText
-            }
-        }
-        .padding(.top, NXSpacing.x4).padding(.bottom, selected ? NXSpacing.x2 : NXSpacing.x4)
-        .padding(.leading, NXSpacing.x4).padding(.trailing, NXSpacing.x2).contentShape(Rectangle())
-    }
-
     private var readingContent: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x2) {
             timestamp
             VStack(alignment: .leading, spacing: NXSpacing.x2) {
-                InlineExpressionText(segments: expressionSegments, onSelect: actions.selectExpression)
+                InlineExpressionText(
+                    segments: expressionSegments,
+                    onSelect: actions.selectExpression,
+                    selected: selected)
                 chineseText
             }
         }
-        .padding(.top, NXSpacing.x4).padding(.bottom, NXSpacing.x4)
+        // Tighter under a selected line, so the control row beneath it reads as belonging
+        // to that line rather than floating between two. Inherited from the listening
+        // variant this replaced.
+        .padding(.top, NXSpacing.x4).padding(.bottom, selected ? NXSpacing.x2 : NXSpacing.x4)
         .padding(.leading, NXSpacing.x4).padding(.trailing, NXSpacing.x2)
     }
 
@@ -2131,6 +2130,10 @@ private struct TranscriptRow: View, Equatable {
 private struct InlineExpressionText: View {
     let segments: [LearningExpressionLogic.Segment]
     let onSelect: (Int) -> Void
+    /// The line being played is weighted, which is how you find your place after looking
+    /// away. It used to come from `listeningContent`; that variant is gone, so the weight
+    /// has to be carried here or every line would look the same.
+    var selected: Bool = false
     @Environment(\.colorScheme) private var scheme
 
     // One native Text, not a subview per word. Wrapping is SwiftUI's job: the
@@ -2151,6 +2154,7 @@ private struct InlineExpressionText: View {
             // nothing annotated.
             Text(segments[0].text)
                 .font(NXFont.body)
+                .fontWeight(selected ? .medium : .regular)
                 .foregroundStyle(NXColor.text(scheme))
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
