@@ -647,6 +647,61 @@ final class ClassroomControllerTests: XCTestCase {
         }
     }
 
+    // Asking for something to be kept is an invitation to add more — a correction, a
+    // second word, "also the phrase before it". Self-study normally resumes the podcast
+    // the moment the teacher stops, which here meant playback started over the learner
+    // immediately after the save was confirmed.
+    func testAskingForANoteHoldsThePodcastAfterTheAnswer() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        saveNote(c)                                  // "记一下这个词"
+        c.handleRealtimeEvent(.responseDone)
+
+        XCTAssertFalse(playback.didPlay, "the podcast must wait for what you say next")
+        XCTAssertNotEqual(c.floor, .player)
+    }
+
+    // The counterpart: an ordinary answer with no note still resumes, which is what
+    // listening should do. Without this pair, holding could be made unconditional and
+    // both tests would still pass individually.
+    func testAnOrdinaryAnswerStillResumes() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        c.handleRealtimeEvent(.responseDone)
+
+        XCTAssertTrue(playback.didPlay)
+        XCTAssertEqual(c.floor, .player)
+    }
+
+    // The flag is per TURN, not sticky: the next answer resumes normally again.
+    func testTheHoldAppliesOnlyToTheTurnThatSaved() {
+        let (c, playback, _, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        saveNote(c, callId: "n1")
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertFalse(playback.didPlay)
+
+        // A second turn, this one just a question.
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertTrue(playback.didPlay, "the next answer resumes as usual")
+    }
+
     // Saving works in every scene: that is the requirement — 精听, Live and 精读 alike.
     func testSavingWorksInEveryScene() {
         for enter in [{ (c: ClassroomController) in c.pressQuickAsk() },

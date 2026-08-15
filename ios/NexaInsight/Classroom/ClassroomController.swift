@@ -99,6 +99,14 @@ final class ClassroomController: ObservableObject {
     // waiting for one would leave the floor on .user with the mic open, which is
     // exactly the self-triggering state.
     private var committedThisTurn = false
+    /// Whether this turn wrote a note.
+    ///
+    /// A turn that saved something is an invitation to add more — a correction, a second
+    /// word, "also note the phrase before it" — so the podcast must NOT start playing over
+    /// the learner the moment the teacher finishes confirming the save. Per-turn rather
+    /// than per-scene: self-study resumes after an ordinary answer, which is right, and
+    /// this is the one kind of answer it must not resume after.
+    private var savedNoteThisTurn = false
 
     private let sentences: [SentenceDTO]
     private let playback: Playback
@@ -182,6 +190,7 @@ final class ClassroomController: ObservableObject {
                 return
             }
             NexaLog.log("TOOL \(name.rawValue) note=\(request)")
+            savedNoteThisTurn = true
             onSaveNote(request, at)
             onNotice(noteNotice(request))
             return
@@ -298,7 +307,12 @@ final class ClassroomController: ObservableObject {
             // podcast where it was, because the answer ending is an invitation to
             // follow up — starting playback over the reply is the opposite of that.
             // This branch IS the reducer's resumePlayback flag.
-            let resumes = scene.resumesPlaybackAfterAnswer
+            // A turn that wrote a note holds the podcast whatever the scene says: you
+            // asked for something to be kept, and the next thing you say is usually about
+            // that — resuming here talks over it.
+            let resumes = scene.resumesPlaybackAfterAnswer && !savedNoteThisTurn
+            if savedNoteThisTurn { NexaLog.log("holding playback: a note was saved this turn") }
+            savedNoteThisTurn = false
             applyFloorEvent(.teacherFinished(resumePlayback: resumes),
                             resumeAtMs: resumes ? frozenPositionMs : nil)
         case let .toolCall(name, args, callId):
@@ -404,6 +418,7 @@ final class ClassroomController: ObservableObject {
         scene = .selfStudy
         heardSpeechThisTurn = false
         committedThisTurn = false
+        savedNoteThisTurn = false
         holdingQuickAsk = true
         // Freeze at the position the podcast was at. When the press interrupts the
         // teacher, the podcast is already paused and frozenPositionMs already holds
@@ -459,6 +474,7 @@ final class ClassroomController: ObservableObject {
         holdingQuickAsk = false
         heardSpeechThisTurn = false
         committedThisTurn = false
+        savedNoteThisTurn = false
         let resumeAt = frozenPositionMs
         transport.cancelTurn()
         applyFloorEvent(.playbackRequested, resumeAtMs: resumeAt)
@@ -479,6 +495,7 @@ final class ClassroomController: ObservableObject {
         scene = .reading
         heardSpeechThisTurn = false
         committedThisTurn = false
+        savedNoteThisTurn = false
         holdingQuickAsk = true
         // Freeze at the paragraph, so a follow-up in the same conversation keeps
         // answering about the same place even after several turns.
@@ -499,6 +516,7 @@ final class ClassroomController: ObservableObject {
         holdingQuickAsk = false
         heardSpeechThisTurn = false
         committedThisTurn = false
+        savedNoteThisTurn = false
         transport.cancelTurn()
         applyFloorEvent(.nothingSaid)
     }
