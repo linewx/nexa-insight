@@ -20,6 +20,10 @@ struct StudyView: View {
     /// Whether the notes drawer is open. Opened by dragging in from the RIGHT edge — the
     /// left edge is the back gesture, and two things on one edge is one too many.
     @State private var showNotes = false
+    /// How far the open drawer has been dragged back out, so it follows the finger.
+    /// Separate from `showNotes` because the drawer is always mounted and merely
+    /// translated — see the overlay.
+    @State private var notesDragOffset: CGFloat = 0
     // Intensive-listening state. Loop lives here rather than on a row so only one
     // sentence can ever loop; speed mirrors the player's rate for the badge.
     @State private var loop: SentenceLoop = .off
@@ -235,55 +239,71 @@ struct StudyView: View {
         .offset(x: backSwipeOffset)
         .simultaneousGesture(edgeSwipeBackGesture)
         .simultaneousGesture(notesDrawerGesture)
-        // An overlay that slides in from the RIGHT, not a sheet. A sheet rises from the
-        // bottom whatever gesture summoned it, so a leftward drag producing an upward
-        // motion made the two contradict each other — a panel has to arrive from the edge
-        // the finger pulled it from.
+        // Slides in from the RIGHT, the edge the finger pulled it from. A sheet was wrong
+        // twice over: it rises from the bottom whatever gesture summoned it, and only one
+        // .sheet per view is honoured so it never appeared at all.
         //
-        // This also sidesteps the one-.sheet-per-view rule that hid it entirely before.
-        .overlay(alignment: .trailing) {
-            if showNotes {
-                ZStack(alignment: .trailing) {
-                    // Tapping outside closes it, and the page behind stops competing for
-                    // attention while it is open.
+        // Driven by an OFFSET rather than a transition. An insertion transition has to
+        // animate a view being added to the hierarchy, which stutters on a screen this
+        // busy; a view that is always mounted and merely translated is one property
+        // animating, and it can also follow the finger.
+        .overlay {
+            ZStack(alignment: .trailing) {
+                if showNotes {
                     Color.black.opacity(0.28)
                         .ignoresSafeArea()
-                        .onTapGesture { showNotes = false }
-                    NotesDrawer(
-                        expressions: learningExpressions,
-                        notes: paragraphNotes.map {
-                            (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
-                        },
-                        sentenceStarts: Dictionary(
-                            sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
-                        onDelete: deleteCard,
-                        onClear: clearNotes,
-                        onJump: { ms in
-                            showNotes = false
-                            playIntent(seekTo: ms)
-                        },
-                        onPractice: { expression in
-                            showNotes = false
-                            practiceExpression = expression
-                        },
-                        onClose: { showNotes = false })
-                    // Not full width: the transcript staying visible at the left edge is
-                    // what makes this read as a drawer over the page rather than a new
-                    // screen, and it keeps the way back in sight.
-                    .frame(maxWidth: 380)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .transition(.move(edge: .trailing))
-                    // Pushed back out to the right, the reverse of what opened it.
-                    .gesture(
-                        DragGesture(minimumDistance: 20)
-                            .onEnded { value in
-                                if value.translation.width > 60 { showNotes = false }
-                            })
+                        .onTapGesture { closeNotes() }
+                        .transition(.opacity)
                 }
+                NotesDrawer(
+                    expressions: learningExpressions,
+                    notes: paragraphNotes.map {
+                        (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+                    },
+                    sentenceStarts: Dictionary(
+                        sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
+                    onDelete: deleteCard,
+                    onClear: clearNotes,
+                    onJump: { ms in
+                        closeNotes()
+                        playIntent(seekTo: ms)
+                    },
+                    onPractice: { expression in
+                        closeNotes()
+                        practiceExpression = expression
+                    },
+                    onClose: closeNotes)
+                // Full width. A gap at the left showed a strip of transcript that could
+                // not be read or touched — it looked like the drawer had failed to cover
+                // the page rather than like a deliberate peek at it.
+                .frame(maxWidth: .infinity)
                 .ignoresSafeArea(edges: .bottom)
+                // Parked off-screen when closed, so it is mounted and ready rather than
+                // being built as it appears.
+                .offset(x: showNotes ? notesDragOffset : UIScreen.main.bounds.width)
+                .gesture(
+                    DragGesture(minimumDistance: 8)
+                        .onChanged { value in
+                            // Rightward only: dragging left inside an open drawer is a
+                            // scroll, not an attempt to close it.
+                            notesDragOffset = max(0, value.translation.width)
+                        }
+                        .onEnded { value in
+                            let far = value.translation.width > 90
+                                || value.predictedEndTranslation.width > 160
+                            if far {
+                                closeNotes()
+                            } else {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                                    notesDragOffset = 0
+                                }
+                            }
+                        })
             }
+            // Nothing to hit when closed: an off-screen drawer must not swallow taps meant
+            // for the transcript, and its scrim is gone by then anyway.
+            .allowsHitTesting(showNotes)
         }
-        .animation(.easeOut(duration: 0.24), value: showNotes)
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
                 ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
@@ -482,8 +502,21 @@ struct StudyView: View {
                 let leftwards = -value.translation.width
                 guard leftwards > 60 || -value.predictedEndTranslation.width > 120 else { return }
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                showNotes = true
+                openNotes()
             }
+    }
+
+    /// Opens the notes drawer. The animation lives here rather than on the view, so the
+    /// slide is driven by the state change that causes it.
+    private func openNotes() {
+        notesDragOffset = 0
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { showNotes = true }
+    }
+
+    private func closeNotes() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { showNotes = false }
+        // Reset AFTER the slide out, or the next open would start mid-drag.
+        notesDragOffset = 0
     }
 
     /// Clears the notes the learner made on this episode.
