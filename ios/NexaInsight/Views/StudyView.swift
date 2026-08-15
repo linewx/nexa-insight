@@ -323,14 +323,21 @@ struct StudyView: View {
                 ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
             }
         }
-        .sheet(item: $practiceExpression) { expression in
-            NavigationStack {
-                ExamplePracticeView(episodeId: episodeId, expression: expression, store: store, onStartRecording: {
-                    // Practice the example against silence; the source remains paused
-                    // afterwards so the learner chooses when to resume listening.
-                    player.pause()
-                })
-            }
+        // Its own layer. This screen carries two item-driven sheets — shadowing and example
+        // practice — and only one presentation per view survives, so whichever lost would
+        // simply never open. Found by grepping for the pattern after the ➕ bug rather than
+        // by anyone reporting it, which is how this trap keeps hiding.
+        .background {
+            Color.clear
+                .sheet(item: $practiceExpression) { expression in
+                    NavigationStack {
+                        ExamplePracticeView(episodeId: episodeId, expression: expression, store: store, onStartRecording: {
+                            // Practice the example against silence; the source remains paused
+                            // afterwards so the learner chooses when to resume listening.
+                            player.pause()
+                        })
+                    }
+                }
         }
         // Watching the controller has to happen in a view that OBSERVES it. `@State`
         // holds a reference without subscribing to objectWillChange, so an `.onChange`
