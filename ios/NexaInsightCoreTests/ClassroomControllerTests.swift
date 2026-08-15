@@ -267,7 +267,7 @@ final class ClassroomControllerTests: XCTestCase {
     func testPausePlaybackToolSilencesTeacherAndGoesIdle() {
         let (c, playback, _, _) = make()
         playback.currentMs = 4200
-        c.runPlaybackTool(.pause_playback, [:])
+        c.runPlaybackTool(.pause_playback, ToolArguments())
         XCTAssertEqual(c.floor, .idle)
         XCTAssertTrue(playback.didPause)
         XCTAssertEqual(c.frozenPositionMs, 4200)
@@ -308,7 +308,7 @@ final class ClassroomControllerTests: XCTestCase {
         c.enterLive()
         c.handleRealtimeEvent(.speechStarted)
         c.handleRealtimeEvent(.responseCreated)
-        c.runPlaybackTool(.resume_playback, [:])
+        c.runPlaybackTool(.resume_playback, ToolArguments())
         XCTAssertEqual(c.floor, .player)
         XCTAssertTrue(playback.didPlay)
         let pausesBefore = playback.pauses
@@ -355,7 +355,7 @@ final class ClassroomControllerTests: XCTestCase {
     func testLivePlaybackRequestGrantsPlayerFloorAndStopsTeacher() {
         let (c, playback, transport, _) = make()
         c.enterLive()
-        c.runPlaybackTool(.resume_playback, [:])
+        c.runPlaybackTool(.resume_playback, ToolArguments())
         XCTAssertEqual(c.floor, .player)
         XCTAssertTrue(playback.didPlay)
         XCTAssertGreaterThan(transport.stoppedSpeaking, 0)
@@ -373,7 +373,7 @@ final class ClassroomControllerTests: XCTestCase {
     func testResumeToolPlaysAndClearsFrozen() {
         let (c, playback, transport, box) = make()
         c.freeze(2000, reason: .paused)
-        c.runPlaybackTool(.resume_playback, [:])
+        c.runPlaybackTool(.resume_playback, ToolArguments())
         XCTAssertNil(c.frozenPositionMs)
         XCTAssertTrue(playback.didPlay)
         XCTAssertGreaterThan(transport.stoppedSpeaking, 0)
@@ -382,7 +382,7 @@ final class ClassroomControllerTests: XCTestCase {
 
     func testSeekToolSeeksResumesAndRefreshesContext() {
         let (c, playback, transport, box) = make()
-        c.runPlaybackTool(.seek_to_timestamp, ["seconds": 3])
+        c.runPlaybackTool(.seek_to_timestamp, ToolArguments(numbers: ["seconds": 3]))
         XCTAssertEqual(playback.seeks.last, 3000)
         XCTAssertTrue(playback.didPlay)
         XCTAssertEqual(box.refreshes.last, 3000)
@@ -395,7 +395,7 @@ final class ClassroomControllerTests: XCTestCase {
     func testNextSentenceUsesActiveIndex() {
         let (c, playback, _, _) = make()
         playback.currentMs = 1050
-        c.runPlaybackTool(.next_sentence, [:])
+        c.runPlaybackTool(.next_sentence, ToolArguments())
         XCTAssertEqual(playback.seeks.last, 2000)
     }
 
@@ -414,7 +414,7 @@ final class ClassroomControllerTests: XCTestCase {
 
     func testToolCallEventRunsToolAndAcks() {
         let (c, playback, transport, _) = make()
-        c.handleRealtimeEvent(.toolCall(name: .pause_playback, args: [:], callId: "abc"))
+        c.handleRealtimeEvent(.toolCall(name: .pause_playback, args: ToolArguments(), callId: "abc"))
         XCTAssertTrue(playback.didPause)
         XCTAssertEqual(transport.toolResults.last?.0, "abc")
         XCTAssertEqual(transport.toolResults.last?.1, true)
@@ -424,8 +424,8 @@ final class ClassroomControllerTests: XCTestCase {
     // must run the tool once. Guards against a seek/pause firing twice.
     func testDuplicateToolCallIdRunsOnce() {
         let (c, playback, _, _) = make()
-        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp, args: ["seconds": 3], callId: "dup"))
-        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp, args: ["seconds": 3], callId: "dup"))
+        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp, args: ToolArguments(numbers: ["seconds": 3]), callId: "dup"))
+        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp, args: ToolArguments(numbers: ["seconds": 3]), callId: "dup"))
         XCTAssertEqual(playback.seeks.filter { $0 == 3000 }.count, 1)
     }
 

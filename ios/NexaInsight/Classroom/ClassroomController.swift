@@ -64,7 +64,7 @@ enum RealtimeEvent {
     case inputTranscriptionCompleted(String)
     case responseAudioTranscriptDone(String)
     case responseDone
-    case toolCall(name: PlaybackTool, args: [String: Double], callId: String?)
+    case toolCall(name: PlaybackTool, args: ToolArguments, callId: String?)
 }
 
 @MainActor
@@ -158,13 +158,13 @@ final class ClassroomController: ObservableObject {
         applyFloorEvent(.playbackHeld)
     }
 
-    func runPlaybackTool(_ name: PlaybackTool, _ args: [String: Double]) {
+    func runPlaybackTool(_ name: PlaybackTool, _ args: ToolArguments) {
         transport.stopSpeaking()
         let positionMs = cursor()
         let at = activeSentence(sentences, positionMs) ?? sentences.first
         let index = max(0, sentences.firstIndex(where: { $0.id == at?.id }) ?? 0)
         let starts = sentences.map(\.startMs)
-        let target = playbackTargetPosition(name, args, positionMs, index, starts)
+        let target = playbackTargetPosition(name, args.numbers, positionMs, index, starts)
         switch name {
         case .resume_playback, .finish_discussion:
             resume()
@@ -294,7 +294,8 @@ final class ClassroomController: ObservableObject {
         guard isActionableTranscript(trimmed) else { return }
         if let direct = matchDirectCommand(trimmed) {
             transcript.append(TutorTurn(role: .user, text: trimmed))
-            runPlaybackTool(direct.name, direct.args)
+            // Typed shortcuts only ever carry numbers, so the text half stays empty.
+            runPlaybackTool(direct.name, ToolArguments(numbers: direct.args))
             return
         }
         // Discussion on the Omni-direct path: freeze if needed, inject the learner

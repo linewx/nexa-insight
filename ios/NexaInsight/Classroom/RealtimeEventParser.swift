@@ -44,14 +44,39 @@ enum RealtimeEventParser {
         }
     }
 
-    private static func safeArgs(_ raw: String?) -> [String: Double] {
+    /// A tool call's arguments, numeric and textual.
+    ///
+    /// Numbers used to be the whole story — every playback argument is one (seconds, a
+    /// rate) — so strings were dropped without anyone noticing. Saving a note needs text,
+    /// and `numbers` keeps the exact shape `playbackTargetPosition` reads, so the
+    /// playback path is untouched by adding the other half.
+    static func safeArgs(_ raw: String?) -> ToolArguments {
         guard let raw, let data = raw.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        var result: [String: Double] = [:]
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return ToolArguments() }
+        var numbers: [String: Double] = [:]
+        var texts: [String: String] = [:]
         for (key, value) in obj {
-            if let d = value as? Double { result[key] = d }
-            else if let i = value as? Int { result[key] = Double(i) }
+            if let d = value as? Double { numbers[key] = d }
+            else if let i = value as? Int { numbers[key] = Double(i) }
+            else if let s = value as? String {
+                // A model asked for a number sometimes sends "30". Kept in BOTH, so a
+                // quoted number still reaches the playback path rather than being read
+                // as text and silently ignored.
+                if let d = Double(s) { numbers[key] = d }
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { texts[key] = trimmed }
+            }
         }
-        return result
+        return ToolArguments(numbers: numbers, texts: texts)
     }
+}
+
+/// The arguments of one tool call.
+struct ToolArguments: Equatable {
+    var numbers: [String: Double] = [:]
+    var texts: [String: String] = [:]
+
+    subscript(_ key: String) -> Double? { numbers[key] }
+    func text(_ key: String) -> String? { texts[key] }
 }

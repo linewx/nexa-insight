@@ -73,7 +73,7 @@ final class RealtimeEventParserTests: XCTestCase {
                 "arguments": "not json", "call_id": "c2"]]]])
         guard case let .toolCall(name, args, _) = e else { return XCTFail() }
         XCTAssertEqual(name, .resume_playback)
-        XCTAssertTrue(args.isEmpty)
+        XCTAssertEqual(args, ToolArguments(), "unparseable arguments must yield nothing, not a partial guess")
     }
 
     func testUnknownToolNameIgnored() {
@@ -85,5 +85,52 @@ final class RealtimeEventParserTests: XCTestCase {
 
     func testUnrelatedEventReturnsNil() {
         XCTAssertNil(RealtimeEventParser.parse(["type": "response.output_item.added"]))
+    }
+
+    // MARK: - Tool arguments
+
+    // Strings used to be dropped silently. Nothing noticed because every playback
+    // argument is a number; saving a note is the first tool that carries text.
+    func testTextArgumentsSurvive() {
+        let args = RealtimeEventParser.safeArgs(#"{"text":"kind of","meaning":"有点儿"}"#)
+        XCTAssertEqual(args.text("text"), "kind of")
+        XCTAssertEqual(args.text("meaning"), "有点儿")
+    }
+
+    // The regression that matters: playbackTargetPosition reads `numbers`, so adding the
+    // text half must leave the numeric half byte-for-byte as it was.
+    func testNumericArgumentsAreUnchanged() {
+        let args = RealtimeEventParser.safeArgs(#"{"seconds":90.5,"rate":2}"#)
+        XCTAssertEqual(args.numbers, ["seconds": 90.5, "rate": 2])
+        XCTAssertEqual(args["seconds"], 90.5)
+    }
+
+    // A model asked for a number sometimes sends "30". Kept in both, so the playback path
+    // still sees a number rather than reading it as text and ignoring it.
+    func testAQuotedNumberIsStillANumber() {
+        let args = RealtimeEventParser.safeArgs(#"{"seconds":"30"}"#)
+        XCTAssertEqual(args["seconds"], 30)
+        XCTAssertEqual(args.text("seconds"), "30")
+    }
+
+    func testBlankTextIsNotCarried() {
+        let args = RealtimeEventParser.safeArgs(#"{"text":"   ","meaning":""}"#)
+        XCTAssertNil(args.text("text"))
+        XCTAssertNil(args.text("meaning"))
+    }
+
+    func testTextIsTrimmed() {
+        XCTAssertEqual(RealtimeEventParser.safeArgs(#"{"text":"  kind of \n"}"#).text("text"),
+                       "kind of")
+    }
+
+    // One call can carry both halves, and neither leaks into the other: a note's text
+    // must not appear as a number, and a real number must not appear as text.
+    func testMixedArgumentsSplitCleanly() {
+        let args = RealtimeEventParser.safeArgs(#"{"text":"work out","seconds":12}"#)
+        XCTAssertEqual(args.text("text"), "work out")
+        XCTAssertEqual(args["seconds"], 12)
+        XCTAssertNil(args["text"], "prose is not a number")
+        XCTAssertNil(args.text("seconds"), "a real number is not text")
     }
 }
