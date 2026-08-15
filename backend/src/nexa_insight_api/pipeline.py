@@ -50,7 +50,6 @@ class AIAdapter(Protocol):
     def translate(self, texts: list[str]) -> list[str]: ...
     def chapters(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
     def classify_material(self, sentences: list[TranscriptSegment]) -> str: ...
-    def learning_expressions(self, sentences: list[TranscriptSegment], material_kind: str = "native") -> list[dict]: ...
 
 
 class YtDlpMediaAdapter:
@@ -304,76 +303,11 @@ class OpenAIAdapter:
     # much") and literal domain nouns ("training data center") on every source,
     # including a Patrick Collison interview. What was missing was any statement of
     # what makes an item worth studying — and any instruction to refuse.
-    REJECT_RULES = (
-        "REJECT, however frequent: greetings, sign-offs and show boilerplate "
-        '("welcome back", "thanks so much", "link in the description"); anything a '
-        'B2 learner already knows ("speaking of that", "a lot of"); domain nouns '
-        'that translate literally and teach no English ("training data center", '
-        '"n flops"); and compounds whose meaning is just the sum of their words. '
-        "Each item must be at most 6 words — the reusable expression itself, not "
-        "the sentence containing it. Quoting a whole sentence teaches nothing "
-        "transferable. The one exception is a pattern with {slots}, which may be "
-        "longer because the frame is what carries over. "
-        "Return at most 8 items for these sentences. Fewer is better than padding. "
-        "Every explanation field must be written in Chinese. "
-        "Give sentence_position (the numbered sentence it came from) but NO "
-        "character offsets — those are computed from the text itself."
-    )
-
-    NATIVE_PROMPT = (
-        "These transcripts run at native speed and were made for native speakers. "
-        "The learner can already read slowly; what defeats them is catching and "
-        "parsing real speech. Extract only what would make a learner MISS or "
-        "MISREAD the line, each as exactly one type:\n"
-        '- "reduction": what the words become in fast speech, unrecognisable by ear '
-        '("want to" -> "wanna"). Give heard_as (the sound produced) and restored '
-        "(the full form).\n"
-        '- "ellipsis": omitted words the learner must restore to parse it '
-        '("Been there?"). Give restored.\n'
-        '- "syntax": a clause structure that breaks parsing (heavy embedding, '
-        "fronting, garden-path). Give restored as an unpacked reading.\n"
-        '- "idiom": figurative meaning not derivable from the words.\n'
-        '- "reference": a name, place or cultural fact assumed known that a '
-        "non-native would not recognise.\n"
-        "For each item return: text, type, chinese, pronunciation (IPA, single "
-        "words only, no slashes, else null), heard_as, restored, why_hard (one "
-        "Chinese sentence on why it defeats a listener or reader), formality "
-        '("formal"|"neutral"|"spoken"|"technical"), example (verbatim from the '
-        "transcript), example_chinese, sentence_position. "
-        'Return JSON with key "expressions". '
-    ) + REJECT_RULES
-
-    TEACHING_PROMPT = (
-        "This is an English-teaching podcast: the hosts are explicitly teaching "
-        "usable spoken English, and the learner's goal is to SAY these things. "
-        "Prefer what the hosts THEMSELVES flag as worth learning — they say things "
-        'like "a great phrase", "we say", "say it with us". Follow that signal. '
-        "Extract, each as exactly one type:\n"
-        '- "phrase": a conversational expression to use verbatim ("real talk"). '
-        "Give when_to_use.\n"
-        '- "pattern": a reusable frame with slots in braces '
-        '("I can\'t {change X}, but I can {change Y}"). Give when_to_use and state '
-        "what fills each slot.\n"
-        '- "collocation": a pairing a Chinese speaker gets wrong by translating. '
-        "Give common_mistake (the wrong Chinese-English attempt).\n"
-        "For each item return: text, type, chinese, pronunciation (IPA, single "
-        "words only, no slashes, else null), when_to_use, common_mistake, formality "
-        '("formal"|"neutral"|"spoken"), example (verbatim from the transcript), '
-        'example_chinese, sentence_position. Return JSON with key "expressions". '
-    ) + REJECT_RULES
-
     def classify_material(self, sentences: list[TranscriptSegment]) -> str:
         payload = [sentence.text for sentence in sentences[:60]]
         result = self._json(self.CLASSIFY_MATERIAL, {"sentences": payload})
         material = result.get("material") if isinstance(result, dict) else None
         return "teaching" if material == "teaching" else "native"
-
-    def learning_expressions(self, sentences: list[TranscriptSegment], material_kind: str = "native") -> list[dict]:
-        payload = [{"position": index, "text": sentence.text} for index, sentence in enumerate(sentences)]
-        instruction = self.TEACHING_PROMPT if material_kind == "teaching" else self.NATIVE_PROMPT
-        result = self._json(instruction, {"sentences": payload})
-        return list(result["expressions"])
-
 
 class ImportPipeline:
     CHUNK_MS = 900_000
@@ -442,9 +376,16 @@ class ImportPipeline:
             self.repo.upsert_job(job_id, stage="learning", progress=94)
             material_kind = self._material_kind(all_segments)
             self.repo.set_material_kind(episode.id, material_kind)
-            expressions = self._learning_expressions(all_segments, job_id, material_kind)
+            # No batch extraction. Cards exist because the learner ASKED for one, so
+            # pre-picking a few hundred expressions per episode spent the slowest and
+            # most expensive stage of the pipeline building a shelf nobody opened — and,
+            # since transcript highlights are drawn from those same rows, marking up the
+            # text with words nobody chose.
+            #
+            # material_kind above is still detected and stored: it selects which prompt
+            # the ON-DEMAND extraction uses when a card is actually requested.
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
-            self.repo.replace_learning_content(episode.id, chapters, sentences, expressions)
+            self.repo.replace_learning_content(episode.id, chapters, sentences, [])
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
         except Exception as exc:
             self.repo.upsert_job(job_id, stage=self.repo.get_job(job_id).stage, progress=self.repo.get_job(job_id).progress, status="failed", error=str(exc))
@@ -550,63 +491,6 @@ class ImportPipeline:
         except Exception:
             return "native"
 
-    def _learning_expressions(self, sentences: list[TranscriptSegment], job_id: int, material_kind: str = "native") -> list[dict]:
-        """Keep each model response small enough to return complete JSON.
-
-        Extraction emits roughly twice the output tokens of translation, so a
-        batch costs ~42s against ~9s. Run the batches concurrently the way
-        translation already does, otherwise this single stage takes longer than
-        the whole rest of the import.
-        """
-        batch_size = max(1, self.settings.learning_expression_batch_size)
-        offsets = list(range(0, len(sentences), batch_size))
-        total_batches = max(1, len(offsets))
-        batches: list[list[dict]] = [[] for _ in offsets]
-        if not offsets:
-            return []
-        completed = 0
-        workers = max(1, min(self.settings.learning_expression_concurrency, len(offsets)))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(self._learning_expressions_exact, sentences[start:start + batch_size], start, material_kind): index
-                for index, start in enumerate(offsets)
-            }
-            for future in as_completed(futures):
-                # Index by position, not append: batches finish out of order and
-                # expression positions must still line up with the transcript.
-                batches[futures[future]] = future.result()
-                completed += 1
-                self.repo.upsert_job(job_id, stage="learning", progress=94 + int(5 * completed / total_batches))
-        return [expression for batch in batches for expression in batch]
-
-    def _learning_expressions_exact(self, sentences: list[TranscriptSegment], offset: int, material_kind: str = "native") -> list[dict]:
-        try:
-            batch = self.ai.learning_expressions(sentences, material_kind)
-        except (TypeError, AttributeError):
-            # Splitting the batch cannot fix a wrong call signature or a missing
-            # method. Swallowing these produced a "successful" import with an empty
-            # learning pack, which is worse than a failed one.
-            raise
-        except Exception:
-            if len(sentences) == 1:
-                return []
-            middle = len(sentences) // 2
-            return (
-                self._learning_expressions_exact(sentences[:middle], offset, material_kind)
-                + self._learning_expressions_exact(sentences[middle:], offset + middle, material_kind)
-            )
-        expressions: list[dict] = []
-        for expression in batch:
-            item = dict(expression)
-            item["occurrences"] = [
-                remapped
-                for occurrence in item.get("occurrences", [])
-                if (remapped := self._remap_occurrence(occurrence, offset)) is not None
-            ]
-            expressions.append(item)
-        return expressions
-
-    @staticmethod
     def _remap_occurrence(occurrence: object, offset: int) -> dict | None:
         """Shift a batch-local position into the transcript's own numbering.
 

@@ -213,8 +213,9 @@ def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     assert repo.get_episode(episode_id).audio_path == f"episodes/{episode_id}/source.mp3"
     assert repo.get_job(job_id).status == "complete"
     expressions = repo.list_learning_expressions(episode_id)
-    assert [(item.text, item.kind) for item in expressions] == [("Hello world", "phrase")]
-    assert [(item.sentence.position, item.start_offset, item.end_offset) for item in expressions[0].occurrences] == [(0, 0, 11)]
+    # A finished episode carries transcript and translation and NOTHING pre-picked:
+    # cards exist because the learner asked for one.
+    assert expressions == []
 
 
 def test_pipeline_audio_backfill_downloads_audio_without_reprocessing(repo, tmp_path):
@@ -305,54 +306,19 @@ def test_pipeline_accepts_a_translation_with_no_chinese_to_produce(repo, tmp_pat
     assert [item.chinese for item in repo.list_sentences(episode_id)] == ["DEP40。", "中文：Goodbye."]
 
 
-def test_pipeline_extracts_learning_expressions_in_batches_with_global_positions(repo, tmp_path):
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path, learning_expression_batch_size=2)
-    ai = BatchedExpressionAI()
-
-    ImportPipeline(repo, settings, ManySegmentsMedia(tmp_path, 5), ai).run(job_id)
-
-    assert sorted(len(batch) for batch in ai.expression_batches) == [1, 2, 2]
-    expressions = repo.list_learning_expressions(episode_id)
-    assert [item.occurrences[0].sentence.position for item in expressions] == [0, 2, 4]
-    assert repo.get_job(job_id).progress == 100
-
-
-def test_pipeline_retries_a_truncated_expression_batch_in_smaller_chunks(repo, tmp_path):
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path, learning_expression_batch_size=5)
-    ai = SizeLimitedExpressionAI()
-
-    ImportPipeline(repo, settings, ManySegmentsMedia(tmp_path, 5), ai).run(job_id)
-
-    assert [len(batch) for batch in ai.expression_batches] == [2, 1, 2]
-    assert [item.occurrences[0].sentence.position for item in repo.list_learning_expressions(episode_id)] == [0, 2, 3]
-
-
 class MaterialAwareAI(FakeAI):
-    """Records which strategy the pipeline asked for."""
+    """Records which material strategy the pipeline classified the episode as.
+
+    It used to also stand in for batch extraction; that is gone, so what remains is the
+    classification, which still matters — `material_kind` picks the prompt ON-DEMAND
+    extraction uses when the learner actually asks for a card.
+    """
 
     def __init__(self, material="native"):
         self.material = material
-        self.asked_with = []
 
     def classify_material(self, sentences):
         return self.material
-
-    def learning_expressions(self, sentences, material_kind="native"):
-        self.asked_with.append(material_kind)
-        return [{
-            "text": sentences[0].text.split(".")[0],
-            "type": "reduction" if material_kind == "native" else "phrase",
-            "chinese": "测试",
-            "pronunciation": None,
-            "example": sentences[0].text,
-            "example_chinese": "测试例句",
-            "heard_as": "kinda" if material_kind == "native" else None,
-            "why_hard": "弱读脱落。" if material_kind == "native" else None,
-            "when_to_use": None if material_kind == "native" else "日常对话。",
-            "occurrences": [{"sentence_position": 0}],
-        }]
 
 
 def test_pipeline_records_material_kind_and_uses_the_matching_strategy(repo, tmp_path):
@@ -363,25 +329,11 @@ def test_pipeline_records_material_kind_and_uses_the_matching_strategy(repo, tmp
 
     ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
 
+    # Classification still runs and is stored — it selects the prompt on-demand
+    # extraction will use. What is gone is extraction itself, so the episode arrives
+    # with no expressions at all.
     assert repo.get_episode(episode_id).material_kind == "teaching"
-    assert set(ai.asked_with) == {"teaching"}
-    stored = repo.list_learning_expressions(episode_id)[0]
-    assert stored.type == "phrase"
-    assert stored.when_to_use == "日常对话。"
-
-
-def test_pipeline_extracts_native_material_with_the_native_strategy(repo, tmp_path):
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path)
-    ai = MaterialAwareAI(material="native")
-
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
-
-    assert repo.get_episode(episode_id).material_kind == "native"
-    stored = repo.list_learning_expressions(episode_id)[0]
-    assert stored.type == "reduction"
-    assert stored.heard_as == "kinda"
-    assert stored.why_hard == "弱读脱落。"
+    assert repo.list_learning_expressions(episode_id) == []
 
 
 def test_pipeline_falls_back_to_native_when_classification_fails(repo, tmp_path):
@@ -424,80 +376,6 @@ class NonconformingAI(FakeAI):
                 "occurrences": [{"sentence_position": 0}],
             },
         ]
-
-
-def test_pipeline_accepts_ipa_returned_as_a_word_list(repo, tmp_path):
-    """The model returns per-word IPA as a list; storing it must not crash."""
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path)
-
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), NonconformingAI()).run(job_id)
-
-    stored = {item.text: item for item in repo.list_learning_expressions(episode_id)}
-    assert stored["real talk"].pronunciation == "riːl tɔːk"
-
-
-def test_pipeline_demotes_a_pattern_without_slots(repo, tmp_path):
-    """A pattern is a frame with slots; a whole sentence is just a phrase."""
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path)
-
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), NonconformingAI()).run(job_id)
-
-    sentence_item = next(
-        item for item in repo.list_learning_expressions(episode_id) if item.text == "Hello world."
-    )
-    assert sentence_item.type == "phrase"
-
-
-def test_pipeline_reports_a_programming_error_instead_of_silently_losing_expressions(repo, tmp_path):
-    """The batch retry is for flaky model calls, not for bugs in our own code.
-
-    A TypeError from a wrong call signature was caught by the same handler,
-    recursed down to single sentences, and returned as "no expressions found" —
-    a green import with a silently empty learning pack.
-    """
-    class BuggyAI(FakeAI):
-        def learning_expressions(self, sentences, material_kind="native"):
-            raise TypeError("learning_expressions() got an unexpected argument")
-
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path)
-
-    with pytest.raises(TypeError):
-        ImportPipeline(repo, settings, FakeMedia(tmp_path), BuggyAI()).run(job_id)
-
-    assert repo.get_job(job_id).status == "failed"
-
-
-def test_pipeline_extracts_expression_batches_concurrently(repo, tmp_path):
-    """Serial batches dominated import time: 12 waves at ~42s each."""
-    episode_id, job_id = _seed(repo)
-    settings = Settings(
-        _env_file=None,
-        data_dir=tmp_path,
-        learning_expression_batch_size=2,
-        learning_expression_concurrency=3,
-    )
-    ai = SlowExpressionAI()
-
-    ImportPipeline(repo, settings, ManySegmentsMedia(tmp_path, 8), ai).run(job_id)
-
-    assert ai.max_active > 1
-    assert repo.get_job(job_id).status == "complete"
-    # Positions must stay correct even though batches finish out of order.
-    assert [item.occurrences[0].sentence.position for item in repo.list_learning_expressions(episode_id)] == [0, 2, 4, 6]
-
-
-def test_pipeline_remaps_string_offsets_and_skips_incomplete_occurrences(repo, tmp_path):
-    """The model returns offsets as strings, which must not crash the batch remap."""
-    episode_id, job_id = _seed(repo)
-    settings = Settings(_env_file=None, data_dir=tmp_path, learning_expression_batch_size=2)
-
-    ImportPipeline(repo, settings, ManySegmentsMedia(tmp_path, 5), StringOffsetExpressionAI()).run(job_id)
-
-    assert repo.get_job(job_id).status == "complete"
-    assert [item.occurrences[0].sentence.position for item in repo.list_learning_expressions(episode_id)] == [0, 2, 4]
 
 
 def test_pipeline_replaces_leftover_audio_from_an_earlier_run(repo, tmp_path):

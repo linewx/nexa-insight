@@ -14,5 +14,3 @@ class Settings(BaseSettings):
     text_model: str = "gpt-4.1-mini"
     translation_batch_size: int = 10
     translation_concurrency: int = 4
-    learning_expression_batch_size: int = 40
-    learning_expression_concurrency: int = 4

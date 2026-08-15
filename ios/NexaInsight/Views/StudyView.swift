@@ -141,7 +141,6 @@ struct StudyView: View {
             },
             mode: mode,
             annotated: annotated,
-            annotationsAvailable: !learningExpressions.isEmpty,
             onToggleAnnotations: {
                 let next = mode.toggled
                 modeOverride = next
@@ -725,7 +724,6 @@ private struct StudyWorkspace: View {
     var onCycleSpeed: () -> Void = {}
     var mode: StudyMode = .listening
     let annotated: Bool
-    let annotationsAvailable: Bool
     let onToggleAnnotations: () -> Void
     let learningExpressions: [LearningExpressionDTO]
     let expressionIndex: LearningExpressionLogic.Index
@@ -763,7 +761,6 @@ private struct StudyWorkspace: View {
                 speed: speed,
                 mode: mode,
                 annotated: annotated,
-                annotationsAvailable: annotationsAvailable,
                 onToggleAnnotations: onToggleAnnotations
             )
             studySurface
@@ -863,7 +860,6 @@ private struct StudyWorkspace: View {
                 onCycleSpeed: onCycleSpeed,
                 mode: mode,
                 annotated: annotated,
-                annotationsAvailable: annotationsAvailable,
                 learningExpressions: learningExpressions,
                 expressionIndex: expressionIndex,
                 cardIndex: cardIndex,
@@ -897,7 +893,6 @@ private struct WorkspaceTopBar: View {
     var speed: Double = 1
     var mode: StudyMode = .listening
     let annotated: Bool
-    let annotationsAvailable: Bool
     let onToggleAnnotations: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
@@ -1716,7 +1711,6 @@ private struct TranscriptBlock: View {
     var onCycleSpeed: () -> Void = {}
     var mode: StudyMode = .listening
     let annotated: Bool
-    let annotationsAvailable: Bool
     let learningExpressions: [LearningExpressionDTO]
     /// Supplied by the owner, not rebuilt here. The player publishes its position
     /// every 200ms, so anything computed in a redraw runs five times a second for
@@ -1767,16 +1761,15 @@ private struct TranscriptBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NXSpacing.x4) {
             NXSectionHeader(title: "Transcript")
-            // Said only when there is nothing to mark: annotations are on by
-            // default, so silence here would look like the feature is missing
-            // rather than the content.
-            if !annotationsAvailable {
-                Text("\u{7cbe}\u{8bfb}\u{5185}\u{5bb9}\u{4f1a}\u{5728}\u{65b0}\u{5bfc}\u{5165}\u{6216}\u{91cd}\u{65b0}\u{89e3}\u{6790}\u{7684}\u{89c6}\u{9891}\u{4e2d}\u{751f}\u{6210}\u{3002}\u{5f53}\u{524d}\u{5185}\u{5bb9}\u{4ecd}\u{53ef}\u{6b63}\u{5e38}\u{7cbe}\u{542c}\u{3002}")
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .padding(.bottom, NXSpacing.x2)
-            } else if annotated {
-                Text("\u{5df2}\u{6807}\u{6ce8} \(learningExpressions.count) \u{4e2a}\u{91cd}\u{70b9}，\u{70b9}\u{51fb}\u{84dd}\u{8272}\u{8bcd}\u{7ec4}\u{5c55}\u{5f00}\u{7cbe}\u{8bfb}\u{5361}\u{7247}\u{3002}")
+            // Both hints here were wrong. One promised that 精读 content "will be
+            // generated when you import or re-parse a video" — nothing generates it any
+            // more. The other counted the batch-extracted words and told you to tap a
+            // blue one, which stopped opening anything when the links were removed.
+            //
+            // What is true now: an empty transcript has no notes because none were
+            // asked for, and the way to get one is to hold a paragraph and say so.
+            if !annotated {
+                Text("\u{957f}\u{6309}\u{6bb5}\u{843d}\u{63d0}\u{95ee}\u{ff0c}\u{8bf4}\u{300c}\u{8bb0}\u{4e00}\u{4e0b}\u{300d}\u{5c31}\u{4f1a}\u{5b58}\u{6210}\u{5361}\u{7247}\u{5e76}\u{5728}\u{539f}\u{6587}\u{9ad8}\u{4eae}\u{3002}")
                     .font(NXFont.auxiliary)
                     .foregroundStyle(NXColor.textSecondary(scheme))
                     .padding(.bottom, NXSpacing.x2)

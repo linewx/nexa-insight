@@ -64,7 +64,15 @@ final class EpisodeStore {
             let sentence = StoredSentence(sentenceId: s.id, episodeId: bundle.episode.id, chapterId: s.chapterId, position: s.position, startMs: s.startMs, endMs: s.endMs, speaker: s.speaker, sourceText: s.sourceText, chinese: s.chinese)
             context.insert(sentence); stored.sentences.append(sentence)
         }
-        for item in bundle.learningExpressions {
+        // Only the learner's own notes are kept. Batch extraction still runs in the
+        // pipeline and still ships inside the bundle, but nothing here stores it: cards
+        // exist because you asked for one, so a shelf of machine-picked words is noise
+        // in the notes list and, since highlights are drawn from the same rows, noise in
+        // the transcript too.
+        //
+        // Filtered on the way IN rather than purged afterwards, or every resync would
+        // hand them all back.
+        for item in bundle.learningExpressions where item.source == "manual" {
             let expression = StoredLearningExpression(
                 expressionId: item.id, episodeId: bundle.episode.id, text: item.text,
                 kind: item.kind.rawValue, type: item.type.rawValue,
@@ -222,6 +230,27 @@ final class EpisodeStore {
             predicate: #Predicate { $0.noteId == noteId }))) ?? []
         matches.forEach(context.delete)
         try context.save()
+    }
+
+    /// Removes every batch-extracted expression from every episode, and reports how many.
+    ///
+    /// A migration, run once on launch: the app no longer stores these (see `attach`), but
+    /// a device that ran the old build has them, and they would sit in the notes list and
+    /// highlight the transcript forever otherwise.
+    ///
+    /// Manual notes are untouched — they are the only cards that exist by intent.
+    @discardableResult
+    func purgeAutoExpressions() throws -> Int {
+        let all = (try? context.fetch(FetchDescriptor<StoredLearningExpression>())) ?? []
+        var removed = 0
+        for expression in all where !expression.isManual {
+            expression.occurrences.forEach(context.delete)
+            context.delete(expression)
+            removed += 1
+        }
+        guard removed > 0 else { return 0 }
+        try context.save()
+        return removed
     }
 
     /// Removes everything the learner made by hand on one episode, and reports how many.

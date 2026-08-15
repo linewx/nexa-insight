@@ -25,15 +25,17 @@ final class EpisodeStoreTests: XCTestCase {
             ])
     }
 
+    // Every study field has to survive the round trip: anything dropped here is invisible
+    // in the app whatever produced it. A MANUAL note, because those are the only rows the
+    // store keeps now — an archived note comes back inside the bundle the same way.
     func testSavedExpressionKeepsItsStudyFields() throws {
-        // A downloaded episode reads from this store, so anything dropped here is
-        // invisible in the app no matter what the backend produced.
         let store = try makeStore()
         let expression = LearningExpressionDTO(
             id: 2, text: "kind of", kind: .phrase, type: .reduction, chinese: "有点儿",
             pronunciation: nil, example: "I kind of like it.", exampleChinese: "我有点喜欢。",
             heardAs: "kinda", restored: "kind of", whyHard: "弱读脱落。",
             whenToUse: nil, commonMistake: "a little bit of", formality: "spoken",
+            source: "manual",
             occurrences: [ExpressionOccurrenceDTO(sentenceId: 10, startOffset: 0, endOffset: 2)])
         _ = try store.saveBundle(
             BundleDTO(episode: bundle().episode, chapters: [], sentences: [], hasAudio: false,
@@ -119,8 +121,9 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(store.chapters(for: 1).count, 1)
         XCTAssertEqual(store.downloadedEpisodes().first?.title, "T")
         XCTAssertEqual(store.localAudioPath(for: 1), "audio/1.mp3")
-        XCTAssertEqual(store.learningExpressions(for: 1).first?.text, "Hello")
-        XCTAssertEqual(store.learningExpressions(for: 1).first?.occurrences.first?.sentenceId, 10)
+        // The bundle still SHIPS batch-extracted expressions; the store no longer keeps
+        // them, so a downloaded episode arrives with transcript and chapters and no cards.
+        XCTAssertTrue(store.learningExpressions(for: 1).isEmpty)
     }
 
     func testSaveBundleUpsertsReplacingSentences() throws {
@@ -203,8 +206,9 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(manual.count, 1)
         XCTAssertEqual(manual.first?.text, "Hi")
         XCTAssertEqual(manual.first?.request, "\u{53ea}\u{8bb2}\u{65f6}\u{6001}")
-        // The auto row from the bundle is still replaced, not accumulated.
-        XCTAssertEqual(stored.filter { $0.source == "auto" }.count, 1)
+        // And nothing else arrived with it: the bundle's batch-extracted row is dropped on
+        // the way in, so a redownload cannot bury the learner's own note under it.
+        XCTAssertTrue(stored.filter { $0.source == "auto" }.isEmpty)
     }
 
     func testManualNoteIsAnchoredBySearchingTheSentence() throws {
@@ -388,14 +392,8 @@ final class ParagraphNoteStoreTests: XCTestCase {
     func testClearingRemovesOnlyWhatTheLearnerMade() throws {
         let s = try store()
         var withAuto = bundle()
-        withAuto = BundleDTO(
-            episode: withAuto.episode, chapters: withAuto.chapters, sentences: withAuto.sentences,
-            hasAudio: true, hasLearningPack: true,
-            learningExpressions: [
-                LearningExpressionDTO(
-                    id: 5, text: "Hi", kind: .phrase, chinese: "\u{55e8}", pronunciation: nil,
-                    example: "Hi there", exampleChinese: "\u{55e8}"),
-            ])
+        // The bundle's own batch-extracted row is dropped on the way in, so there is no
+        // longer an "auto" half to protect — clearing removes everything there is.
         _ = try s.saveBundle(withAuto, localAudioPath: nil)
         let dto = LearningExpressionDTO(
             id: 0, text: "Hi", kind: .phrase, type: .idiom, chinese: "\u{55e8}",
@@ -406,10 +404,34 @@ final class ParagraphNoteStoreTests: XCTestCase {
         let removed = try s.clearManualNotes(for: 1)
 
         XCTAssertEqual(removed, 2, "one expression and one note")
-        XCTAssertTrue(s.learningExpressions(for: 1).filter { $0.source == "manual" }.isEmpty)
+        XCTAssertTrue(s.learningExpressions(for: 1).isEmpty)
         XCTAssertTrue(s.paragraphNotes(for: 1).isEmpty)
-        XCTAssertEqual(s.learningExpressions(for: 1).filter { $0.source == "auto" }.count, 1,
-                       "the automatic row must survive")
+    }
+
+    // A device that ran the old build still holds hundreds of batch-extracted rows per
+    // episode. Nothing regenerates them now, so they are cleared once on launch — the
+    // learner's own notes are untouched.
+    func testPurgingRemovesLegacyAutoExpressionsOnly() throws {
+        let s = try store()
+        _ = try s.saveBundle(bundle(), localAudioPath: nil)
+        // Inserted the way the OLD build did, since saveBundle no longer accepts them.
+        let legacy = StoredLearningExpression(
+            expressionId: 900, episodeId: 1, text: "legacy", kind: "word", type: "word",
+            chinese: "\u{65e7}", pronunciation: nil, example: "x", exampleChinese: "y",
+            source: "auto")
+        s.context.insert(legacy)
+        let dto = LearningExpressionDTO(
+            id: 0, text: "Hi", kind: .phrase, type: .idiom, chinese: "\u{55e8}",
+            pronunciation: nil, example: "Hi there", exampleChinese: "\u{55e8}")
+        _ = try s.addManualExpression(episodeId: 1, sentenceId: 10, expression: dto, request: nil)
+
+        let removed = try s.purgeAutoExpressions()
+
+        XCTAssertEqual(removed, 1)
+        XCTAssertEqual(s.learningExpressions(for: 1).map(\.text), ["Hi"],
+                       "only the learner's own note survives")
+        // Idempotent: a second launch has nothing left to do.
+        XCTAssertEqual(try s.purgeAutoExpressions(), 0)
     }
 
     func testClearingAnEpisodeWithNothingToClearIsHarmless() throws {
@@ -419,25 +441,6 @@ final class ParagraphNoteStoreTests: XCTestCase {
         XCTAssertEqual(try s.clearManualNotes(for: 999), 0, "an unknown episode is not an error")
     }
 
-    func testAutoExpressionsCannotBeDeleted() throws {
-        // A reprocess replaces them, so a delete would not stay deleted.
-        let s = try store()
-        var withAuto = bundle()
-        withAuto = BundleDTO(
-            episode: withAuto.episode, chapters: withAuto.chapters, sentences: withAuto.sentences,
-            hasAudio: true, hasLearningPack: true,
-            learningExpressions: [
-                LearningExpressionDTO(
-                    id: 5, text: "Hi", kind: .phrase, chinese: "\u{55e8}", pronunciation: nil,
-                    example: "Hi there", exampleChinese: "\u{55e8}",
-                    occurrences: [ExpressionOccurrenceDTO(sentenceId: 10, startOffset: 0, endOffset: 2)])
-            ])
-        _ = try s.saveBundle(withAuto, localAudioPath: nil)
-
-        try s.deleteManualExpression(5)
-
-        XCTAssertEqual(s.learningExpressions(for: 1).count, 1, "an auto row must survive")
-    }
 
     /// The round trip the transcript rows actually draw from: delete, re-read the
     /// store, rebuild the card index.
