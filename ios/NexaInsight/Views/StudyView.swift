@@ -138,9 +138,15 @@ struct StudyView: View {
             onToggleAnnotations: {
                 let next = mode.toggled
                 modeOverride = next
-                // Leaving reading closes any open card: its controls are gone, and a
-                // card with no way to practise from it is a dead end.
-                if next == .listening { expandedExpressionID = nil }
+                if next == .listening {
+                    // Leaving reading closes any open card: its controls are gone, and a
+                    // card with no way to practise from it is a dead end.
+                    expandedExpressionID = nil
+                    // And closes any open conversation. Listening has no per-paragraph
+                    // hold, so a panel left open would sit there with no way to follow up
+                    // — its own "继续长按追问" pointing at a gesture that is gone.
+                    finishConversation()
+                }
             },
             learningExpressions: learningExpressions,
             expressionIndex: cachedIndex,
@@ -1804,17 +1810,26 @@ private struct TranscriptRow: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Gestures, not a Button, on EVERY row. A Button would swallow the long
-            // press, so an un-annotated episode had no way to ask about a paragraph at
-            // all — holding did nothing, by construction. That was survivable only while
-            // reading was the default mode and you entered it on annotated episodes;
-            // making listening the default landed people on episodes where the hold had
-            // never been wired, which reads as "hold-to-talk stopped working".
+            // Whether a row carries the ask-by-holding gesture is a MODE question, not a
+            // content one. It used to hang off `annotated`, so an episode with no
+            // highlights had no gesture at all and holding did nothing by construction —
+            // survivable only while reading was the default and you entered it on
+            // annotated episodes. `readingContent` renders plain text when there is
+            // nothing to mark (see `attributed`), so the content branch is gone.
             //
-            // Asking about a line has nothing to do with whether the episode happens to
-            // carry highlights, so the branch that decided it is gone. `readingContent`
-            // renders plain text when there is nothing to mark (see `attributed`).
-            Group {
+            // Listening keeps its hold for the DOCK, which asks about wherever playback
+            // is. Two hold targets under one finger is one too many: a press on the text
+            // and a press on the bar would start competing turns, and the row would win
+            // the ones aimed at neither. So in listening the row is a plain tap — play
+            // this line — and asking belongs to the bar.
+            if mode.showsPlaybackControls {
+                readingContent
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        flashPress()
+                        actions.tap(sentence)
+                    }
+            } else {
                 readingContent
                     .contentShape(Rectangle())
                     .onTapGesture {
