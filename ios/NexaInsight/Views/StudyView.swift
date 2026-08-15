@@ -32,7 +32,7 @@ struct StudyView: View {
     @State private var paragraphNotes: [StoredParagraphNote] = []
     @State private var practiceExpression: LearningExpressionDTO?
     /// The conversation in progress, if any. One paragraph at a time: holding a
-    /// different one sediments this conversation before moving the anchor.
+    /// different one closes this conversation before moving the anchor.
     ///
     /// Replaces `askingSentence` plus the composer's sheet state. The old pair could
     /// only say "a finger is down on this line"; a conversation has to survive the
@@ -193,9 +193,9 @@ struct StudyView: View {
             if player.currentMs >= Resume.minimumMs {
                 store.savePlaybackPosition(player.currentMs, for: episodeId)
             }
-            // Leaving ends the conversation, so a question asked on the way out still
-            // leaves its knowledge point behind. Without this the only way to keep
-            // anything would be to remember to tap 结束提问 first.
+            // Leaving closes the conversation, so returning does not find a stale panel
+            // still showing turns from last time. Nothing is lost by closing now: cards
+            // are written the moment you ask for one, not on the way out.
             finishConversation()
         }
         .onChange(of: annotated) { _, showing in
@@ -342,8 +342,8 @@ struct StudyView: View {
             return
         }
         // A follow-up continues the same conversation; a hold on a different paragraph
-        // ends the previous one first, so its points are sedimented before the anchor
-        // moves.
+        // closes the previous one first, so the panel does not follow the anchor to a
+        // paragraph its turns were never about.
         if let existing = readingAsk, existing.sentenceId != sentence.id {
             finishConversation()
         }
@@ -370,100 +370,21 @@ struct StudyView: View {
         controller.releaseReadingAsk()
     }
 
-    /// Ends the conversation and keeps whatever it was worth.
+    /// Ends the conversation.
     ///
-    /// Sedimenting happens HERE, once, rather than per turn: a follow-up chain about
-    /// one thing is one knowledge point, and recording each turn separately would
-    /// shatter it into three cards that each say a third of it.
+    /// No longer sediments anything. Cards are written when you ASK for one — the teacher
+    /// calls save_note and it lands immediately — so extracting again here would mean
+    /// every conversation produced cards twice: once because you asked, once because a
+    /// model decided afterwards.
     ///
-    /// Often keeps nothing, and that is the intended behaviour — see
-    /// `KnowledgePointExtractor`. Nothing is reported either way: the answer has
-    /// already been read on screen, so a dialog here would only interrupt.
+    /// The automatic path is kept in the tree (`KnowledgePointExtractor`,
+    /// `ExtractionPrompt.conversationRules`, `OnDemandExtractionClient.knowledgePoints`)
+    /// rather than deleted, because "explicit only" is a behaviour experiment: if asking
+    /// turns out to be easy to forget, automatic sedimenting comes back as a supplement.
+    /// That is the difference from the dead code removed earlier, which was unreachable
+    /// rather than merely unused.
     private func finishConversation() {
-        guard let ask = readingAsk else { return }
         readingAsk = nil
-        guard !ask.isEmpty else { return }
-        let sentence = sentences.first { $0.id == ask.sentenceId }
-        Task { await sediment(ask, on: sentence) }
-    }
-
-    private func sediment(_ ask: ReadingAsk, on sentence: SentenceDTO?) async {
-        guard let sentence else { return }
-        let keychain = KeychainStore()
-        let client = OnDemandExtractionClient(
-            apiKey: keychain.get(.dashscopeKey) ?? "",
-            workspaceId: keychain.get(.dashscopeWorkspaceId) ?? "")
-        let window = contextWindow(around: sentence)
-        let points = await client.knowledgePoints(
-            conversation: KnowledgePointExtractor.conversationText(ask.turns),
-            candidates: window.map(\.sourceText),
-            materialKind: episode?.materialKind ?? "native")
-        guard !points.isEmpty else { return }
-        for point in points {
-            switch point {
-            case let .vocabulary(expression, question):
-                store(expression, on: sentence, request: question.isEmpty ? nil : question)
-            case let .question(question, answer):
-                do {
-                    try store.addParagraphNote(
-                        episodeId: episodeId, sentenceId: sentence.id,
-                        question: question, answer: answer)
-                } catch {
-                    noteError = error.localizedDescription
-                }
-            }
-        }
-        refreshExpressionCaches()
-        // Opened, so what was kept is visible rather than behind a summary row you
-        // would have to notice and tap.
-        expandedCardSentenceIds.insert(sentence.id)
-    }
-
-    /// Lines offered to the model when the question was spoken.
-    ///
-    /// Holding a paragraph names its subject exactly, so the window is that
-    /// paragraph plus one line either side — enough for a question whose answer
-    /// straddles a sentence break ("what does *this* refer to"), without inviting
-    /// the model to answer about a line you were not pointing at.
-    ///
-    /// Falling back to the playing position needs a wider net: nothing was pointed
-    /// at, and by the time you notice you did not follow something it has gone by,
-    /// so the window leans backwards.
-    private func contextWindow(around sentence: SentenceDTO?) -> [SentenceDTO] {
-        guard let anchor = sentence ?? current,
-              let index = sentences.firstIndex(where: { $0.id == anchor.id })
-        else { return Array(sentences.prefix(8)) }
-
-        let pointedAt = sentence != nil
-        let start = max(0, index - (pointedAt ? 1 : 5))
-        let end = min(sentences.count, index + (pointedAt ? 2 : 3))
-        return Array(sentences[start..<end])
-    }
-
-    /// Persists one extracted expression as a manual note and reveals it.
-    private func store(_ item: ExtractedExpression, on sentence: SentenceDTO?, request: String?) {
-        guard let sentence else { return }
-        let dto = LearningExpressionDTO(
-            id: 0, text: item.text, kind: item.type.impliedKind, type: item.type,
-            chinese: item.chinese, pronunciation: item.pronunciation,
-            example: item.example, exampleChinese: item.exampleChinese,
-            heardAs: item.heardAs, restored: item.restored, whyHard: item.whyHard,
-            whenToUse: item.whenToUse, commonMistake: item.commonMistake,
-            formality: item.formality, source: "manual", request: request)
-        do {
-            if let stored = try store.addManualExpression(
-                episodeId: episodeId, sentenceId: sentence.id, expression: dto, request: request) {
-                // Through the refresh, so the highlight index and the card index both
-                // see the new expression.
-                refreshExpressionCaches()
-                // Opened, so the answer is on screen rather than behind a summary row
-                // you would have to notice and tap.
-                expandedCardSentenceIds.insert(sentence.id)
-                expandedExpressionID = stored.expressionId
-            }
-        } catch {
-            noteError = error.localizedDescription
-        }
     }
 
     // Interactive edge-swipe back. Only the horizontal component is read, so a
@@ -2076,15 +1997,16 @@ private struct TranscriptRow: View, Equatable {
                 case .misheard:
                     Text("\u{6ca1}\u{542c}\u{6e05}\u{ff0c}\u{518d}\u{957f}\u{6309}\u{8bf4}\u{4e00}\u{904d}\u{3002}")
                 case .idle:
-                    // Ending is explicit, because ending is what decides whether this
-                    // exchange leaves a card behind.
+                    // Closing no longer decides whether a card is kept — asking does, and
+                    // the card is already written by then. So this is just "I'm done
+                    // here", and the hint says what actually keeps something.
                     Button(action: actions.endConversation) {
-                        Text("\u{7ed3}\u{675f}\u{63d0}\u{95ee}")
+                        Text("\u{6536}\u{8d77}")
                             .font(NXFont.auxiliary)
                             .foregroundStyle(NXColor.primary)
                     }
                     .buttonStyle(.plain)
-                    Text("\u{6216}\u{7ee7}\u{7eed}\u{957f}\u{6309}\u{8ffd}\u{95ee}")
+                    Text("\u{7ee7}\u{7eed}\u{957f}\u{6309}\u{8ffd}\u{95ee}\u{ff0c}\u{6216}\u{8bf4}\u{300c}\u{8bb0}\u{4e00}\u{4e0b}\u{300d}\u{5b58}\u{6210}\u{5361}\u{7247}")
                 }
             }
             .font(NXFont.auxiliary)
