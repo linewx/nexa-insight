@@ -17,6 +17,9 @@ struct StudyView: View {
     // How far the screen is dragged during a back-swipe. Drives the follow-the-finger
     // offset so the gesture has the visual feedback the system one would give.
     @State private var backSwipeOffset: CGFloat = 0
+    /// Whether the notes drawer is open. Opened by dragging in from the RIGHT edge — the
+    /// left edge is the back gesture, and two things on one edge is one too many.
+    @State private var showNotes = false
     // Intensive-listening state. Loop lives here rather than on a row so only one
     // sentence can ever loop; speed mirrors the player's rate for the badge.
     @State private var loop: SentenceLoop = .off
@@ -231,6 +234,30 @@ struct StudyView: View {
         // which gave no feedback and silently failed on any vertical drift.
         .offset(x: backSwipeOffset)
         .simultaneousGesture(edgeSwipeBackGesture)
+        .simultaneousGesture(notesDrawerGesture)
+        // A sheet rather than an overlay that slides: the drawer is a place you go and
+        // come back from, and a sheet already carries the dismissal a learner expects
+        // (swipe down, or the chevron in its own header).
+        .sheet(isPresented: $showNotes) {
+            NotesDrawer(
+                expressions: learningExpressions,
+                notes: paragraphNotes.map {
+                    (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+                },
+                sentenceStarts: Dictionary(
+                    sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
+                onDelete: deleteCard,
+                onClear: clearNotes,
+                onJump: { ms in
+                    showNotes = false
+                    playIntent(seekTo: ms)
+                },
+                onPractice: { expression in
+                    showNotes = false
+                    practiceExpression = expression
+                },
+                onClose: { showNotes = false })
+        }
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
                 ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
@@ -409,6 +436,44 @@ struct StudyView: View {
     // `staysMostlyHorizontal` check did. The finger is tracked live and the screen
     // snaps back when released short, which is the feedback that tells the learner
     // the gesture exists at all.
+    /// Drag in from the RIGHT edge to open the notes.
+    ///
+    /// Mirrors the back gesture on the opposite edge rather than sharing it: the left edge
+    /// already means "leave this episode", and hanging a second meaning on the same drag
+    /// would make both feel unreliable. `.global` because the trigger is the screen's edge,
+    /// and the row is inset from it.
+    ///
+    /// Not interactive (no follow-the-finger offset) because the drawer is a sheet, and a
+    /// sheet cannot be dragged in halfway — it either presents or it does not, so tracking
+    /// the finger would promise a motion it cannot deliver.
+    private var notesDrawerGesture: some Gesture {
+        DragGesture(minimumDistance: 24, coordinateSpace: .global)
+            .onEnded { value in
+                let width = UIScreen.main.bounds.width
+                // Started near the right edge, below the header so the scrubber keeps its
+                // own drag, and moved decisively leftwards.
+                guard value.startLocation.x >= width - 32, value.startLocation.y > 96 else { return }
+                let leftwards = -value.translation.width
+                guard leftwards > 60 || -value.predictedEndTranslation.width > 120 else { return }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showNotes = true
+            }
+    }
+
+    /// Clears the notes the learner made on this episode.
+    private func clearNotes() {
+        do {
+            try store.clearManualNotes(for: episodeId)
+            refreshExpressionCaches()
+            // Nothing left to expand, and a card id kept here would point at a row that
+            // no longer exists.
+            expandedExpressionID = nil
+            expandedCardSentenceIds = []
+        } catch {
+            noteError = error.localizedDescription
+        }
+    }
+
     private var edgeSwipeBackGesture: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .local)
             .onChanged { value in
@@ -2222,6 +2287,145 @@ private struct InlineExpressionText: View {
 /// Deliberately plainer than a vocabulary card: there is no pronunciation to show,
 /// nothing to shadow, and no highlight in the text above — the subject was the
 /// passage, so the card is just what was asked and what came back.
+/// Every note on this episode, in one place, reachable from the right edge.
+///
+/// The cards already exist under their paragraphs, so this is not a second home for them
+/// — it is the answer to "what have I actually collected here", which the transcript
+/// cannot give: the notes are scattered across hundreds of lines, and finding one means
+/// remembering where it was.
+///
+/// Scoped to the current episode on purpose. A cross-episode review surface belongs on
+/// the home tab, not inside one episode.
+private struct NotesDrawer: View {
+    let expressions: [LearningExpressionDTO]
+    let notes: [(id: Int, sentenceId: Int, question: String, answer: String)]
+    /// Where each card sits in the transcript, so tapping one can jump there.
+    let sentenceStarts: [Int: Int]
+    let onDelete: (ParagraphCards.Card) -> Void
+    let onClear: () -> Void
+    let onJump: (Int) -> Void
+    let onPractice: (LearningExpressionDTO) -> Void
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var scheme
+    @State private var confirmingClear = false
+
+    /// Only what the learner made can be cleared, so the button hides when there is
+    /// nothing of theirs — offering it on an episode of purely automatic cards would
+    /// promise an action that does nothing.
+    private var clearableCount: Int {
+        expressions.filter { $0.source == "manual" }.count + notes.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if expressions.isEmpty && notes.isEmpty {
+                NXEmptyState(
+                    title: "\u{8fd8}\u{6ca1}\u{6709}\u{7b14}\u{8bb0}",
+                    message: "\u{957f}\u{6309}\u{6bb5}\u{843d}\u{63d0}\u{95ee}\u{ff0c}\u{7136}\u{540e}\u{8bf4}\u{300c}\u{8bb0}\u{4e00}\u{4e0b}\u{300d}\u{ff0c}\u{5361}\u{7247}\u{4f1a}\u{51fa}\u{73b0}\u{5728}\u{8fd9}\u{91cc}\u{3002}")
+                    .padding(.horizontal, NXSpacing.x4)
+            } else {
+                list
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(NXColor.background(scheme))
+    }
+
+    private var header: some View {
+        HStack(spacing: NXSpacing.x3) {
+            Button(action: onClose) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\u{6536}\u{8d77}\u{7b14}\u{8bb0}")
+
+            Text("\u{7b14}\u{8bb0}")
+                .font(NXFont.subsectionTitle)
+                .foregroundStyle(NXColor.text(scheme))
+            Spacer(minLength: 0)
+            if clearableCount > 0 {
+                Button { confirmingClear = true } label: {
+                    Text("\u{6e05}\u{7a7a}")
+                        .font(NXFont.auxiliary)
+                        // The system red, not a design-system token: there is no danger
+                        // colour in NXColor, and inventing one for a single label would
+                        // put a second opinion about "destructive" in the codebase.
+                        .foregroundStyle(Color.red)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, NXSpacing.x4)
+        .padding(.vertical, NXSpacing.x3)
+        // Destructive and not obviously reversible, so it asks. The count is in the
+        // question because "clear notes" reads very differently at 2 and at 40.
+        .confirmationDialog(
+            "\u{6e05}\u{7a7a} \(clearableCount) \u{6761}\u{7b14}\u{8bb0}\u{ff1f}",
+            isPresented: $confirmingClear, titleVisibility: .visible
+        ) {
+            Button("\u{6e05}\u{7a7a}", role: .destructive, action: onClear)
+            Button("\u{53d6}\u{6d88}", role: .cancel) {}
+        } message: {
+            Text("\u{81ea}\u{52a8}\u{6807}\u{6ce8}\u{7684}\u{91cd}\u{70b9}\u{4e0d}\u{4f1a}\u{88ab}\u{5220}\u{9664}\u{3002}")
+        }
+    }
+
+    private var list: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: NXSpacing.x3) {
+                ForEach(expressions) { expression in
+                    row(sentenceId: expression.occurrences.first?.sentenceId) {
+                        ExpressionInlineCard(
+                            expression: expression,
+                            onPractice: { onPractice(expression) },
+                            onDelete: expression.source == "manual"
+                                ? { onDelete(.expression(expression)) }
+                                : nil)
+                    }
+                }
+                ForEach(notes, id: \.id) { note in
+                    row(sentenceId: note.sentenceId) {
+                        ParagraphNoteCard(
+                            question: note.question, answer: note.answer,
+                            onDelete: { onDelete(.note(id: note.id, question: note.question, answer: note.answer)) })
+                    }
+                }
+            }
+            .padding(.horizontal, NXSpacing.x4)
+            .padding(.bottom, NXSpacing.x8)
+        }
+    }
+
+    /// A card plus the line it came from. Tapping jumps there and closes the drawer:
+    /// a note usually raises the question "what was that in", and the answer is the
+    /// transcript.
+    @ViewBuilder private func row<Content: View>(
+        sentenceId: Int?, @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: NXSpacing.x1) {
+            if let sentenceId, let startMs = sentenceStarts[sentenceId] {
+                Button { onJump(startMs) } label: {
+                    HStack(spacing: NXSpacing.x1) {
+                        Image(systemName: "arrow.up.left")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(formatTime(startMs)).monospacedDigit()
+                    }
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.primary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            content()
+        }
+    }
+}
+
 private struct ParagraphNoteCard: View {
     let question: String
     let answer: String

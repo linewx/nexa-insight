@@ -382,6 +382,43 @@ final class ParagraphNoteStoreTests: XCTestCase {
         XCTAssertTrue(s.learningExpressions(for: 1).filter { $0.source == "manual" }.isEmpty)
     }
 
+    // "Clear" means clear what the learner made. Automatic rows survive for the same
+    // reason a single one cannot be deleted: a reprocess rewrites them, so removing one is
+    // a promise the next sync would break.
+    func testClearingRemovesOnlyWhatTheLearnerMade() throws {
+        let s = try store()
+        var withAuto = bundle()
+        withAuto = BundleDTO(
+            episode: withAuto.episode, chapters: withAuto.chapters, sentences: withAuto.sentences,
+            hasAudio: true, hasLearningPack: true,
+            learningExpressions: [
+                LearningExpressionDTO(
+                    id: 5, text: "Hi", kind: .phrase, chinese: "\u{55e8}", pronunciation: nil,
+                    example: "Hi there", exampleChinese: "\u{55e8}"),
+            ])
+        _ = try s.saveBundle(withAuto, localAudioPath: nil)
+        let dto = LearningExpressionDTO(
+            id: 0, text: "Hi", kind: .phrase, type: .idiom, chinese: "\u{55e8}",
+            pronunciation: nil, example: "Hi there", exampleChinese: "\u{55e8}")
+        _ = try s.addManualExpression(episodeId: 1, sentenceId: 10, expression: dto, request: nil)
+        try s.addParagraphNote(episodeId: 1, sentenceId: 10, question: "q", answer: "a")
+
+        let removed = try s.clearManualNotes(for: 1)
+
+        XCTAssertEqual(removed, 2, "one expression and one note")
+        XCTAssertTrue(s.learningExpressions(for: 1).filter { $0.source == "manual" }.isEmpty)
+        XCTAssertTrue(s.paragraphNotes(for: 1).isEmpty)
+        XCTAssertEqual(s.learningExpressions(for: 1).filter { $0.source == "auto" }.count, 1,
+                       "the automatic row must survive")
+    }
+
+    func testClearingAnEpisodeWithNothingToClearIsHarmless() throws {
+        let s = try store()
+        _ = try s.saveBundle(bundle(), localAudioPath: nil)
+        XCTAssertEqual(try s.clearManualNotes(for: 1), 0)
+        XCTAssertEqual(try s.clearManualNotes(for: 999), 0, "an unknown episode is not an error")
+    }
+
     func testAutoExpressionsCannotBeDeleted() throws {
         // A reprocess replaces them, so a delete would not stay deleted.
         let s = try store()

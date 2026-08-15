@@ -224,6 +224,32 @@ final class EpisodeStore {
         try context.save()
     }
 
+    /// Removes everything the learner made by hand on one episode, and reports how many.
+    ///
+    /// Automatic rows are left alone, for the same reason a single one cannot be deleted:
+    /// a reprocess rewrites them, so removing one is a promise the next sync would break.
+    /// That makes "clear" mean "clear what I made", which is also the only half a learner
+    /// thinks of as theirs.
+    ///
+    /// One save at the end rather than per row: clearing thirty notes should be one write.
+    @discardableResult
+    func clearManualNotes(for episodeId: Int) throws -> Int {
+        var removed = 0
+        if let stored = episode(episodeId) {
+            for expression in stored.learningExpressions where expression.isManual {
+                expression.occurrences.forEach(context.delete)
+                context.delete(expression)
+                removed += 1
+            }
+        }
+        for note in paragraphNotes(for: episodeId) {
+            context.delete(note)
+            removed += 1
+        }
+        try context.save()
+        return removed
+    }
+
     /// Deletes a note the learner made by hand.
     ///
     /// Refuses anything from batch extraction: those are replaced wholesale by a
