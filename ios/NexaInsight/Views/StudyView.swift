@@ -1084,9 +1084,17 @@ private struct ReadingTurnObserver: View {
                     }
                 }
             }
-            // The floor leaving both the learner and the teacher is the turn ending.
-            .onChange(of: controller.floor) { _, floor in
-                guard active, floor != .teacher, floor != .user else { return }
+            // A turn ends when the floor LEAVES the learner or the teacher — the
+            // transition matters, not the destination.
+            //
+            // Watching only the new value reported a turn ending before one had begun.
+            // `.idle` is also the resting floor between conversations, so a hold that
+            // arrived while the floor was settling fired `finished()` on a conversation
+            // with no turns in it yet, which is precisely the `misheard` condition:
+            // every hold reported "没听清" without a word having been lost.
+            .onChange(of: controller.floor) { old, new in
+                guard active, old == .teacher || old == .user else { return }
+                guard new != .teacher, new != .user else { return }
                 onEvent(.turnEnded)
             }
     }

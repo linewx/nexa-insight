@@ -52,6 +52,23 @@ final class ReadingAskTests: XCTestCase {
         XCTAssertEqual(a.sentenceId, 42, "the anchor does not move")
     }
 
+    // Only a turn that was UNDERWAY can end. Reporting one otherwise is how every hold
+    // came to say "没听清" with nothing actually lost: a floor settling to .idle while a
+    // fresh conversation held no turns yet looked identical to a turn that produced no
+    // words.
+    func testATurnThatNeverStartedCannotEnd() {
+        var a = ask()
+        XCTAssertEqual(a.phase, .recording)
+        a.finished()
+        XCTAssertEqual(a.phase, .recording, "still recording — nothing has ended")
+
+        var settled = ask()
+        settled.released(); settled.heard("q"); settled.answered("a"); settled.finished()
+        XCTAssertEqual(settled.phase, .idle)
+        settled.finished()
+        XCTAssertEqual(settled.phase, .idle, "a settled conversation must not become misheard")
+    }
+
     // A turn that ends with nothing transcribed says so. Silence with no explanation
     // is what makes a learner press again and again.
     func testTurnEndingWithNoWordsReportsMisheard() {

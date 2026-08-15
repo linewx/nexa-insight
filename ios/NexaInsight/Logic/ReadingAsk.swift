@@ -79,7 +79,14 @@ struct ReadingAsk: Equatable {
     /// The turn is over. Lands on `idle` so a follow-up is possible, unless nothing
     /// was heard at all — then say so, because silence with no explanation is the
     /// failure mode that makes a learner press again and again.
+    ///
+    /// Only a turn that was actually UNDERWAY can end. A conversation still recording,
+    /// or already settled, is left alone: reporting `misheard` for a turn that never
+    /// started is how every hold came to say "没听清" with nothing having been lost, and
+    /// this is the second line of defence for it — the caller must also only report a
+    /// turn ending when one was in flight.
     mutating func finished() {
+        guard phase == .waiting || phase == .answering else { return }
         phase = turns.isEmpty ? .misheard : .idle
     }
 
