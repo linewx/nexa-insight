@@ -235,35 +235,55 @@ struct StudyView: View {
         .offset(x: backSwipeOffset)
         .simultaneousGesture(edgeSwipeBackGesture)
         .simultaneousGesture(notesDrawerGesture)
-        // Its own layer, because SwiftUI honours only ONE .sheet per view: three of them
-        // on this view meant the last one won and the other two were silently ignored,
-        // which is why the drawer's gesture fired (the log proved it) and nothing opened.
-        .background {
-            Color.clear
-            // A sheet rather than an overlay that slides: the drawer is a place you go
-            // and come back from, and a sheet already carries the dismissal a learner
-            // expects (swipe down, or the chevron in its own header).
-            .sheet(isPresented: $showNotes) {
-                NotesDrawer(
-                    expressions: learningExpressions,
-                    notes: paragraphNotes.map {
-                        (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
-                    },
-                    sentenceStarts: Dictionary(
-                        sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
-                    onDelete: deleteCard,
-                    onClear: clearNotes,
-                    onJump: { ms in
-                        showNotes = false
-                        playIntent(seekTo: ms)
-                    },
-                    onPractice: { expression in
-                        showNotes = false
-                        practiceExpression = expression
-                    },
-                    onClose: { showNotes = false })
+        // An overlay that slides in from the RIGHT, not a sheet. A sheet rises from the
+        // bottom whatever gesture summoned it, so a leftward drag producing an upward
+        // motion made the two contradict each other — a panel has to arrive from the edge
+        // the finger pulled it from.
+        //
+        // This also sidesteps the one-.sheet-per-view rule that hid it entirely before.
+        .overlay(alignment: .trailing) {
+            if showNotes {
+                ZStack(alignment: .trailing) {
+                    // Tapping outside closes it, and the page behind stops competing for
+                    // attention while it is open.
+                    Color.black.opacity(0.28)
+                        .ignoresSafeArea()
+                        .onTapGesture { showNotes = false }
+                    NotesDrawer(
+                        expressions: learningExpressions,
+                        notes: paragraphNotes.map {
+                            (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+                        },
+                        sentenceStarts: Dictionary(
+                            sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
+                        onDelete: deleteCard,
+                        onClear: clearNotes,
+                        onJump: { ms in
+                            showNotes = false
+                            playIntent(seekTo: ms)
+                        },
+                        onPractice: { expression in
+                            showNotes = false
+                            practiceExpression = expression
+                        },
+                        onClose: { showNotes = false })
+                    // Not full width: the transcript staying visible at the left edge is
+                    // what makes this read as a drawer over the page rather than a new
+                    // screen, and it keeps the way back in sight.
+                    .frame(maxWidth: 380)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .transition(.move(edge: .trailing))
+                    // Pushed back out to the right, the reverse of what opened it.
+                    .gesture(
+                        DragGesture(minimumDistance: 20)
+                            .onEnded { value in
+                                if value.translation.width > 60 { showNotes = false }
+                            })
+                }
+                .ignoresSafeArea(edges: .bottom)
             }
         }
+        .animation(.easeOut(duration: 0.24), value: showNotes)
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
                 ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
