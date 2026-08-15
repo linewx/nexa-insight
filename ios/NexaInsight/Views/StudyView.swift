@@ -235,28 +235,34 @@ struct StudyView: View {
         .offset(x: backSwipeOffset)
         .simultaneousGesture(edgeSwipeBackGesture)
         .simultaneousGesture(notesDrawerGesture)
-        // A sheet rather than an overlay that slides: the drawer is a place you go and
-        // come back from, and a sheet already carries the dismissal a learner expects
-        // (swipe down, or the chevron in its own header).
-        .sheet(isPresented: $showNotes) {
-            NotesDrawer(
-                expressions: learningExpressions,
-                notes: paragraphNotes.map {
-                    (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
-                },
-                sentenceStarts: Dictionary(
-                    sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
-                onDelete: deleteCard,
-                onClear: clearNotes,
-                onJump: { ms in
-                    showNotes = false
-                    playIntent(seekTo: ms)
-                },
-                onPractice: { expression in
-                    showNotes = false
-                    practiceExpression = expression
-                },
-                onClose: { showNotes = false })
+        // Its own layer, because SwiftUI honours only ONE .sheet per view: three of them
+        // on this view meant the last one won and the other two were silently ignored,
+        // which is why the drawer's gesture fired (the log proved it) and nothing opened.
+        .background {
+            Color.clear
+            // A sheet rather than an overlay that slides: the drawer is a place you go
+            // and come back from, and a sheet already carries the dismissal a learner
+            // expects (swipe down, or the chevron in its own header).
+            .sheet(isPresented: $showNotes) {
+                NotesDrawer(
+                    expressions: learningExpressions,
+                    notes: paragraphNotes.map {
+                        (id: $0.noteId, sentenceId: $0.sentenceId, question: $0.question, answer: $0.answer)
+                    },
+                    sentenceStarts: Dictionary(
+                        sentences.map { ($0.id, $0.startMs) }, uniquingKeysWith: { first, _ in first }),
+                    onDelete: deleteCard,
+                    onClear: clearNotes,
+                    onJump: { ms in
+                        showNotes = false
+                        playIntent(seekTo: ms)
+                    },
+                    onPractice: { expression in
+                        showNotes = false
+                        practiceExpression = expression
+                    },
+                    onClose: { showNotes = false })
+            }
         }
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
