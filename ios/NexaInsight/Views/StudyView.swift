@@ -24,6 +24,10 @@ struct StudyView: View {
     /// Separate from `showNotes` because the drawer is always mounted and merely
     /// translated — see the overlay.
     @State private var notesDragOffset: CGFloat = 0
+    /// The page's own width, for the drawer's edge test. Read from geometry rather than
+    /// `UIScreen` because the drag reports in this view's space, and this view is itself
+    /// offset during a back-swipe.
+    @State private var pageWidth: CGFloat = 0
     // Intensive-listening state. Loop lives here rather than on a row so only one
     // sentence can ever loop; speed mirrors the player's rate for the badge.
     @State private var loop: SentenceLoop = .off
@@ -238,7 +242,17 @@ struct StudyView: View {
         // which gave no feedback and silently failed on any vertical drift.
         .offset(x: backSwipeOffset)
         .simultaneousGesture(edgeSwipeBackGesture)
-        .simultaneousGesture(notesDrawerGesture)
+        // Measured, not intercepted: a GeometryReader in the BACKGROUND reports the width
+        // without taking touches, whereas one in an overlay with a contentShape would
+        // swallow every tap meant for the transcript. The gesture stays on the content.
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear { pageWidth = geometry.size.width }
+                    .onChange(of: geometry.size.width) { _, new in pageWidth = new }
+            }
+        }
+        .simultaneousGesture(notesDrawerGesture(width: pageWidth))
         // Slides in from the RIGHT, the edge the finger pulled it from. A sheet was wrong
         // twice over: it rises from the bottom whatever gesture summoned it, and only one
         // .sheet per view is honoured so it never appeared at all.
@@ -281,14 +295,19 @@ struct StudyView: View {
                 // Parked off-screen when closed, so it is mounted and ready rather than
                 // being built as it appears.
                 .offset(x: showNotes ? notesDragOffset : UIScreen.main.bounds.width)
+                // Dismissed by dragging from the drawer's own LEFT edge, not from anywhere
+                // in it. Unconstrained, every rightward drag closed it — including ones
+                // aimed at a card, and including the horizontal slack in a vertical scroll
+                // through a long list of notes.
                 .gesture(
-                    DragGesture(minimumDistance: 8)
+                    DragGesture(minimumDistance: 12, coordinateSpace: .local)
                         .onChanged { value in
-                            // Rightward only: dragging left inside an open drawer is a
-                            // scroll, not an attempt to close it.
+                            guard value.startLocation.x <= 40 else { return }
+                            // Rightward only: leftward inside an open drawer is nothing.
                             notesDragOffset = max(0, value.translation.width)
                         }
                         .onEnded { value in
+                            guard value.startLocation.x <= 40 else { return }
                             let far = value.translation.width > 90
                                 || value.predictedEndTranslation.width > 160
                             if far {
@@ -492,13 +511,18 @@ struct StudyView: View {
     /// Not interactive (no follow-the-finger offset) because the drawer is a sheet, and a
     /// sheet cannot be dragged in halfway — it either presents or it does not, so tracking
     /// the finger would promise a motion it cannot deliver.
-    private var notesDrawerGesture: some Gesture {
-        DragGesture(minimumDistance: 24, coordinateSpace: .global)
+    /// Drag in from the RIGHT edge to open the notes.
+    ///
+    /// `.local`, and the width comes from the geometry rather than `UIScreen`. In `.global`
+    /// space this view's own `backSwipeOffset` shifts the coordinates, so comparing them to
+    /// the screen width let a drag starting anywhere satisfy the edge test — which is why
+    /// swiping in the middle of the page opened the drawer.
+    private func notesDrawerGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 24, coordinateSpace: .local)
             .onEnded { value in
-                let width = UIScreen.main.bounds.width
-                // Started near the right edge, below the header so the scrubber keeps its
+                // Started within the right edge, below the header so the scrubber keeps its
                 // own drag, and moved decisively leftwards.
-                guard value.startLocation.x >= width - 32, value.startLocation.y > 96 else { return }
+                guard value.startLocation.x >= width - 40, value.startLocation.y > 96 else { return }
                 let leftwards = -value.translation.width
                 guard leftwards > 60 || -value.predictedEndTranslation.width > 120 else { return }
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
