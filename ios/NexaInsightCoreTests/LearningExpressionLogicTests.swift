@@ -47,6 +47,26 @@ final class LearningExpressionLogicTests: XCTestCase {
         XCTAssertEqual(styled, ["rethink how"])
     }
 
+    // The callback's mutations have to reach the RETURNED string, not just a copy of
+    // the run. The old test only recorded which text was handed over, which is why a
+    // highlight that set colour and then lost it passed for weeks: cards appeared under
+    // the right lines, and the words in them were never blue.
+    func testTheHighlightStylingSurvivesIntoTheResult() {
+        let segments = LearningExpressionLogic.segments(
+            for: "We need to rethink how we work.", sentenceId: 7, expressions: [expression])
+        // A Foundation attribute rather than a SwiftUI one: the test target does not link
+        // SwiftUI, and the mechanism under test — whether the callback's writes reach the
+        // returned string — is identical either way.
+        let attributed = LearningExpressionLogic.attributedSentence(segments: segments) { run in
+            run.inlinePresentationIntent = .stronglyEmphasized
+        }
+
+        let marked = attributed.runs
+            .filter { $0.attributes.inlinePresentationIntent != nil }
+            .map { String(attributed[$0.range].characters) }
+        XCTAssertEqual(marked, ["rethink how"], "the styling must be on the returned string")
+    }
+
     func testNoLinksAreEmbeddedInTheTranscript() {
         // A link makes SwiftUI treat the Text as interactive, and that is what an
         // episode with expressions paid on every row of every frame — the difference

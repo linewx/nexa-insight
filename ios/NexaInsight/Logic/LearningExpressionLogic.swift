@@ -35,12 +35,19 @@ enum LearningExpressionLogic {
     ) -> AttributedString {
         var output = AttributedString()
         for segment in segments {
-            var piece = AttributedString(segment.text)
-            if segment.expressionID != nil {
-                var whole = piece[piece.startIndex..<piece.endIndex]
-                highlight(&whole)
-            }
+            let piece = AttributedString(segment.text)
+            let start = output.endIndex
             output.append(piece)
+            if segment.expressionID != nil {
+                // The subscript is passed STRAIGHT to the callback. Assigning the slice to
+                // a variable first and mutating that writes to a copy and is silently
+                // lost — verified both ways in isolation. The original code did exactly
+                // that, on a local `piece` thrown away a line later: the callback ran, the
+                // colour was set, nothing kept it. Highlights had not rendered since,
+                // while every test passed, because they only checked WHICH text the
+                // callback was handed and never whether the styling stuck.
+                highlight(&output[start..<output.endIndex])
+            }
         }
         return output
     }
