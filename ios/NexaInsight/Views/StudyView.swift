@@ -2183,20 +2183,37 @@ private struct InlineExpressionText: View {
             //
             // Nothing is lost: the card stack under each paragraph lists every card,
             // so tapping a highlight had become a second door to the same room.
+            // No .font or .foregroundStyle here. A view-level modifier OVERRIDES the
+            // per-run attributes of an AttributedString, so setting either one flattened
+            // the highlight back to body text: the runs were computed correctly, coloured
+            // correctly, and then styled out of existence one line later. The base style
+            // for unhighlighted runs is set inside `attributed` instead.
             Text(attributed)
-                .font(NXFont.body)
-                .foregroundStyle(NXColor.text(scheme))
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    /// The line, with its highlighted runs in the accent colour.
+    ///
+    /// Both the base style AND the highlight live in here. They have to: a `.font` or
+    /// `.foregroundStyle` applied to the `Text` overrides every run's own attributes, so
+    /// styling the view flattened the highlights away — which is exactly what made a
+    /// correctly-saved card show no colour in the transcript.
     private var attributed: AttributedString {
-        LearningExpressionLogic.attributedSentence(segments: segments) { run in
+        var output = LearningExpressionLogic.attributedSentence(segments: segments) { run in
             run.foregroundColor = NXColor.primary
             run.font = NXFont.body.weight(.semibold)
             run.underlineStyle = nil
         }
+        // Applied only where the highlight left them unset, so it cannot undo the accent.
+        for run in output.runs where run.attributes.foregroundColor == nil {
+            output[run.range].foregroundColor = NXColor.text(scheme)
+        }
+        for run in output.runs where run.attributes.font == nil {
+            output[run.range].font = NXFont.body
+        }
+        return output
     }
 }
 
