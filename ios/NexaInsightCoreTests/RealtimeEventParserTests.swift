@@ -87,6 +87,62 @@ final class RealtimeEventParserTests: XCTestCase {
         XCTAssertNil(RealtimeEventParser.parse(["type": "response.output_item.added"]))
     }
 
+    // MARK: - Several calls in one frame
+
+    // Asked to analyse a passage and keep what matters, the teacher saves three words in
+    // one response. The single-event parser returned on the FIRST function_call and dropped
+    // the rest, so one card appeared and the others vanished with no error anywhere.
+    func testEveryToolCallInAFrameIsReturned() {
+        let events = RealtimeEventParser.parseAll([
+            "type": "response.done",
+            "response": ["output": [
+                ["type": "function_call", "name": "save_note",
+                 "arguments": #"{"text":"one","meaning":"一"}"#, "call_id": "a"],
+                ["type": "function_call", "name": "save_note",
+                 "arguments": #"{"text":"two","meaning":"二"}"#, "call_id": "b"],
+                ["type": "function_call", "name": "save_note",
+                 "arguments": #"{"text":"three","meaning":"三"}"#, "call_id": "c"],
+            ]]])
+
+        let saved = events.compactMap { event -> String? in
+            guard case let .toolCall(_, args, _) = event else { return nil }
+            return args.text("text")
+        }
+        XCTAssertEqual(saved, ["one", "two", "three"])
+    }
+
+    // And the turn still ends. `.responseDone` is the only thing that hands the floor back
+    // from the teacher, so losing it left the UI reading "the teacher is speaking" forever
+    // with nothing happening — the same bug, its second symptom.
+    func testTheTurnEndArrivesAfterTheCalls() {
+        let events = RealtimeEventParser.parseAll([
+            "type": "response.done",
+            "response": ["output": [
+                ["type": "function_call", "name": "save_note",
+                 "arguments": #"{"text":"one","meaning":"一"}"#, "call_id": "a"],
+            ]]])
+
+        XCTAssertEqual(events.count, 2)
+        guard case .toolCall = events.first else { return XCTFail("calls come first") }
+        guard case .responseDone = events.last else {
+            return XCTFail("the turn must end, and only after the saves")
+        }
+    }
+
+    func testAFrameWithNoCallsIsJustTheTurnEnding() {
+        let events = RealtimeEventParser.parseAll(["type": "response.done",
+                                                  "response": ["output": []]])
+        XCTAssertEqual(events.count, 1)
+        guard case .responseDone = events.first else { return XCTFail() }
+    }
+
+    // Everything that is not response.done carries exactly one event, and parseAll must
+    // not change how those behave.
+    func testOtherFramesStillYieldASingleEvent() {
+        XCTAssertEqual(RealtimeEventParser.parseAll(["type": "input_audio_buffer.committed"]).count, 1)
+        XCTAssertTrue(RealtimeEventParser.parseAll(["type": "response.output_item.added"]).isEmpty)
+    }
+
     // MARK: - Tool arguments
 
     // Strings used to be dropped silently. Nothing noticed because every playback

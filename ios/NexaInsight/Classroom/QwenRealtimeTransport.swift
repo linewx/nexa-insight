@@ -354,7 +354,11 @@ extension QwenRealtimeTransport: RTCDataChannelDelegate {
             case "response.done": self.hasActiveResponse = false
             default: break
             }
-            if let event = RealtimeEventParser.parse(json) { self.onEvent?(event) }
+            // parseAll, not parse: a response.done carrying several tool calls used to
+            // yield only the first, so the other saves were dropped AND the .responseDone
+            // that hands the floor back was never emitted — the teacher appeared to be
+            // still speaking forever.
+            for event in RealtimeEventParser.parseAll(json) { self.onEvent?(event) }
         }
     }
 }

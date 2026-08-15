@@ -68,6 +68,9 @@ final class ClassroomInstructionsTests: XCTestCase {
         let text = baseClassroomInstructions(material: "M")
         XCTAssertTrue(text.contains("SAVING NOTES"))
         XCTAssertTrue(text.contains("WITHOUT calling save_note"))
+        // One request can be several cards. Asked to analyse a passage, the teacher used to
+        // save the first item and stop — and the parser was dropping the rest anyway.
+        XCTAssertTrue(text.contains("ONE REQUEST CAN BE SEVERAL CARDS"))
         // And not to save unasked — the whole point of making it explicit.
         XCTAssertTrue(text.contains("Only when ASKED"))
     }

@@ -702,6 +702,37 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertTrue(playback.didPlay, "the next answer resumes as usual")
     }
 
+    // "Analyse this passage and keep what matters" is one request and several cards. Each
+    // has its own call_id, so the dedupe must not collapse them into one.
+    func testSeveralNotesInOneTurnAllReachTheStore() {
+        let (c, _, _, box) = make()
+        for (index, word) in ["e2", "e1", "e3"].enumerated() {
+            c.handleRealtimeEvent(.toolCall(
+                name: .save_note,
+                args: ToolArguments(texts: ["text": word, "meaning": "释义"]),
+                callId: "n\(index)"))
+        }
+        XCTAssertEqual(box.saved.count, 3)
+    }
+
+    // And the floor comes back afterwards. Losing the turn end left the UI saying the
+    // teacher was still speaking while nothing happened — the second symptom of the same
+    // dropped-event bug.
+    func testTheFloorIsReleasedAfterSavingSeveralNotes() {
+        let (c, _, _, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertEqual(c.floor, .teacher)
+
+        saveNote(c, callId: "n1")
+        saveNote(c, callId: "n2")
+        c.handleRealtimeEvent(.responseDone)
+
+        XCTAssertNotEqual(c.floor, .teacher, "the teacher must stop holding the floor")
+    }
+
     // Saving works in every scene: that is the requirement — 精听, Live and 精读 alike.
     func testSavingWorksInEveryScene() {
         for enter in [{ (c: ClassroomController) in c.pressQuickAsk() },

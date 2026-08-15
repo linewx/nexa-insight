@@ -1,6 +1,34 @@
 import Foundation
 
 enum RealtimeEventParser {
+    /// Every event in one frame, in order.
+    ///
+    /// A frame can carry SEVERAL tool calls — asked to analyse a passage and keep what
+    /// matters, the teacher saves three words in one response — and the single-event version
+    /// returned on the first `function_call` it found and silently dropped the rest. One
+    /// card appeared and the others vanished with no error anywhere.
+    static func parseAll(_ json: [String: Any]) -> [RealtimeEvent] {
+        let type = json["type"] as? String ?? ""
+        guard type == "response.done" else { return parse(json).map { [$0] } ?? [] }
+
+        // Only response.done can hold more than one; every other frame is a single event.
+        let output = (json["response"] as? [String: Any])?["output"] as? [[String: Any]] ?? []
+        let calls: [RealtimeEvent] = output.compactMap { item in
+            guard (item["type"] as? String) == "function_call",
+                  let rawName = item["name"] as? String,
+                  let tool = PlaybackTool(rawValue: rawName) else { return nil }
+            return .toolCall(name: tool, args: safeArgs(item["arguments"] as? String),
+                             callId: item["call_id"] as? String)
+        }
+        // The tool calls FIRST, then the turn ending. Reversed, `.responseDone` would hand
+        // the floor back — and, in self-study, resume the podcast — before the saves that
+        // are supposed to hold it.
+        return calls.isEmpty ? [.responseDone] : calls + [.responseDone]
+    }
+
+    /// One event, for the frames that only ever carry one. Kept because most callers and
+    /// tests want exactly this, and `parseAll` delegates here for everything but
+    /// `response.done`.
     static func parse(_ json: [String: Any]) -> RealtimeEvent? {
         let type = json["type"] as? String ?? ""
         switch type {

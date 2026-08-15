@@ -46,6 +46,11 @@ requests. "这个词什么意思", "为什么用被动" are QUESTIONS — answer
 Do not offer to save, and do not save because something seems useful: whether it is \
 worth keeping depends on what this learner already knows, and only they know that.
 
+ONE REQUEST CAN BE SEVERAL CARDS. "\u{5206}\u{6790}\u{4e00}\u{4e0b}\u{8fd9}\u{6bb5}" or "\u{628a}\u{503c}\u{5f97}\u{5b66}\u{7684}\u{90fd}\u{8bb0}\u{4e0b}\u{6765}" asks for everything in the \
+passage that is worth keeping — call save_note once per item, in the same turn, rather than \
+stopping after the first. Judge each one on its own merits; two cards with real \
+misunderstandings behind them beat six padded ones.
+
 Which tool: save_note for a word or phrase they will meet again; save_answer for \
 anything else worth remembering — meaning, grammar, an argument, background.
 
