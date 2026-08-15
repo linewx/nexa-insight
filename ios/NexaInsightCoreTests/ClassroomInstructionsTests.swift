@@ -80,6 +80,40 @@ final class ClassroomInstructionsTests: XCTestCase {
         XCTAssertTrue(text.contains("MATERIAL_XYZ"))
     }
 
+    // MARK: - Card guidance per material
+
+    // Tested against a real teaching vlog before this existed: asked which misunderstanding
+    // each word prevents, the model forced plainly-taught vocabulary (ripe / underripe /
+    // overripe) into "reference" and invented literal readings ("在成熟之下") to fill the
+    // field. Nothing was hidden from the learner; it was being explained.
+    func testTeachingMaterialIsToldNotToInventMisreadings() {
+        let text = baseClassroomInstructions(material: "M", materialKind: "teaching")
+        XCTAssertTrue(text.contains("TEACHES English"))
+        XCTAssertTrue(text.contains("leave `literal` empty"))
+        XCTAssertTrue(text.contains("CONTRAST SET"))
+        // The set is one card, and its quote must come from ONE member's sentence — a
+        // stitched quote is a sentence nobody said, and verified(against:) discards it.
+        XCTAssertTrue(text.contains("stitched quote"))
+    }
+
+    // Native speech fails a learner the other way round: they follow most of it and come off
+    // the rails in specific places, usually without noticing.
+    func testNativeMaterialKeepsTheMisunderstandingFraming() {
+        let text = baseClassroomInstructions(material: "M", materialKind: "native")
+        XCTAssertTrue(text.contains("made for native speakers"))
+        XCTAssertTrue(text.contains("the everyday sense is easy AND WRONG HERE"))
+        XCTAssertFalse(text.contains("CONTRAST SET"), "teaching guidance must not leak")
+    }
+
+    // The default has to stay native: an episode imported before classification existed has
+    // no material_kind at all, and native is the safer framing to guess.
+    func testCardGuidanceDefaultsToNative() {
+        XCTAssertEqual(baseClassroomInstructions(material: "M"),
+                       baseClassroomInstructions(material: "M", materialKind: "native"))
+        XCTAssertEqual(baseClassroomInstructions(material: "M", materialKind: "nonsense"),
+                       baseClassroomInstructions(material: "M", materialKind: "native"))
+    }
+
     // Reading asked "what is worth studying here" and got "好，我们来梳理一下…" with the
     // content deferred to a turn that never came. The learner held that paragraph
     // because they are stuck on it now, and a turn spent on preamble also leaves the

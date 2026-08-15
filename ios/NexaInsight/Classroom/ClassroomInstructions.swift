@@ -66,8 +66,73 @@ silence is indistinguishable from not having heard them.
 If you did not catch what to save, ask once rather than guessing.
 """
 
-func baseClassroomInstructions(material: String) -> String {
-    "\(teacherStyle)\n\(playbackDisambiguationRules)\n\n\(noteTakingRules)\n\nClassroom material:\n\(material)"
+/// What a card should CONTAIN, for speech made for native speakers.
+///
+/// The framing is "which misunderstanding would this prevent", because that is how native
+/// material fails a learner: they follow most of it and come off the rails in specific
+/// places, usually without noticing.
+private let nativeCardRules = """
+WHAT TO PUT ON A CARD (this episode was made for native speakers).
+
+Sort by WHY the learner would get it wrong, and say so in `note_type`:
+- chunk: every word familiar, the combination means something else ("throw shade").
+- reference: the everyday sense is easy AND WRONG HERE ("model weights" is not heaviness).
+  The most invisible failure — nothing prompts them to check, so name the wrong reading in
+  `literal`.
+- pattern: phrasing that does not map onto how Chinese says it. `literal` too.
+- phrase: a chunk that mainly signals what comes next ("the thing is", "that said").
+- idiom: the literal sentence and the intended point differ.
+- word: simply unknown. No `literal` — there is no competing reading to warn about.
+
+Leave `literal` EMPTY unless a wrong-but-natural reading genuinely exists. Inventing one
+for an ordinary new word ("容易理解成：思想成熟" for `ripe`) fills the card with a
+misunderstanding nobody would have had.
+"""
+
+/// What a card should contain when the host is teaching English on purpose.
+///
+/// The native framing actively misfires here. Asked which misunderstanding a word prevents,
+/// the model faced a passage of plainly-taught vocabulary — `ripe`, `underripe`, `overripe`
+/// — and forced them all into `reference`, then invented literal readings ("在成熟之下") to
+/// fill the field. Nothing was being hidden from the learner; it was being explained.
+///
+/// So what matters shifts: not "where would you trip" but "what does this word belong
+/// with". A taught word arrives inside a set, and the set is the lesson.
+private let teachingCardRules = """
+WHAT TO PUT ON A CARD (this episode TEACHES English — the host defines words, slows down,
+addresses learners).
+
+Most items here are simply new vocabulary, and that is fine: `note_type` is "word" unless
+it genuinely is one of the other kinds. Do NOT reach for "reference" or "pattern" to make a
+plain new word look deeper, and leave `literal` empty — the host is explaining these words,
+not hiding another sense behind them.
+
+What earns a card here instead:
+- A CONTRAST SET, as ONE card, never one card per member. Taught vocabulary arrives in
+  groups (ripe / underripe / overripe), and the value is in the boundaries between them —
+  where one stops and the next begins, plus how they differ from the neighbour a learner
+  would confuse them with (overripe is not rotten). Put the set in `text` and the
+  distinctions in `usage`.
+  For such a card, `sense_group` and `example` must quote ONE member's sentence verbatim,
+  whichever is clearest. Do NOT stitch several places together with "…": the members sit in
+  different sentences, so a stitched quote is a sentence nobody said, and it is discarded.
+- A FRAME that generalises. "sold by weight" is worth keeping because "by + unit" extends
+  to "by the dozen", "by the pound". State the frame, not just this instance.
+- A word whose FORM misleads: "deli" is short for "delicatessen", so nothing about it hints
+  at cold cuts and prepared salads.
+
+Skip what the host says to run the lesson ("in today's video", "let's take a look") — that
+is boilerplate, not the content being taught.
+"""
+
+
+func baseClassroomInstructions(material: String, materialKind: String = "native") -> String {
+    // Classified at import from the first 60 lines (see the backend's classify_material) and
+    // until now used by nothing: batch extraction was its only consumer and that is gone.
+    // It decides what a SAVED CARD should contain, which is the one place the two material
+    // types genuinely need different instructions.
+    let cardRules = materialKind == "teaching" ? teachingCardRules : nativeCardRules
+    return "\(teacherStyle)\n\(playbackDisambiguationRules)\n\n\(noteTakingRules)\n\n\(cardRules)\n\nClassroom material:\n\(material)"
 }
 
 // Port of classroomConfig.ts BAKED_CONTEXT_MARKER + stableInstructions.

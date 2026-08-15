@@ -29,6 +29,10 @@ final class LiveClassSession: ObservableObject, Identifiable {
     // Loaded content for context building.
     private var episodeTitle: String?
     private var channel: String?
+    /// "native" or "teaching", classified at import from the first 60 lines. Decides what a
+    /// saved card should CONTAIN: the two material types fail the learner in different ways,
+    /// so the same note-taking guidance cannot serve both.
+    private var materialKind = "native"
     private var chapters: [ChapterDTO] = []
     private var sentences: [SentenceDTO] = []
 
@@ -56,19 +60,22 @@ final class LiveClassSession: ObservableObject, Identifiable {
         }
     }
 
-    func loadContent(episodeTitle: String?, channel: String?, chapters: [ChapterDTO], sentences: [SentenceDTO]) {
+    func loadContent(episodeTitle: String?, channel: String?, chapters: [ChapterDTO],
+                     sentences: [SentenceDTO], materialKind: String = "native") {
         self.episodeTitle = episodeTitle; self.channel = channel; self.chapters = chapters; self.sentences = sentences
+        self.materialKind = materialKind
     }
 
     private func loadFromStore() {
         let episode = store.downloadedEpisodes().first { $0.id == episodeId }
         loadContent(episodeTitle: episode?.title, channel: episode?.channel,
-                    chapters: store.chapters(for: episodeId), sentences: store.sentences(for: episodeId))
+                    chapters: store.chapters(for: episodeId), sentences: store.sentences(for: episodeId),
+                    materialKind: episode?.materialKind ?? "native")
     }
 
     func buildInitialInstructions(episodeTitle: String?, channel: String?, chapters: [ChapterDTO], sentences: [SentenceDTO], startMs: Int) -> String {
         let material = classroomContext(episodeTitle: episodeTitle, channel: channel, chapters: chapters, sentences: sentences, atMs: startMs)
-        return baseClassroomInstructions(material: material)
+        return baseClassroomInstructions(material: material, materialKind: materialKind)
     }
 
     func contextFor(_ positionMs: Int) -> String {
