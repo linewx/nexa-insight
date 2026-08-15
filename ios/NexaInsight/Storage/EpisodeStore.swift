@@ -242,8 +242,31 @@ final class EpisodeStore {
         try? context.save()
     }
 
+    /// Records that an episode was opened, which is what the library sorts by.
+    ///
+    /// Separate from `savePlaybackPosition` because that one only fires once playback
+    /// passes ten seconds — so opening an episode, reading a paragraph and leaving would
+    /// not have counted as a visit, and the library would keep showing it wherever it was
+    /// added. Opening it IS the visit. Deliberately does not touch `positionMs`: where you
+    /// were is a different fact from when you were last here.
+    func markVisited(_ episodeId: Int) {
+        guard let stored = episode(episodeId) else { return }
+        stored.lastPlayedAt = Date()
+        try? context.save()
+    }
+
+    /// Most recently visited first, and newest-added for anything never opened.
+    ///
+    /// Sorted here rather than in the fetch: `lastPlayedAt` is optional, and SwiftData
+    /// puts nil at one end wholesale — which would either bury every new episode below
+    /// everything ever opened, or float them all above it. Neither is "recent". So an
+    /// episode falls back to its own `createdAt`, which puts a just-added episode exactly
+    /// where a just-visited one would be.
     func downloadedEpisodes() -> [EpisodeDTO] {
-        let all = (try? context.fetch(FetchDescriptor<StoredEpisode>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
+        let fetched = (try? context.fetch(FetchDescriptor<StoredEpisode>())) ?? []
+        let all = fetched.sorted { a, b in
+            (a.lastPlayedAt ?? a.createdAt) > (b.lastPlayedAt ?? b.createdAt)
+        }
         return all.map {
             EpisodeDTO(id: $0.episodeId, sourceUrl: $0.sourceUrl, youtubeId: $0.youtubeId, title: $0.title, channel: $0.channel, durationMs: $0.durationMs, thumbnailUrl: $0.thumbnailUrl, audioPath: $0.localAudioPath, status: $0.status, error: nil, positionMs: $0.positionMs, materialKind: $0.materialKind)
         }

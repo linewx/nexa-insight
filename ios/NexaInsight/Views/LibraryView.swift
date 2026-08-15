@@ -10,7 +10,7 @@ struct LibraryView: View {
     // channel screen has to show up in the channel list, so they cannot each
     // hold their own instance.
     @StateObject private var subscriptions: SubscriptionStore
-    @State private var selectedSection: AppSection = .discover
+    @State private var selectedSection: AppSection = .library
     @State private var showImport = false
     @State private var urlDraft = ""
     // One navigation path PER TAB. A single shared stack would mean opening a
@@ -46,6 +46,20 @@ struct LibraryView: View {
 
     var body: some View {
         TabView(selection: $selectedSection) {
+            // First, and the tab the app opens on. Coming back to the app almost always
+            // means returning to something already added — Discover is for the rarer act
+            // of finding something new, so it no longer gets the first position.
+            tab(.library, path: $libraryPath) {
+                LibraryMain(
+                    episodes: vm.episodes,
+                    tasks: vm.tasks.ordered,
+                    onDiscover: { selectedSection = .discover },
+                    onAddSource: { showImport = true },
+                    onStudy: { id in libraryPath.append(id) },
+                    onResync: { id in Task { await vm.resyncContent(episodeId: id) } },
+                    onRetry: { task in Task { await vm.retry(task: task) } })
+            }
+
             // Opens on content rather than on a description of the app.
             tab(.discover, path: $discoverPath) {
                 // No padding here: each screen owns its own insets, so the brand
@@ -73,17 +87,6 @@ struct LibraryView: View {
                     })
             }
 
-            tab(.library, path: $libraryPath) {
-                LibraryMain(
-                    episodes: vm.episodes,
-                    tasks: vm.tasks.ordered,
-                    onDiscover: { selectedSection = .discover },
-                    onAddSource: { showImport = true },
-                    onStudy: { id in libraryPath.append(id) },
-                    onResync: { id in Task { await vm.resyncContent(episodeId: id) } },
-                    onRetry: { task in Task { await vm.retry(task: task) } })
-            }
-
             // Settings was a sheet behind a gear icon. A sheet is for finishing one
             // task and dismissing; settings is somewhere you return to — and the
             // channel screen now sends you here to add an API key.
@@ -104,6 +107,13 @@ struct LibraryView: View {
         .onAppear {
             syncBackendClient()
             vm.reload()
+        }
+        // Coming back from an episode has to re-sort the list. StudyView is pushed onto
+        // this same stack, so returning does NOT re-fire the .onAppear above — without
+        // this the episode you just studied would keep its old place until the app was
+        // relaunched, which for a list sorted by recency looks like the sorting is broken.
+        .onChange(of: libraryPath.count) { old, new in
+            if new < old { vm.reload() }
         }
         .onChange(of: settings.backendBaseURL) { _, _ in syncBackendClient() }
     }
@@ -174,26 +184,31 @@ struct LibraryView: View {
 // The tab bar. Home is gone: it was a paste field plus several paragraphs
 // describing the app, and pasting a link is an action (Library's +) rather than a
 // destination you return to. Every tab here is somewhere you come back to.
+/// The sections. Bar order comes from the order the `tab(...)` calls appear in the
+/// TabView, NOT from this list — the two are kept aligned only for readability.
 private enum AppSection: String, CaseIterable {
+    case library
     case discover
     case channels
-    case library
     case settings
 
     var title: String {
         switch self {
+        // "Home", not "Library": it is the first tab and the one the app opens on, and a
+        // shelf is somewhere you visit while a home is where you start.
+        case .library: return "Home"
         case .discover: return "Discover"
         case .channels: return "Channels"
-        case .library: return "Library"
         case .settings: return "Settings"
         }
     }
 
     var icon: String {
         switch self {
+        // A house rather than a stack of cards, for the same reason as the title.
+        case .library: return "house"
         case .discover: return "sparkle.magnifyingglass"
         case .channels: return "person.2"
-        case .library: return "rectangle.stack"
         case .settings: return "gearshape"
         }
     }

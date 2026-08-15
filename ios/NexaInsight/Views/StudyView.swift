@@ -91,7 +91,7 @@ struct StudyView: View {
 
     /// The mode in force: this sitting's override, else the persisted preference.
     private var mode: StudyMode {
-        modeOverride ?? (settings.showReadingAnnotations ? .reading : .listening)
+        modeOverride ?? (settings.opensInReading ? .reading : .listening)
     }
 
     /// Whether expressions are marked in the transcript. Both modes annotate — the
@@ -186,7 +186,13 @@ struct StudyView: View {
         // was the reading-mode stutter. Every writer in THIS view calls the same
         // refresh, so there is no count to watch — except the teacher's, which writes
         // through LiveClassSession and cannot call it.
-        .onAppear { refreshExpressionCaches() }
+        .onAppear {
+            refreshExpressionCaches()
+            // Opening IS the visit, which is what the library sorts by. Not left to
+            // savePlaybackPosition: that only fires once playback passes ten seconds, so
+            // opening an episode to read a paragraph would never have counted.
+            store.markVisited(episodeId)
+        }
         // Leaving mid-sentence is the common case, so the exact position is
         // written on the way out rather than only at throttle boundaries.
         .onDisappear {

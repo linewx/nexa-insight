@@ -25,14 +25,20 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(localizedBylines, forKey: "localizedBylines") }
     }
 
-    // Whether the transcript marks up its learning expressions.
+    // Which mode an episode opens in.
     //
-    // On by default, and additive rather than a mode: annotations appear on top of
-    // intensive listening instead of replacing it. Reading used to be an exclusive
-    // mode, which removed tap-to-seek and the per-sentence controls — exactly the
-    // things you want when a definition explains why you misheard a line.
-    @Published var showReadingAnnotations: Bool {
-        didSet { defaults.set(showReadingAnnotations, forKey: "showReadingAnnotations") }
+    // OFF by default: listening is the default way to study. It used to be on, under the
+    // name `showReadingAnnotations`, from when reading was an exclusive mode that decided
+    // whether the transcript was marked up at all. It no longer decides that — highlights
+    // now appear whenever the episode HAS expressions, in either mode (see
+    // StudyView.annotated) — so all this ever did was pick the mode you land in, and the
+    // old name described a job it no longer had.
+    //
+    // Deliberately a NEW key: the old one is true on every device that has run the app,
+    // and reusing it would silently keep opening in reading for exactly the people who
+    // never chose it.
+    @Published var opensInReading: Bool {
+        didSet { defaults.set(opensInReading, forKey: "opensInReading") }
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -41,9 +47,11 @@ final class AppSettings: ObservableObject {
         let resolved = Self.resolveBackendBaseURL(stored)
         self.backendBaseURL = resolved
         self.localizedBylines = defaults.bool(forKey: "localizedBylines")
-        // `bool(forKey:)` returns false for a key that was never written, so the
-        // default has to be established explicitly rather than inferred.
-        self.showReadingAnnotations = defaults.object(forKey: "showReadingAnnotations") as? Bool ?? true
+        // `bool(forKey:)` already returns false for a key never written, which is the
+        // wanted default here — so unlike the flags above this needs no explicit
+        // establishing. Spelled out anyway, because "the default is the absence of a
+        // value" is the kind of thing that reads as an oversight.
+        self.opensInReading = defaults.bool(forKey: "opensInReading")
         if stored != resolved {
             defaults.set(resolved, forKey: "backendBaseURL")
         }

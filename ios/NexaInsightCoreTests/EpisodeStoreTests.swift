@@ -49,6 +49,69 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(read.formality, "spoken")
     }
 
+    // MARK: - Library order
+
+    private func bundle(id: Int, title: String) -> BundleDTO {
+        let base = bundle()
+        return BundleDTO(
+            episode: EpisodeDTO(
+                id: id, sourceUrl: "u\(id)", youtubeId: "y\(id)", title: title, channel: "C",
+                durationMs: 1000, thumbnailUrl: nil, audioPath: "episodes/\(id)/source.mp3",
+                status: "ready", error: nil),
+            chapters: [], sentences: [], hasAudio: true, hasLearningPack: false,
+            learningExpressions: [])
+    }
+
+    // The library sorts by recency, so the episode visited last comes first — regardless
+    // of the order they were added in.
+    func testMostRecentlyVisitedComesFirst() throws {
+        let store = try makeStore()
+        _ = try store.saveBundle(bundle(id: 1, title: "first added"), localAudioPath: nil)
+        _ = try store.saveBundle(bundle(id: 2, title: "second added"), localAudioPath: nil)
+
+        store.markVisited(1)
+
+        XCTAssertEqual(store.downloadedEpisodes().first?.title, "first added")
+    }
+
+    // An episode never opened falls back to when it was ADDED, so it sorts among the
+    // visited ones rather than being buried below them or floated above them — which is
+    // what a nil-at-one-end sort in the fetch would have done.
+    func testNeverOpenedEpisodesSortByWhenTheyWereAdded() throws {
+        let store = try makeStore()
+        _ = try store.saveBundle(bundle(id: 1, title: "old"), localAudioPath: nil)
+        store.markVisited(1)
+        // Added after the visit above, and never opened: it is still the more recent
+        // thing to have happened, so it belongs on top.
+        _ = try store.saveBundle(bundle(id: 2, title: "added later, unopened"), localAudioPath: nil)
+
+        XCTAssertEqual(store.downloadedEpisodes().map(\.title), ["added later, unopened", "old"])
+    }
+
+    // Visiting again re-sorts. Two visits in a row must order by the LAST one.
+    func testVisitingAgainMovesItBackToTheTop() throws {
+        let store = try makeStore()
+        _ = try store.saveBundle(bundle(id: 1, title: "one"), localAudioPath: nil)
+        _ = try store.saveBundle(bundle(id: 2, title: "two"), localAudioPath: nil)
+
+        store.markVisited(1)
+        store.markVisited(2)
+        XCTAssertEqual(store.downloadedEpisodes().first?.title, "two")
+
+        store.markVisited(1)
+        XCTAssertEqual(store.downloadedEpisodes().first?.title, "one")
+    }
+
+    // Where you were and when you were last here are different facts: opening an episode
+    // must not claim you had listened to any of it.
+    func testMarkingAVisitDoesNotInventAPlaybackPosition() throws {
+        let store = try makeStore()
+        _ = try store.saveBundle(bundle(id: 1, title: "one"), localAudioPath: nil)
+        store.savePlaybackPosition(42_000, for: 1)
+        store.markVisited(1)
+        XCTAssertEqual(store.playbackPosition(for: 1), 42_000, "the saved position must survive a visit")
+    }
+
     func testSaveAndReadBundle() throws {
         let store = try makeStore()
         _ = try store.saveBundle(bundle(), localAudioPath: "audio/1.mp3")

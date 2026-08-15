@@ -55,8 +55,12 @@ struct SettingsView: View {
                     // that annotations get shown; the explanation was taller than
                     // the control it described.
                     SettingsSection(title: "\u{9605}\u{8bfb}\u{4e0e}\u{663e}\u{793a}") {
-                        Toggle(isOn: $settings.showReadingAnnotations) {
-                            Text("\u{663e}\u{793a}\u{7cbe}\u{8bfb}\u{6807}\u{6ce8}")
+                        // Says what it does now. It used to read 显示精读标注, from when
+                        // the flag decided whether the transcript was marked up at all;
+                        // highlights no longer depend on it, so the old label promised
+                        // something the switch could not deliver.
+                        Toggle(isOn: $settings.opensInReading) {
+                            Text("\u{9ed8}\u{8ba4}\u{4ee5}\u{7cbe}\u{8bfb}\u{6253}\u{5f00}")
                                 .font(NXFont.bodyMedium)
                                 .foregroundStyle(NXColor.text(scheme))
                         }
