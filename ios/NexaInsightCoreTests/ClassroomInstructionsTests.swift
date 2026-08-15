@@ -41,8 +41,25 @@ final class ClassroomInstructionsTests: XCTestCase {
         // searching the line, so a dictionary lemma silently loses it.
         let params = tool("save_note")?["parameters"] as? [String: Any]
         let properties = params?["properties"] as? [String: Any]
-        let text = (properties?["text"] as? [String: Any])?["description"] as? String ?? ""
-        XCTAssertTrue(text.contains("EXACTLY as it appears"), "got: \(text)")
+        func described(_ key: String) -> String {
+            (properties?[key] as? [String: Any])?["description"] as? String ?? ""
+        }
+        XCTAssertTrue(described("text").contains("EXACTLY as it appears"))
+
+        // The four fields the rebuilt card draws on. Asked for by name because a field the
+        // model is not told about is a field the card renders empty forever.
+        for key in ["sense_group", "usage", "literal", "note_type"] {
+            XCTAssertFalse(described(key).isEmpty, "save_note must ask for \(key)")
+        }
+        // Verbatim, because an invented example is discarded — say so up front rather than
+        // silently dropping the model's work.
+        XCTAssertTrue(described("example").contains("VERBATIM"))
+        XCTAssertTrue(described("sense_group").contains("VERBATIM"))
+        // The non-answer that the old when_to_use kept producing is named as one.
+        XCTAssertTrue(described("usage").contains("\u{65e5}\u{5e38}\u{5bf9}\u{8bdd}\u{4e2d}\u{4f7f}\u{7528}"))
+        // The kinds are sorted by what goes wrong, and `reference` is the invisible case:
+        // every word known, the reading still wrong.
+        XCTAssertTrue(described("note_type").contains("wrong here"))
     }
 
     // The instruction that decides whether any of this works: the model must CALL the

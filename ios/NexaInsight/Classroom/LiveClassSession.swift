@@ -145,14 +145,27 @@ final class LiveClassSession: ObservableObject, Identifiable {
         do {
             switch request.kind {
             case let .expression(text, type):
+                // The existing optional fields are reused rather than new columns added:
+                // `restored` carries the sense group (it already means "what this really
+                // is, spelled out"), `heardAs` the everyday misreading (it already means
+                // "what you thought you got"), `whenToUse` the usage frame. No migration,
+                // and the card's existing layout renders all three.
+                //
+                // `whyHard` is deliberately left nil. It asked the model to explain why
+                // something is difficult — which the learner already knows, having just
+                // stopped to ask — and one sentence only ever produced a label like
+                // "弱读脱落". Nothing fills it now, so the card stops showing it.
                 let dto = LearningExpressionDTO(
                     id: 0, text: text, kind: type.impliedKind, type: type,
                     chinese: request.body, pronunciation: nil,
                     // The transcript line is the example when the teacher did not give
-                    // one: a card with no example reads as half-finished.
+                    // one, or gave one that is not actually in the text.
                     example: request.example ?? sentence.sourceText,
                     exampleChinese: request.example == nil ? sentence.chinese : "",
-                    whyHard: request.why, source: "manual", request: request.request)
+                    heardAs: request.literal,
+                    restored: request.senseGroup,
+                    whenToUse: request.usage,
+                    source: "manual", request: request.request)
                 _ = try store.addManualExpression(
                     episodeId: episodeId, sentenceId: sentence.id, expression: dto,
                     request: request.request)

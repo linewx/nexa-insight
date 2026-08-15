@@ -33,11 +33,48 @@ struct NoteRequest: Equatable {
     /// The gloss for an expression, or the answer for a question.
     var body: String
     var example: String?
-    var why: String?
+    /// The sense group the expression sits inside — the unit a native speaker processes at
+    /// once. `throw shade` alone does not tell you what to do with it; "I'm not throwing
+    /// shade at them, but…" does.
+    var senseGroup: String?
+    /// How to use it: the frame it sits in, not "used in daily conversation".
+    var usage: String?
+    /// The everyday reading the learner would land on, for the two kinds where a wrong
+    /// reading is available. Shown BESIDE the real meaning, because a misunderstanding has
+    /// to be named to be avoided.
+    var literal: String?
 
     /// What the learner said, when it is known. An expression card keeps it so a card
     /// found a week later says why it was wanted.
     var request: String?
+
+    /// Drops anything the model invented rather than quoted.
+    ///
+    /// Testing this prompt on a real transcript produced an example the passage did not
+    /// contain — "The thing is, I'm not throwing shade at them…" where the line actually
+    /// reads "So this is I'm not throwing shade at them…". It was completely plausible,
+    /// which is exactly the danger: a card whose example never appeared teaches a sentence
+    /// nobody said.
+    ///
+    /// The same distrust `ExpressionLocator` already applies to offsets ("plausibly wrong,
+    /// so a range check passes and the highlight lands on unrelated words"). Prompts cannot
+    /// promise this; only checking can.
+    func verified(against transcript: String) -> NoteRequest {
+        var copy = self
+        if let example, !Self.appears(example, in: transcript) { copy.example = nil }
+        if let senseGroup, !Self.appears(senseGroup, in: transcript) { copy.senseGroup = nil }
+        return copy
+    }
+
+    /// Whitespace- and case-insensitive containment: transcripts carry double spaces and
+    /// the model silently normalises them, so an exact match would reject real quotes.
+    private static func appears(_ needle: String, in haystack: String) -> Bool {
+        func flat(_ s: String) -> String {
+            s.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        let n = flat(needle)
+        return !n.isEmpty && flat(haystack).contains(n)
+    }
 
     /// Reads a tool call, or nil when the model left out something a card cannot do
     /// without. Returning nil is better than storing a card with an empty gloss.
@@ -50,7 +87,10 @@ struct NoteRequest: Equatable {
             // the learner explicitly asked for is much worse than showing it plainly.
             let type = args.text("note_type").flatMap { LearningExpressionType(rawValue: $0.lowercased()) } ?? .word
             return NoteRequest(kind: .expression(text: text, type: type), body: meaning,
-                               example: args.text("example"), why: args.text("why"),
+                               example: args.text("example"),
+                               senseGroup: args.text("sense_group"),
+                               usage: args.text("usage"),
+                               literal: args.text("literal"),
                                request: args.text("request"))
         case .save_answer:
             guard let question = args.text("question"), let answer = args.text("answer") else { return nil }

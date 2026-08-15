@@ -189,9 +189,13 @@ final class ClassroomController: ObservableObject {
                 onNotice("\u{6ca1}\u{542c}\u{6e05}\u{8981}\u{8bb0}\u{4ec0}\u{4e48}\u{ff0c}\u{518d}\u{8bf4}\u{4e00}\u{904d}\u{3002}")
                 return
             }
-            NexaLog.log("TOOL \(name.rawValue) note=\(request)")
+            // Checked against the WHOLE episode, not just the current line: a saved word
+            // comes from whatever the teacher was discussing, which in reading is often a
+            // line away from where playback sits.
+            let checked = request.verified(against: sentences.map(\.sourceText).joined(separator: " "))
+            NexaLog.log("TOOL \(name.rawValue) note=\(checked)")
             savedNoteThisTurn = true
-            onSaveNote(request, at)
+            onSaveNote(checked, at)
             onNotice(noteNotice(request))
             return
         }

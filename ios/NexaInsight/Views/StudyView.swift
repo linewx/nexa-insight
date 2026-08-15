@@ -2577,20 +2577,33 @@ private struct ExpressionInlineCard: View {
             // A reduction or an ellipsis is only worth a card because of the gap
             // between what reached the ear and what was said, so that comparison
             // leads rather than sitting below the gloss.
-            if let heard = expression.heardAs, let restored = expression.restored {
-                soundGap(heard: heard, restored: restored)
-            } else if let restored = expression.restored {
-                labelled("完整说法", restored, mono: true)
+            // The sense group: the unit a native speaker takes in at once. Shown before
+            // anything explanatory, because knowing where the expression BEGINS and ENDS is
+            // what makes it usable — "throw shade" alone leaves you unable to build a
+            // sentence with it.
+            if let group = expression.restored {
+                labelled("\u{6574}\u{5757}", group, mono: true)
+            }
+
+            // The misreading, named beside the real meaning. This is the whole point of a
+            // card for a word you already "know": every word familiar, the reading still
+            // wrong, and nothing to prompt you to check. Naming it is what prevents it.
+            if let literal = expression.heardAs {
+                wrongReading(literal)
             }
 
             if let mistake = expression.commonMistake {
                 mistakeContrast(wrong: mistake, right: expression.text)
             }
-            if let whyHard = expression.whyHard {
-                labelled("为什么难", whyHard)
-            }
-            if let whenToUse = expression.whenToUse {
-                labelled("什么时候用", whenToUse)
+            // "为什么难" is gone. It explained a difficulty the learner had already felt —
+            // they stopped to ask — and one sentence only ever produced a label like
+            // "弱读脱落". Nothing populates whyHard now.
+            //
+            // "什么时候用" became "怎么用": the old prompt said only "Give when_to_use" and
+            // got "日常对话中使用" back, which is true of everything. It now carries the
+            // frame — what comes before, what comes after.
+            if let usage = expression.whenToUse {
+                labelled("\u{600e}\u{4e48}\u{7528}", usage)
             }
 
             VStack(alignment: .leading, spacing: NXSpacing.x1) {
@@ -2606,19 +2619,28 @@ private struct ExpressionInlineCard: View {
     }
 
     /// Heard on the left, actually said on the right — the whole point of the item.
-    private func soundGap(heard: String, restored: String) -> some View {
-        HStack(spacing: NXSpacing.x2) {
-            Text(heard)
-                .font(NXFont.bodyMedium).foregroundStyle(NXColor.text(scheme))
-                .monospaced()
-            Image(systemName: "arrow.right")
-                .font(NXFont.auxiliary).foregroundStyle(NXColor.textTertiary(scheme))
-            Text(restored)
-                .font(NXFont.bodyMedium).foregroundStyle(NXColor.primary)
-                .monospaced()
+    /// The reading you would have arrived at, marked as the wrong one.
+    ///
+    /// Replaces the old heard-versus-actual arrow, which assumed a MISHEARING. The failure
+    /// this card now covers is different and more invisible: nothing was misheard, the
+    /// everyday sense was simply the wrong one here.
+    private func wrongReading(_ literal: String) -> some View {
+        HStack(alignment: .top, spacing: NXSpacing.x2) {
+            Image(systemName: "xmark.circle")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(NXColor.textTertiary(scheme))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\u{5bb9}\u{6613}\u{7406}\u{89e3}\u{6210}")
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+                Text(literal)
+                    .font(NXFont.body)
+                    .foregroundStyle(NXColor.textSecondary(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, NXSpacing.x1)
-        .accessibilityLabel("听到 \(heard)，实际是 \(restored)")
+        .accessibilityLabel("容易理解成 \(literal)")
     }
 
     /// The Chinese-English attempt this replaces. Dictionaries cannot give this.

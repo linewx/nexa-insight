@@ -115,15 +115,25 @@ let realtimePlaybackTools: [[String: Any]] = [
     // completely. Asked for one shape, a model short of a field fills it with something
     // rather than leaving it out, and a card with an invented gloss is worse than none.
     ["type": "function", "name": "save_note",
-     "description": "Save a word or phrase as a study card. ONLY call this when the learner explicitly asks to keep it — a question about meaning is not a request to save.",
+     "description": "Save a word, phrase or sense group as a study card. ONLY when the learner explicitly asks to keep it — a question about meaning is not a request to save.",
      "parameters": ["type": "object", "properties": [
-        // The surface form matters: the highlight is found by searching the transcript
-        // for this string, so a dictionary lemma would leave the card un-highlighted.
-        "text": ["type": "string", "description": "The word or phrase, EXACTLY as it appears in the transcript line (the spoken form, e.g. 'worked out', not 'work out')."],
-        "meaning": ["type": "string", "description": "What it means, in Chinese."],
-        "note_type": ["type": "string", "description": "One of: reduction, ellipsis, syntax, idiom, reference, phrase, pattern, collocation, word."],
-        "example": ["type": "string", "description": "An example sentence. Omit to use the transcript line itself."],
-        "why": ["type": "string", "description": "One Chinese sentence on why it is worth keeping."],
+        // The surface form: the highlight is found by searching the transcript for this
+        // string, so a dictionary lemma would leave the card un-highlighted.
+        "text": ["type": "string", "description": "The expression EXACTLY as it appears in the transcript (the spoken form, e.g. 'worked out', not 'work out')."],
+        "meaning": ["type": "string", "description": "What it means HERE, in Chinese."],
+        // Sorted by WHY the learner would get it wrong, which is the only distinction that
+        // changes what the card must say. `shifted` in particular had no home before: the
+        // most invisible failure is the one where every word is known and the reading is
+        // still wrong, because nothing prompts you to look it up.
+        "note_type": ["type": "string", "description": "One of: word (simply unknown), chunk (every word familiar but the combination means something else, e.g. 'throw shade'), reference (the everyday sense is easy AND wrong here — context gives it another sense, e.g. 'model weights'), pattern (phrasing a Chinese speaker finds backwards or puzzling), phrase (a chunk that mostly signals what comes next, e.g. 'the thing is'), idiom (the literal sentence and the intended point differ)."],
+        // The unit a native speaker processes at once. 'throw shade' alone does not tell
+        // you what to do with it; "I'm not throwing shade at them, but..." does.
+        "sense_group": ["type": "string", "description": "The full sense group this sits inside, VERBATIM from the transcript — at least as long as `text`. This is what makes it usable rather than just understood."],
+        "usage": ["type": "string", "description": "How to use it, in Chinese, one short sentence naming the frame: what comes before, what comes after, what it attaches to. '日常对话中使用' is a non-answer — give the pattern or omit this."],
+        // Only for the two kinds where a wrong reading is available. Showing both is the
+        // whole point of the card: the misunderstanding has to be named to be avoided.
+        "literal": ["type": "string", "description": "For 'reference' and 'pattern' only: the everyday reading the learner would land on, in Chinese, so the card can show it beside the real one. Omit otherwise."],
+        "example": ["type": "string", "description": "A sentence VERBATIM from the transcript. Never invented — an example that is not in the text is discarded."],
         "request": ["type": "string", "description": "What the learner said when asking, in Chinese."],
      ], "required": ["text", "meaning"]]],
     ["type": "function", "name": "save_answer",

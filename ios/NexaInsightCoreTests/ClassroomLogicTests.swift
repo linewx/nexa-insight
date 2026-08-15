@@ -149,6 +149,56 @@ final class ClassroomLogicTests: XCTestCase {
         XCTAssertNil(NoteRequest.from(tool: .save_note, args: ToolArguments()))
     }
 
+    // The failure this exists for, found by running the prompt on a real transcript: the
+    // model returned "The thing is, I'm not throwing shade at them…" where the line reads
+    // "So this is I'm not throwing shade at them…". Plausible, and never said.
+    func testAnInventedExampleIsDiscarded() {
+        let transcript = "So this is I'm not throwing shade at them, but something has gone wrong."
+        let request = NoteRequest(
+            kind: .expression(text: "throw shade", type: .chunk), body: "\u{8bbd}\u{523a}",
+            example: "The thing is, I'm not throwing shade at them.",
+            senseGroup: "I'm not throwing shade at them")
+
+        let checked = request.verified(against: transcript)
+
+        XCTAssertNil(checked.example, "an example that was never said must not be kept")
+        XCTAssertEqual(checked.senseGroup, "I'm not throwing shade at them",
+                       "a real quote survives")
+    }
+
+    // Transcripts carry double spaces and the model silently normalises them, so an exact
+    // match would throw away genuine quotes.
+    func testAQuoteSurvivesWhitespaceAndCaseDifferences() {
+        let transcript = "We got a power docket.  We got a ROCKET docket."
+        let request = NoteRequest(
+            kind: .expression(text: "rocket docket", type: .chunk), body: "\u{5feb}\u{901f}",
+            example: "we got a rocket  docket.")
+        XCTAssertNotNil(request.verified(against: transcript).example)
+    }
+
+    func testVerificationLeavesAnAnswerCardAlone() {
+        let request = NoteRequest(kind: .answer(question: "q"), body: "a")
+        XCTAssertEqual(request.verified(against: "unrelated text"), request)
+    }
+
+    // The four fields the card now draws on. `literal` is the load-bearing one: a card for
+    // a word you already "know" is only worth keeping if it names the reading you would
+    // have arrived at instead.
+    func testSaveNoteCarriesTheSenseGroupUsageAndMisreading() {
+        let request = NoteRequest.from(tool: .save_note, args: ToolArguments(texts: [
+            "text": "weights", "meaning": "\u{6a21}\u{578b}\u{53c2}\u{6570}",
+            "note_type": "reference",
+            "sense_group": "control the weights",
+            "usage": "与 own the hardware 并列，指模型底层参数",
+            "literal": "\u{6a21}\u{578b}\u{7684}\u{91cd}\u{91cf}",
+        ]))
+        XCTAssertEqual(request?.senseGroup, "control the weights")
+        XCTAssertEqual(request?.literal, "\u{6a21}\u{578b}\u{7684}\u{91cd}\u{91cf}")
+        XCTAssertNotNil(request?.usage)
+        guard case let .expression(_, type)? = request?.kind else { return XCTFail() }
+        XCTAssertEqual(type, .reference)
+    }
+
     func testSaveAnswerReadsAQuestionCard() {
         let request = NoteRequest.from(tool: .save_answer, args: ToolArguments(texts: [
             "question": "为什么用被动", "answer": "强调结果而不是施动者。",
