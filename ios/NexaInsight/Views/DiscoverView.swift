@@ -70,8 +70,13 @@ struct DiscoverView: View {
         // One header per screen: the brand row above. Left visible, the navigation
         // bar drew a second band behind it in a different tone.
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showAddChannel) {
-            AddChannelSheet(vm: vm)
+        // Same reason as Channels: a .sheet and a .fullScreenCover on one view compete as
+        // presentations, and the ➕ lost.
+        .background {
+            Color.clear
+                .sheet(isPresented: $showAddChannel) {
+                    AddChannelSheet(vm: vm)
+                }
         }
         .fullScreenCover(isPresented: $showSearch) {
             SearchScreen(

@@ -82,10 +82,17 @@ struct ChannelDetailView: View {
                 onSubmit: { _ in Task { await vm.runSearch() } },
                 onDismiss: { showSearch = false })
         }
-        .sheet(isPresented: $showChannelHome) {
-            if let url = YouTubeWeb.channel(channelId: vm.channelId) {
-                WebPageSheet(title: vm.title, url: url)
-            }
+        // Its own layer, for the same reason as Discover and Channels: a .sheet and a
+        // .fullScreenCover on one view compete, and only one survives. Not reported broken
+        // yet, but it is the identical arrangement — fixed while the cause is in front of me
+        // rather than waiting for someone to find it.
+        .background {
+            Color.clear
+                .sheet(isPresented: $showChannelHome) {
+                    if let url = YouTubeWeb.channel(channelId: vm.channelId) {
+                        WebPageSheet(title: vm.title, url: url)
+                    }
+                }
         }
 
     }

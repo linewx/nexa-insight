@@ -92,8 +92,14 @@ struct ChannelsView: View {
         // One header per screen: the brand row above. Left visible, the navigation
         // bar drew a second band behind it in a different tone.
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showAddChannel) {
-            AddChannelSheet(vm: vm)
+        // Its own layer. SwiftUI honours ONE .sheet per view: with two here the last one
+        // won and this one was silently ignored, so the ➕ set its flag and nothing opened.
+        // Third time this trap has cost a working feature (see NotesDrawer).
+        .background {
+            Color.clear
+                .sheet(isPresented: $showAddChannel) {
+                    AddChannelSheet(vm: vm)
+                }
         }
         .sheet(isPresented: $showYouTubeSubscriptions) {
             WebPageSheet(
