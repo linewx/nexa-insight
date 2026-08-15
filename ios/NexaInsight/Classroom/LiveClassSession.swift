@@ -8,6 +8,11 @@ final class LiveClassSession: ObservableObject, Identifiable {
     @Published var notice = ""
     @Published var error: String?
     @Published var connected = false
+    /// Bumped on every saved note. The study screen watches it to rebuild the card
+    /// indexes: a card written to the database that the rows never re-read stays
+    /// invisible until the episode is reopened, which is exactly how the delete bug
+    /// looked before it was fixed.
+    @Published var savedNotes = 0
     @Published var controller: ClassroomController?
 
     // A playback notice is a transient confirmation of an action just taken, not
@@ -95,6 +100,9 @@ final class LiveClassSession: ObservableObject, Identifiable {
             onContextRefresh: { [weak self] position, scene in
                 guard let self else { return }
                 transport.updateContext(self.contextFor(position), scene: scene)
+            },
+            onSaveNote: { [weak self] request, sentence in
+                self?.save(request, on: sentence)
             })
         self.controller = controller
         // Deliberately no freeze here: joining brings the teacher in while the
@@ -123,6 +131,40 @@ final class LiveClassSession: ObservableObject, Identifiable {
         notice = ""
         // Give the source its full-fidelity playback session back.
         playback.configureAudioSession(voiceMode: false)
+    }
+
+    /// Writes a note the teacher was asked to keep.
+    ///
+    /// Lives here rather than in the controller because this is the layer that owns the
+    /// store; the controller stays pure logic plus a transport. Published on
+    /// `savedNotes` so the study screen can refresh its indexes — a card written into the
+    /// database that the rows never re-read would not appear until the episode was
+    /// reopened, which was the shape of an earlier bug.
+    func save(_ request: NoteRequest, on sentence: SentenceDTO?) {
+        guard let sentence else { return }
+        do {
+            switch request.kind {
+            case let .expression(text, type):
+                let dto = LearningExpressionDTO(
+                    id: 0, text: text, kind: type.impliedKind, type: type,
+                    chinese: request.body, pronunciation: nil,
+                    // The transcript line is the example when the teacher did not give
+                    // one: a card with no example reads as half-finished.
+                    example: request.example ?? sentence.sourceText,
+                    exampleChinese: request.example == nil ? sentence.chinese : "",
+                    whyHard: request.why, source: "manual", request: request.request)
+                _ = try store.addManualExpression(
+                    episodeId: episodeId, sentenceId: sentence.id, expression: dto,
+                    request: request.request)
+            case let .answer(question):
+                try store.addParagraphNote(
+                    episodeId: episodeId, sentenceId: sentence.id,
+                    question: question, answer: request.body)
+            }
+            savedNotes += 1
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     /// Whether a turn can actually be carried right now.

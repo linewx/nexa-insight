@@ -100,4 +100,88 @@ final class ClassroomLogicTests: XCTestCase {
         XCTAssertEqual(silenced(by: .teacher).pausePlayer, true)
         XCTAssertEqual(silenced(by: .teacher).stopTeacher, false)
     }
+
+    // MARK: - Saving notes
+
+    func testSaveNoteReadsAVocabularyCard() {
+        let request = NoteRequest.from(tool: .save_note, args: ToolArguments(texts: [
+            "text": "worked out", "meaning": "解决了", "note_type": "phrase",
+            "example": "It worked out fine.", "why": "常用", "request": "记一下这个词",
+        ]))
+        guard case let .expression(text, type)? = request?.kind else {
+            return XCTFail("expected an expression, got \(String(describing: request))")
+        }
+        XCTAssertEqual(text, "worked out")
+        XCTAssertEqual(type, .phrase)
+        XCTAssertEqual(request?.body, "解决了")
+        XCTAssertEqual(request?.example, "It worked out fine.")
+        XCTAssertEqual(request?.request, "记一下这个词", "the card must remember why it was wanted")
+    }
+
+    // Losing a note the learner explicitly ASKED for is much worse than showing it
+    // plainly, so an unknown type falls back rather than dropping the whole card. The
+    // type only decides which fields the card renders.
+    func testAnUnknownNoteTypeFallsBackRatherThanDropping() {
+        for raw in ["nonsense", ""] {
+            let request = NoteRequest.from(tool: .save_note, args: ToolArguments(texts: [
+                "text": "kind of", "meaning": "有点儿", "note_type": raw,
+            ]))
+            guard case let .expression(_, type)? = request?.kind else {
+                return XCTFail("dropped the note for note_type=\(raw)")
+            }
+            XCTAssertEqual(type, .word)
+        }
+    }
+
+    func testANoteTypeIsCaseInsensitive() {
+        let request = NoteRequest.from(tool: .save_note, args: ToolArguments(texts: [
+            "text": "hang on", "meaning": "等一下", "note_type": "IDIOM",
+        ]))
+        guard case let .expression(_, type)? = request?.kind else { return XCTFail() }
+        XCTAssertEqual(type, .idiom)
+    }
+
+    // A card with no gloss teaches nothing, so an incomplete call is refused. The caller
+    // says so out loud rather than saving something empty.
+    func testAnIncompleteSaveIsRefused() {
+        XCTAssertNil(NoteRequest.from(tool: .save_note, args: ToolArguments(texts: ["text": "kind of"])))
+        XCTAssertNil(NoteRequest.from(tool: .save_note, args: ToolArguments(texts: ["meaning": "有点儿"])))
+        XCTAssertNil(NoteRequest.from(tool: .save_note, args: ToolArguments()))
+    }
+
+    func testSaveAnswerReadsAQuestionCard() {
+        let request = NoteRequest.from(tool: .save_answer, args: ToolArguments(texts: [
+            "question": "为什么用被动", "answer": "强调结果而不是施动者。",
+        ]))
+        guard case let .answer(question)? = request?.kind else {
+            return XCTFail("expected an answer, got \(String(describing: request))")
+        }
+        XCTAssertEqual(question, "为什么用被动")
+        XCTAssertEqual(request?.body, "强调结果而不是施动者。")
+    }
+
+    func testAnIncompleteAnswerIsRefused() {
+        XCTAssertNil(NoteRequest.from(tool: .save_answer, args: ToolArguments(texts: ["question": "q"])))
+        XCTAssertNil(NoteRequest.from(tool: .save_answer, args: ToolArguments(texts: ["answer": "a"])))
+    }
+
+    // A playback tool is not a note, and reading one as a note would file a card every
+    // time the learner asked to skip forward.
+    func testPlaybackToolsAreNotNotes() {
+        for tool in [PlaybackTool.pause_playback, .seek_to_timestamp, .next_sentence] {
+            XCTAssertFalse(tool.savesANote, "\(tool) must not save")
+            XCTAssertNil(NoteRequest.from(tool: tool, args: ToolArguments(texts: ["text": "x", "meaning": "y"])))
+        }
+        XCTAssertTrue(PlaybackTool.save_note.savesANote)
+        XCTAssertTrue(PlaybackTool.save_answer.savesANote)
+    }
+
+    // The confirmation names what was saved. "已记下" alone cannot tell a correct save
+    // from one that kept a mis-heard word, which in an explicit mode is the whole point.
+    func testTheNoticeNamesWhatWasSaved() {
+        let expression = NoteRequest(kind: .expression(text: "kind of", type: .phrase), body: "有点儿")
+        XCTAssertTrue(noteNotice(expression).contains("kind of"))
+        let answer = NoteRequest(kind: .answer(question: "q"), body: "a")
+        XCTAssertFalse(noteNotice(answer).isEmpty)
+    }
 }

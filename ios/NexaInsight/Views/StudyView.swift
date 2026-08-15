@@ -183,8 +183,9 @@ struct StudyView: View {
         }
         // The notes, and the indexes built from them, read once on appear rather
         // than on the 200ms position tick. Rebuilding the index five times a second
-        // was the reading-mode stutter. Every writer calls the same refresh, so
-        // there is no count to watch.
+        // was the reading-mode stutter. Every writer in THIS view calls the same
+        // refresh, so there is no count to watch — except the teacher's, which writes
+        // through LiveClassSession and cannot call it.
         .onAppear { refreshExpressionCaches() }
         // Leaving mid-sentence is the common case, so the exact position is
         // written on the way out rather than only at throttle boundaries.
@@ -246,6 +247,16 @@ struct StudyView: View {
                     case .turnEnded: readingAsk?.finished()
                     }
                 }
+            }
+            // A note the teacher was asked to save is written by the SESSION, not by this
+            // view, so nothing here would rebuild the indexes the rows draw from — the
+            // card would exist and stay invisible until the episode was reopened.
+            //
+            // Its own observer for the same reason as above: `liveSession` is `@State`,
+            // which holds a reference without subscribing, so an `.onChange` on
+            // `liveSession?.savedNotes` written in this body would never fire.
+            if let session = liveSession {
+                SavedNoteObserver(session: session, onSaved: refreshExpressionCaches)
             }
         }
         // Bound to the value, not `.constant(...)`: a constant binding cannot be
@@ -1046,6 +1057,26 @@ private struct PressableStyle: ButtonStyle {
     }
 }
 
+/// Rebuilds the card indexes when the teacher saves a note.
+///
+/// The note is written by `LiveClassSession`, so nothing in `StudyView` knows it
+/// happened. And it cannot be watched from that view's body: `liveSession` is held in
+/// `@State`, which keeps a reference without subscribing to the object, so an `.onChange`
+/// there never fires. Observing needs a view that declares `@ObservedObject` — the same
+/// trap as `ReadingTurnObserver`, hit twice now.
+private struct SavedNoteObserver: View {
+    @ObservedObject var session: LiveClassSession
+    let onSaved: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: session.savedNotes) { old, new in
+                guard new > old else { return }
+                onSaved()
+            }
+    }
+}
+
 /// Turns the controller's published changes into reading-conversation events.
 ///
 /// Exists because of an ownership detail with teeth: `StudyView` holds the session in
@@ -1057,6 +1088,7 @@ private struct PressableStyle: ButtonStyle {
 ///
 /// Renders nothing; it is mounted in a `.background` purely to have somewhere to observe
 /// from.
+
 private struct ReadingTurnObserver: View {
     enum Event {
         case heard(String)

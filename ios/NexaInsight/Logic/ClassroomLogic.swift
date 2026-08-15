@@ -1,9 +1,64 @@
 import Foundation
 
+/// A tool the teacher can call. Named for what it originally was; it now also saves
+/// notes, and renaming it would churn the whole call chain and its tests for nothing.
 enum PlaybackTool: String {
     case pause_playback, resume_playback, previous_sentence, next_sentence
     case repeat_current_sentence, seek_relative, seek_to_timestamp
     case set_playback_speed, finish_discussion, exit_class
+    /// Save a word or phrase as a highlighted card, when the learner ASKS for it.
+    case save_note
+    /// Save a question and its answer, with no highlight.
+    case save_answer
+
+    /// Whether this tool writes a note rather than moving the podcast. The playback
+    /// machinery (freeze, seek, resume, the notice text) does not apply to these.
+    var savesANote: Bool { self == .save_note || self == .save_answer }
+}
+
+/// One note the teacher was asked to keep.
+///
+/// The sentence is NOT carried: it is decided locally from the playback position, the
+/// same way every other tool takes its position. Asking the model for a sentence id
+/// invites it to invent one, and the highlight is anchored by searching for `text`
+/// anyway (see ExpressionLocator).
+struct NoteRequest: Equatable {
+    /// A vocabulary card, or a question card with no highlight.
+    enum Kind: Equatable {
+        case expression(text: String, type: LearningExpressionType)
+        case answer(question: String)
+    }
+
+    var kind: Kind
+    /// The gloss for an expression, or the answer for a question.
+    var body: String
+    var example: String?
+    var why: String?
+
+    /// What the learner said, when it is known. An expression card keeps it so a card
+    /// found a week later says why it was wanted.
+    var request: String?
+
+    /// Reads a tool call, or nil when the model left out something a card cannot do
+    /// without. Returning nil is better than storing a card with an empty gloss.
+    static func from(tool: PlaybackTool, args: ToolArguments) -> NoteRequest? {
+        switch tool {
+        case .save_note:
+            guard let text = args.text("text"), let meaning = args.text("meaning") else { return nil }
+            // An unknown or missing type falls back to `word` rather than dropping the
+            // note: the type only picks which fields the card shows, and losing a note
+            // the learner explicitly asked for is much worse than showing it plainly.
+            let type = args.text("note_type").flatMap { LearningExpressionType(rawValue: $0.lowercased()) } ?? .word
+            return NoteRequest(kind: .expression(text: text, type: type), body: meaning,
+                               example: args.text("example"), why: args.text("why"),
+                               request: args.text("request"))
+        case .save_answer:
+            guard let question = args.text("question"), let answer = args.text("answer") else { return nil }
+            return NoteRequest(kind: .answer(question: question), body: answer)
+        default:
+            return nil
+        }
+    }
 }
 
 enum ClassroomPhase { case idle, connecting, podcastPlaying, userSpeaking, discussionPaused, discussing, teacherSpeaking, resuming, ended }
@@ -173,6 +228,22 @@ func playbackNotice(_ name: PlaybackTool, _ positionMs: Int) -> String {
     case .repeat_current_sentence: return "Repeating this sentence · paused"
     case .set_playback_speed: return "Playback speed updated"
     case .exit_class: return "Ending class"
+    // Saving is confirmed with the note's own text (see noteNotice), which is more
+    // useful than a generic word — "已记下 kind of" proves WHAT was heard, not just
+    // that something was.
+    case .save_note, .save_answer: return "\u{5df2}\u{8bb0}\u{4e0b}"
+    }
+}
+
+/// The confirmation for a saved note, naming what was saved.
+///
+/// The naming is the point: in an explicit mode the learner needs to see that the right
+/// thing was heard. "已记下" alone cannot distinguish a correct save from one that kept
+/// a mis-transcribed word.
+func noteNotice(_ request: NoteRequest) -> String {
+    switch request.kind {
+    case let .expression(text, _): "\u{5df2}\u{8bb0}\u{4e0b}\u{ff1a}\(text)"
+    case .answer: "\u{5df2}\u{8bb0}\u{4e0b}\u{8fd9}\u{4e2a}\u{95ee}\u{9898}"
     }
 }
 

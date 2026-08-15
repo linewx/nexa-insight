@@ -58,6 +58,7 @@ final class ClassroomControllerTests: XCTestCase {
         var notices: [String] = []
         var refreshes: [Int] = []
         var refreshScenes: [ClassroomScene] = []
+        var saved: [(NoteRequest, SentenceDTO?)] = []
     }
 
     func make() -> (ClassroomController, FakePlayback, FakeTransport, Box) {
@@ -71,7 +72,8 @@ final class ClassroomControllerTests: XCTestCase {
             onContextRefresh: { position, scene in
                 box.refreshes.append(position)
                 box.refreshScenes.append(scene)
-            })
+            },
+            onSaveNote: { request, sentence in box.saved.append((request, sentence)) })
         return (controller, playback, transport, box)
     }
 
@@ -567,5 +569,93 @@ final class ClassroomControllerTests: XCTestCase {
         let stops = transport.stoppedListening
         c.handleRealtimeEvent(.inputAudioCommitted)
         XCTAssertGreaterThan(transport.stoppedListening, stops, "reading must close the mic")
+    }
+
+    // MARK: - Saving notes
+
+    private func saveNote(_ c: ClassroomController, callId: String? = "n1") {
+        c.handleRealtimeEvent(.toolCall(
+            name: .save_note,
+            args: ToolArguments(texts: ["text": "e2", "meaning": "释义"]),
+            callId: callId))
+    }
+
+    // Nothing about the podcast changes because a note was written. Every other tool
+    // moves, pauses or resumes something; this one must not.
+    func testSavingANoteLeavesPlaybackAlone() {
+        let (c, playback, transport, box) = make()
+        playback.currentMs = 2100
+        playback.play()
+        let floorBefore = c.floor
+        let pausesBefore = playback.pauses
+        let stoppedBefore = transport.stoppedSpeaking
+
+        saveNote(c)
+
+        XCTAssertEqual(box.saved.count, 1)
+        XCTAssertEqual(c.floor, floorBefore, "saving must not move the floor")
+        XCTAssertEqual(playback.pauses, pausesBefore, "saving must not pause the podcast")
+        XCTAssertTrue(playback.seeks.isEmpty, "saving must not seek")
+        // The teacher is normally mid-explanation when asked to keep something, so
+        // cutting them off to file a card would make the save feel like an interruption.
+        XCTAssertEqual(transport.stoppedSpeaking, stoppedBefore, "saving must not silence the teacher")
+    }
+
+    // The note lands on the line being played, decided here rather than reported by the
+    // model — asking it for a sentence id invites it to invent one.
+    func testTheNoteIsAnchoredToTheLineBeingPlayed() {
+        let (c, playback, _, box) = make()
+        playback.currentMs = 2100          // inside sentence id 2
+        saveNote(c)
+        XCTAssertEqual(box.saved.first?.1?.id, 2)
+    }
+
+    // Same dedupe as the playback tools, and it matters more here: a repeated seek is
+    // harmless, a repeated save is a duplicate card.
+    func testTheSameSaveRunsOnce() {
+        let (c, _, _, box) = make()
+        saveNote(c, callId: "dup")
+        saveNote(c, callId: "dup")
+        XCTAssertEqual(box.saved.count, 1)
+    }
+
+    // An incomplete call must say so. In an explicit mode, silence after "记一下" is
+    // indistinguishable from not having been heard.
+    func testAnIncompleteSaveIsReportedRatherThanSwallowed() {
+        let (c, _, _, box) = make()
+        c.handleRealtimeEvent(.toolCall(
+            name: .save_note, args: ToolArguments(texts: ["text": "e2"]), callId: "bad"))
+        XCTAssertTrue(box.saved.isEmpty, "nothing usable, so nothing saved")
+        XCTAssertFalse(box.notices.isEmpty, "but the learner has to be told")
+    }
+
+    // The confirmation names the word, so a mis-heard save is visible as one.
+    func testTheConfirmationNamesTheSavedWord() {
+        let (c, _, _, box) = make()
+        saveNote(c)
+        XCTAssertEqual(box.notices.last?.contains("e2"), true)
+    }
+
+    func testSavingAnAnswerAlsoReachesTheStore() {
+        let (c, _, _, box) = make()
+        c.handleRealtimeEvent(.toolCall(
+            name: .save_answer,
+            args: ToolArguments(texts: ["question": "为什么", "answer": "因为"]),
+            callId: "a1"))
+        guard case .answer = box.saved.first?.0.kind else {
+            return XCTFail("expected an answer card, got \(box.saved)")
+        }
+    }
+
+    // Saving works in every scene: that is the requirement — 精听, Live and 精读 alike.
+    func testSavingWorksInEveryScene() {
+        for enter in [{ (c: ClassroomController) in c.pressQuickAsk() },
+                      { c in c.enterLive() },
+                      { c in c.pressReadingAsk(atMs: 2000) }] {
+            let (c, _, _, box) = make()
+            enter(c)
+            saveNote(c)
+            XCTAssertEqual(box.saved.count, 1, "a note must be savable in scene \(c.scene)")
+        }
     }
 }

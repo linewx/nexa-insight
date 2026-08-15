@@ -18,7 +18,41 @@ final class ClassroomInstructionsTests: XCTestCase {
 
     func testRealtimeToolsAdvertiseOmniDirectSet() {
         let names = realtimePlaybackTools.compactMap { $0["name"] as? String }
-        XCTAssertEqual(Set(names), ["resume_playback", "pause_playback", "previous_sentence", "next_sentence", "seek_to_timestamp"])
+        XCTAssertEqual(Set(names), ["resume_playback", "pause_playback", "previous_sentence",
+                                    "next_sentence", "seek_to_timestamp",
+                                    "save_note", "save_answer"])
+    }
+
+    // A tool the model is not told about is a tool it cannot call, so the schema is as
+    // load-bearing as the instructions. These two carry TEXT, which is what safeArgs had
+    // to learn to parse.
+    func testSaveToolsAreAdvertisedWithTheirRequiredFields() {
+        func tool(_ name: String) -> [String: Any]? {
+            realtimePlaybackTools.first { ($0["name"] as? String) == name }
+        }
+        func required(_ name: String) -> Set<String> {
+            let params = tool(name)?["parameters"] as? [String: Any]
+            return Set((params?["required"] as? [String]) ?? [])
+        }
+        XCTAssertEqual(required("save_note"), ["text", "meaning"])
+        XCTAssertEqual(required("save_answer"), ["question", "answer"])
+
+        // The surface-form rule has to reach the model: the highlight is found by
+        // searching the line, so a dictionary lemma silently loses it.
+        let params = tool("save_note")?["parameters"] as? [String: Any]
+        let properties = params?["properties"] as? [String: Any]
+        let text = (properties?["text"] as? [String: Any])?["description"] as? String ?? ""
+        XCTAssertTrue(text.contains("EXACTLY as it appears"), "got: \(text)")
+    }
+
+    // The instruction that decides whether any of this works: the model must CALL the
+    // tool rather than claim it did. Playback needed the same wording.
+    func testTheTeacherIsToldToCallRatherThanClaim() {
+        let text = baseClassroomInstructions(material: "M")
+        XCTAssertTrue(text.contains("SAVING NOTES"))
+        XCTAssertTrue(text.contains("WITHOUT calling save_note"))
+        // And not to save unasked — the whole point of making it explicit.
+        XCTAssertTrue(text.contains("Only when ASKED"))
     }
 
     func testBaseInstructionsAppendMaterial() {

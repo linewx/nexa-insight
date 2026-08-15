@@ -21,8 +21,48 @@ private let playbackDisambiguationRules = """
 The student controls the podcast. Accept playback commands in the source language or Chinese. Use the registered tools instead of merely describing actions. For absolute requests such as 'go to 10 minutes', '10:30', '第10分钟', or '跳到十分钟', call seek_to_timestamp with total seconds from the episode start; use seek_relative only for relative requests such as 'forward 30 seconds'. CRITICAL: a pure playback command (seek, pause, resume, next/previous sentence, speed) is an ACTION, not a discussion opener. When the learner only asks to move or control playback, call the tool and stop — say nothing, or at most one very short acknowledgement (e.g. '好的' / 'Sure'). Do NOT ask a follow-up question, do NOT give corrections, and do NOT start discussing the new position; the podcast will resume playing on its own. Only engage, correct, or ask follow-ups when the learner actually raises an idea or question to discuss. When finish_discussion is requested, briefly review the learner's argument, language accuracy, and reusable advanced expressions before resuming. The supplied classroom material has an episode map, current chapter, and transcript window. Use all three when relevant. You may add general background knowledge, but explicitly distinguish it from what the speakers said. If the learner's transcription is ambiguous or incomplete, ask one brief clarification instead of guessing.
 """
 
+/// When to write a card, and when to refuse.
+///
+/// The hard part is not the schema, it is that the model must ACT rather than say it
+/// acted. Playback needed "use the registered tools instead of merely describing
+/// actions" to stop it answering "好，我跳过去了" without calling anything; saving has the
+/// same failure mode and the same cure, stated again here because a rule buried in the
+/// playback paragraph does not obviously cover notes.
+///
+/// The other half is not saving too much. Recording is now explicit BECAUSE whether a
+/// point is worth keeping depends on what the learner already knows — which the model
+/// cannot see. So a question is not a request: asked what a word means, explain it and
+/// stop. Wait to be asked.
+private let noteTakingRules = """
+SAVING NOTES. The learner keeps their own notes by asking you to. Two rules, and the \
+first is about doing rather than describing:
+
+CALL the tool. Saying "好，记下了" or "I've noted that down" WITHOUT calling save_note or \
+save_answer is a failure — nothing is written and the learner believes it was. Call the \
+tool, then confirm in one short sentence.
+
+Only when ASKED. "记一下这个词", "这个记下来", "把这个存成卡片", "note this down" are \
+requests. "这个词什么意思", "为什么用被动" are QUESTIONS — answer them and save nothing. \
+Do not offer to save, and do not save because something seems useful: whether it is \
+worth keeping depends on what this learner already knows, and only they know that.
+
+Which tool: save_note for a word or phrase they will meet again; save_answer for \
+anything else worth remembering — meaning, grammar, an argument, background.
+
+`text` must be the form that actually appears in the transcript line, not the dictionary \
+form ("worked out", not "work out"), because the highlight is found by searching the \
+line for it.
+
+Refuse OUT LOUD when asked to keep something not worth a card — a greeting, show \
+boilerplate, or a phrase at or below B2 that they clearly already know. Say briefly why \
+("这个太基础了，不用记") instead of silently not calling the tool: in an explicit mode, \
+silence is indistinguishable from not having heard them.
+
+If you did not catch what to save, ask once rather than guessing.
+"""
+
 func baseClassroomInstructions(material: String) -> String {
-    "\(teacherStyle)\n\(playbackDisambiguationRules)\n\nClassroom material:\n\(material)"
+    "\(teacherStyle)\n\(playbackDisambiguationRules)\n\n\(noteTakingRules)\n\nClassroom material:\n\(material)"
 }
 
 // Port of classroomConfig.ts BAKED_CONTEXT_MARKER + stableInstructions.
@@ -71,4 +111,25 @@ let realtimePlaybackTools: [[String: Any]] = [
     ["type": "function", "name": "next_sentence", "description": "Go to the next transcript sentence.", "parameters": ["type": "object", "properties": [:]]],
     ["type": "function", "name": "seek_to_timestamp", "description": "Jump to an absolute position in the episode.",
      "parameters": ["type": "object", "properties": ["seconds": ["type": "number", "description": "Seconds from the episode start."]], "required": ["seconds"]]],
+    // Two tools rather than one with a `kind`, because the required fields differ
+    // completely. Asked for one shape, a model short of a field fills it with something
+    // rather than leaving it out, and a card with an invented gloss is worse than none.
+    ["type": "function", "name": "save_note",
+     "description": "Save a word or phrase as a study card. ONLY call this when the learner explicitly asks to keep it — a question about meaning is not a request to save.",
+     "parameters": ["type": "object", "properties": [
+        // The surface form matters: the highlight is found by searching the transcript
+        // for this string, so a dictionary lemma would leave the card un-highlighted.
+        "text": ["type": "string", "description": "The word or phrase, EXACTLY as it appears in the transcript line (the spoken form, e.g. 'worked out', not 'work out')."],
+        "meaning": ["type": "string", "description": "What it means, in Chinese."],
+        "note_type": ["type": "string", "description": "One of: reduction, ellipsis, syntax, idiom, reference, phrase, pattern, collocation, word."],
+        "example": ["type": "string", "description": "An example sentence. Omit to use the transcript line itself."],
+        "why": ["type": "string", "description": "One Chinese sentence on why it is worth keeping."],
+        "request": ["type": "string", "description": "What the learner said when asking, in Chinese."],
+     ], "required": ["text", "meaning"]]],
+    ["type": "function", "name": "save_answer",
+     "description": "Save a question and its answer as a card with no highlight — for meaning, grammar, argument or background. ONLY when the learner asks to keep it.",
+     "parameters": ["type": "object", "properties": [
+        "question": ["type": "string", "description": "What the learner asked, in Chinese."],
+        "answer": ["type": "string", "description": "The answer as settled, in Chinese, 1-3 sentences, written to be read cold in a week."],
+     ], "required": ["question", "answer"]]],
 ]

@@ -107,15 +107,21 @@ final class ClassroomController: ObservableObject {
     /// Carries the scene as well as the position: the instructions differ per scene
     /// (reading wants the answer up front), and only the controller knows which is live.
     private let onContextRefresh: (Int, ClassroomScene) -> Void
+    /// Where a saved note goes. A callback rather than an EpisodeStore, because this type
+    /// is pure logic plus a transport and stays testable without a database. The sentence
+    /// it belongs to is decided here (the playback position) and passed along.
+    private let onSaveNote: (NoteRequest, SentenceDTO?) -> Void
 
     // Position-moving tools jump the podcast, so the model's context must refresh
     // to the new spot (ports the PLAYS_AUDIO / moved sets from useClassroomTeacher).
     private static let movers: Set<PlaybackTool> = [.seek_to_timestamp, .seek_relative, .previous_sentence, .next_sentence, .repeat_current_sentence]
 
     init(sentences: [SentenceDTO], playback: Playback, transport: ClassroomTransport,
-         onNotice: @escaping (String) -> Void, onContextRefresh: @escaping (Int, ClassroomScene) -> Void) {
+         onNotice: @escaping (String) -> Void, onContextRefresh: @escaping (Int, ClassroomScene) -> Void,
+         onSaveNote: @escaping (NoteRequest, SentenceDTO?) -> Void = { _, _ in }) {
         self.sentences = sentences; self.playback = playback; self.transport = transport
         self.onNotice = onNotice; self.onContextRefresh = onContextRefresh
+        self.onSaveNote = onSaveNote
         self.state = classroomReducer(ClassroomState(phase: .idle, pausedAtMs: nil), .connected)
     }
 
@@ -159,9 +165,29 @@ final class ClassroomController: ObservableObject {
     }
 
     func runPlaybackTool(_ name: PlaybackTool, _ args: ToolArguments) {
-        transport.stopSpeaking()
         let positionMs = cursor()
         let at = activeSentence(sentences, positionMs) ?? sentences.first
+
+        // Saving a note handled first, and WITHOUT stopSpeaking(): the teacher is
+        // normally mid-sentence when asked to keep something ("记下这个词" comes while
+        // they are explaining it), and cutting them off to file a card would make the
+        // save feel like an interruption. It also must not touch the floor, freeze or
+        // playback — nothing about the podcast changes because a note was written.
+        if name.savesANote {
+            guard let request = NoteRequest.from(tool: name, args: args) else {
+                // The model asked to save but left out the gloss or the text. Say so:
+                // in an explicit mode, silence after "记一下" reads as being ignored.
+                NexaLog.log("TOOL \(name.rawValue) incomplete args=\(args)")
+                onNotice("\u{6ca1}\u{542c}\u{6e05}\u{8981}\u{8bb0}\u{4ec0}\u{4e48}\u{ff0c}\u{518d}\u{8bf4}\u{4e00}\u{904d}\u{3002}")
+                return
+            }
+            NexaLog.log("TOOL \(name.rawValue) note=\(request)")
+            onSaveNote(request, at)
+            onNotice(noteNotice(request))
+            return
+        }
+
+        transport.stopSpeaking()
         let index = max(0, sentences.firstIndex(where: { $0.id == at?.id }) ?? 0)
         let starts = sentences.map(\.startMs)
         let target = playbackTargetPosition(name, args.numbers, positionMs, index, starts)
