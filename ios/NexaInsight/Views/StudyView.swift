@@ -279,6 +279,7 @@ struct StudyView: View {
             // card stayed on screen, looking like the delete had done nothing.
             refreshExpressionCaches()
         } catch {
+            NSLog("[ask] deleteCard failed: %@", String(describing: error))
             noteError = error.localizedDescription
         }
     }
@@ -308,6 +309,13 @@ struct StudyView: View {
     /// Playback pauses for the duration either way: otherwise the mic hears the
     /// episode mixed with your voice.
     private func beginAsking(_ sentence: SentenceDTO) {
+        // TEMPORARY: which of the three alert paths is firing, and why.
+        NSLog("[ask] beginAsking sentence=%d session=%@ controller=%@ connected=%@",
+              sentence.id,
+              liveSession == nil ? "nil" : "yes",
+              liveSession?.controller == nil ? "nil" : "yes",
+              (liveSession?.connected ?? false) ? "yes" : "no")
+        if let error = liveSession?.error { NSLog("[ask] session error: %@", error) }
         guard let controller = liveSession?.controller else {
             // No connection means no conversation. Say so once rather than letting a
             // hold do nothing at all, which reads as the gesture being broken.
@@ -371,6 +379,7 @@ struct StudyView: View {
             conversation: KnowledgePointExtractor.conversationText(ask.turns),
             candidates: window.map(\.sourceText),
             materialKind: episode?.materialKind ?? "native")
+        NSLog("[ask] sediment turns=%d points=%d", ask.turns.count, points.count)
         guard !points.isEmpty else { return }
         for point in points {
             switch point {
@@ -382,6 +391,7 @@ struct StudyView: View {
                         episodeId: episodeId, sentenceId: sentence.id,
                         question: question, answer: answer)
                 } catch {
+                    NSLog("[ask] addParagraphNote failed: %@", String(describing: error))
                     noteError = error.localizedDescription
                 }
             }
@@ -435,6 +445,7 @@ struct StudyView: View {
                 expandedExpressionID = stored.expressionId
             }
         } catch {
+            NSLog("[ask] addManualExpression failed: %@", String(describing: error))
             noteError = error.localizedDescription
         }
     }
@@ -473,12 +484,19 @@ struct StudyView: View {
     //
     // Because nothing audible changes at this moment, the tap needs a haptic to
     // land — otherwise "the teacher is here now" is a claim only the dock makes.
-    // Auto-connects when the study screen appears: the bar is always present and
-    // has no connect step, so the session comes up in the background and is ready
-    // by the time the learner holds to talk.
+    // Auto-connects when the study screen appears, so the session is ready by the
+    // time the learner holds to talk.
+    //
+    // Creating it is NOT connecting it. `start()` used to be a `.task` on
+    // DiscussionBar, which reading hides — so in reading the session existed, the
+    // controller was never built, and every hold reported "课堂还没连上". Connecting
+    // belongs to whoever owns the session, not to a bar that may not be on screen.
     private func startDiscussion() {
         guard liveSession == nil else { return }
-        liveSession = LiveClassSession(store: store, keychain: KeychainStore(), episodeId: episodeId, playback: player)
+        let session = LiveClassSession(
+            store: store, keychain: KeychainStore(), episodeId: episodeId, playback: player)
+        liveSession = session
+        Task { await session.start() }
     }
 
     // Playback driven by the learner (play button, scrubber, tapping a line).
@@ -1108,9 +1126,6 @@ private struct DiscussionBar: View {
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
         .modifier(BottomPanelChrome())
-        // No anchor: the session starts at wherever playback currently is, and
-        // playback is NOT interrupted by connecting.
-        .task(id: session.id) { await session.start() }
     }
 }
 
