@@ -20,9 +20,18 @@ enum NexaLog {
 
 @MainActor
 protocol ClassroomTransport: AnyObject {
+    /// Whether this transport can still carry a turn.
+    ///
+    /// The server ends an idle stream after 300s ("Response stream timeout"), and
+    /// nothing in the app noticed: `connected` stayed true from the successful connect,
+    /// so every later hold went through the motions against a dead channel and simply
+    /// produced no answer. Asked before a turn starts, so a stale session can be
+    /// rebuilt instead of swallowing the question.
+    var isAlive: Bool { get }
+
     func stopSpeaking()
     func sendToolResult(callId: String?, ok: Bool)
-    func updateContext(_ context: String)
+    func updateContext(_ context: String, scene: ClassroomScene)
     func injectUserText(_ text: String)
     func speak(_ text: String)
     func requestResponse()
@@ -95,14 +104,16 @@ final class ClassroomController: ObservableObject {
     private let playback: Playback
     private let transport: ClassroomTransport
     private let onNotice: (String) -> Void
-    private let onContextRefresh: (Int) -> Void
+    /// Carries the scene as well as the position: the instructions differ per scene
+    /// (reading wants the answer up front), and only the controller knows which is live.
+    private let onContextRefresh: (Int, ClassroomScene) -> Void
 
     // Position-moving tools jump the podcast, so the model's context must refresh
     // to the new spot (ports the PLAYS_AUDIO / moved sets from useClassroomTeacher).
     private static let movers: Set<PlaybackTool> = [.seek_to_timestamp, .seek_relative, .previous_sentence, .next_sentence, .repeat_current_sentence]
 
     init(sentences: [SentenceDTO], playback: Playback, transport: ClassroomTransport,
-         onNotice: @escaping (String) -> Void, onContextRefresh: @escaping (Int) -> Void) {
+         onNotice: @escaping (String) -> Void, onContextRefresh: @escaping (Int, ClassroomScene) -> Void) {
         self.sentences = sentences; self.playback = playback; self.transport = transport
         self.onNotice = onNotice; self.onContextRefresh = onContextRefresh
         self.state = classroomReducer(ClassroomState(phase: .idle, pausedAtMs: nil), .connected)
@@ -176,7 +187,7 @@ final class ClassroomController: ObservableObject {
         if Self.movers.contains(name) {
             let subtitleAt = activeSentence(sentences, target)
             NexaLog.log("SYNC target=\(target)ms playerNow=\(playback.currentMs)ms subtitle#\(subtitleAt?.position ?? -1)@\(subtitleAt?.startMs ?? -1)ms ctxPos=\(target)ms")
-            onContextRefresh(target)
+            onContextRefresh(target, scene)
         }
     }
 
@@ -187,7 +198,7 @@ final class ClassroomController: ObservableObject {
             // the floor to the teacher.
             heardSpeechThisTurn = true
             freeze(frozenPositionMs ?? cursor(), reason: .speechStarted)
-            onContextRefresh(frozenPositionMs ?? cursor())
+            onContextRefresh(frozenPositionMs ?? cursor(), scene)
             // In Live nothing else claims the floor when the learner starts
             // talking, so it would stay .idle and the UI would still read "just
             // start speaking" while they already are. The press-driven scenes
@@ -372,7 +383,7 @@ final class ClassroomController: ObservableObject {
         // the spot it was interrupted at — keep that one rather than re-reading a
         // stopped player, so resuming later lands where the learner left off.
         freeze(frozenPositionMs ?? cursor(), reason: .speechStarted)
-        onContextRefresh(frozenPositionMs ?? cursor())
+        onContextRefresh(frozenPositionMs ?? cursor(), scene)
         applyFloorEvent(.userTookFloor)
     }
 
@@ -445,7 +456,7 @@ final class ClassroomController: ObservableObject {
         // Freeze at the paragraph, so a follow-up in the same conversation keeps
         // answering about the same place even after several turns.
         freeze(atMs, reason: .speechStarted)
-        onContextRefresh(atMs)
+        onContextRefresh(atMs, scene)
         applyFloorEvent(.userTookFloor)
     }
 

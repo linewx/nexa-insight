@@ -38,9 +38,31 @@ func stableInstructions(_ full: String) -> String {
     return String(full[full.startIndex..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func composeInstructions(_ full: String, freshContext: String) -> String {
-    "\(stableInstructions(full))\n\nCURRENT podcast position (this is the ONLY current context; ignore any earlier transcript window):\n\(freshContext)"
+func composeInstructions(_ full: String, freshContext: String, scene: ClassroomScene = .selfStudy) -> String {
+    let base = "\(stableInstructions(full))\n\nCURRENT podcast position (this is the ONLY current context; ignore any earlier transcript window):\n\(freshContext)"
+    guard scene == .reading else { return base }
+    return "\(base)\n\n\(readingDirectness)"
 }
+
+/// What reading needs that listening does not: the answer itself, in the turn it was
+/// asked in.
+///
+/// `teacherStyle` is Socratic — engage with the idea first, ask a follow-up — which is
+/// right when the learner is listening and thinking aloud. Asked to explain a paragraph
+/// it produced "好，我们来梳理一下这一小段里值得注意的几个点" and then ended the turn:
+/// a promise to explain, with the explanation deferred to a turn that never came. The
+/// learner holds a paragraph because they are stuck on it now, and a turn spent on
+/// preamble also leaves the exchange with nothing to sediment.
+private let readingDirectness = """
+READING MODE. The learner is looking at one paragraph and has held it to ask about it. \
+Answer THAT question in THIS turn, with the substance first. Do not open with a \
+preamble, do not announce what you are about to explain ("好，我们来梳理一下…", "让我们 \
+看看这里有几个点"), and do not defer content to a later turn — if there are three things \
+worth saying, say them now. Asked what is worth studying in the paragraph, name the \
+items and explain each one, rather than offering to. Keep the Socratic follow-up for \
+AFTER the answer, and only when it adds something; one short question at most. \
+Corrections still apply, but they come after the answer, not instead of it.
+"""
 
 let realtimePlaybackTools: [[String: Any]] = [
     ["type": "function", "name": "resume_playback", "description": "Resume/continue playing the podcast.", "parameters": ["type": "object", "properties": [:]]],

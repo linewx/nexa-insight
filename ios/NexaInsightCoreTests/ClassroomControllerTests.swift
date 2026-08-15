@@ -19,9 +19,11 @@ final class FakePlayback: Playback {
 }
 
 final class FakeTransport: ClassroomTransport {
+    var isAlive = true
     private(set) var stoppedSpeaking = 0
     private(set) var toolResults: [(String?, Bool)] = []
     private(set) var contextUpdates: [String] = []
+    private(set) var contextScenes: [ClassroomScene] = []
     private(set) var injectedTexts: [String] = []
     private(set) var spoken: [String] = []
     private(set) var responseRequests = 0
@@ -32,7 +34,10 @@ final class FakeTransport: ClassroomTransport {
     private(set) var cancelledTurns = 0
     func stopSpeaking() { stoppedSpeaking += 1 }
     func sendToolResult(callId: String?, ok: Bool) { toolResults.append((callId, ok)) }
-    func updateContext(_ context: String) { contextUpdates.append(context) }
+    func updateContext(_ context: String, scene: ClassroomScene) {
+        contextUpdates.append(context)
+        contextScenes.append(scene)
+    }
     func injectUserText(_ text: String) { injectedTexts.append(text) }
     func speak(_ text: String) { spoken.append(text) }
     func requestResponse() { responseRequests += 1 }
@@ -49,7 +54,11 @@ private func s(_ id: Int, _ start: Int) -> SentenceDTO {
 
 @MainActor
 final class ClassroomControllerTests: XCTestCase {
-    final class Box { var notices: [String] = []; var refreshes: [Int] = [] }
+    final class Box {
+        var notices: [String] = []
+        var refreshes: [Int] = []
+        var refreshScenes: [ClassroomScene] = []
+    }
 
     func make() -> (ClassroomController, FakePlayback, FakeTransport, Box) {
         let playback = FakePlayback()
@@ -59,7 +68,10 @@ final class ClassroomControllerTests: XCTestCase {
             sentences: [s(0, 0), s(1, 1000), s(2, 2000), s(3, 3000)],
             playback: playback, transport: transport,
             onNotice: { box.notices.append($0) },
-            onContextRefresh: { box.refreshes.append($0) })
+            onContextRefresh: { position, scene in
+                box.refreshes.append(position)
+                box.refreshScenes.append(scene)
+            })
         return (controller, playback, transport, box)
     }
 
@@ -489,6 +501,21 @@ final class ClassroomControllerTests: XCTestCase {
         c.handleRealtimeEvent(.responseDone)
         XCTAssertTrue(playback.didPlay, "listening mode must keep resuming as before")
         XCTAssertEqual(c.floor, .player)
+    }
+
+    // The reading instructions are only worth anything if the scene reaches the
+    // transport, which is where they get composed. A refresh that reported .selfStudy
+    // would leave the teacher Socratic in reading and the prompt tests would still pass.
+    func testContextRefreshReportsTheReadingScene() {
+        let (c, _, _, box) = make()
+        c.pressReadingAsk(atMs: 3000)
+        XCTAssertEqual(box.refreshScenes.last, .reading)
+    }
+
+    func testContextRefreshReportsSelfStudyForAQuickAsk() {
+        let (c, _, _, box) = make()
+        c.pressQuickAsk()
+        XCTAssertEqual(box.refreshScenes.last, .selfStudy)
     }
 
     // The question is about the paragraph under the finger, not wherever playback got

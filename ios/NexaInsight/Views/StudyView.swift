@@ -279,7 +279,6 @@ struct StudyView: View {
             // card stayed on screen, looking like the delete had done nothing.
             refreshExpressionCaches()
         } catch {
-            NSLog("[ask] deleteCard failed: %@", String(describing: error))
             noteError = error.localizedDescription
         }
     }
@@ -309,17 +308,26 @@ struct StudyView: View {
     /// Playback pauses for the duration either way: otherwise the mic hears the
     /// episode mixed with your voice.
     private func beginAsking(_ sentence: SentenceDTO) {
-        // TEMPORARY: which of the three alert paths is firing, and why.
-        NSLog("[ask] beginAsking sentence=%d session=%@ controller=%@ connected=%@",
-              sentence.id,
-              liveSession == nil ? "nil" : "yes",
-              liveSession?.controller == nil ? "nil" : "yes",
-              (liveSession?.connected ?? false) ? "yes" : "no")
-        if let error = liveSession?.error { NSLog("[ask] session error: %@", error) }
-        guard let controller = liveSession?.controller else {
-            // No connection means no conversation. Say so once rather than letting a
-            // hold do nothing at all, which reads as the gesture being broken.
+        guard let session = liveSession else {
+            // No session at all. Say so once rather than letting a hold do nothing,
+            // which reads as the gesture being broken.
             noteError = "\u{8bfe}\u{5802}\u{8fd8}\u{6ca1}\u{8fde}\u{4e0a}\u{ff0c}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{63d0}\u{95ee}\u{3002}"
+            return
+        }
+        // The server ends an idle stream after five minutes, and nothing noticed: a hold
+        // after that went through every motion against a closed channel and produced no
+        // answer and no error. Rebuild first, then ask.
+        guard let controller = session.controller, session.canCarryATurn else {
+            Task {
+                await session.reconnectIfNeeded()
+                // Only report a failure the reconnect could not fix. Succeeding silently
+                // is the point: the learner asked once and should not have to ask twice
+                // to work around a timeout they never saw.
+                if !session.canCarryATurn {
+                    noteError = session.error
+                        ?? "\u{8bfe}\u{5802}\u{8fde}\u{63a5}\u{5df2}\u{65ad}\u{5f00}\u{ff0c}\u{6b63}\u{5728}\u{91cd}\u{8fde}\u{ff0c}\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{3002}"
+                }
+            }
             return
         }
         // A follow-up continues the same conversation; a hold on a different paragraph
@@ -379,7 +387,6 @@ struct StudyView: View {
             conversation: KnowledgePointExtractor.conversationText(ask.turns),
             candidates: window.map(\.sourceText),
             materialKind: episode?.materialKind ?? "native")
-        NSLog("[ask] sediment turns=%d points=%d", ask.turns.count, points.count)
         guard !points.isEmpty else { return }
         for point in points {
             switch point {
@@ -391,7 +398,6 @@ struct StudyView: View {
                         episodeId: episodeId, sentenceId: sentence.id,
                         question: question, answer: answer)
                 } catch {
-                    NSLog("[ask] addParagraphNote failed: %@", String(describing: error))
                     noteError = error.localizedDescription
                 }
             }
@@ -445,7 +451,6 @@ struct StudyView: View {
                 expandedExpressionID = stored.expressionId
             }
         } catch {
-            NSLog("[ask] addManualExpression failed: %@", String(describing: error))
             noteError = error.localizedDescription
         }
     }

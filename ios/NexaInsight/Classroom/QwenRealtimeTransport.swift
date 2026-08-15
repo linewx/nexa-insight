@@ -21,6 +21,12 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     // valid while one is; sending it otherwise draws a "Conversation has none
     // active response" error. Set on response.created, cleared on response.done.
     private var hasActiveResponse = false
+
+    /// Open data channel = a turn can still be carried. Deliberately the CHANNEL and not
+    /// a flag set at connect time: the flag is what stayed true through the server's idle
+    /// timeout, so a hold five minutes later sent into a closed pipe and heard nothing
+    /// back.
+    var isAlive: Bool { channel?.readyState == .open }
     // Turn-boundary events worth logging. Everything else (transcript deltas above
     // all) is per-token noise that hides these.
     private static let loggedEventTypes: Set<String> = [
@@ -28,6 +34,12 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         "input_audio_buffer.committed", "input_audio_buffer.cleared",
         "response.created", "response.done", "session.updated",
         "response.function_call_arguments.done",
+        // The two transcription events. Both are turn boundaries in reading mode —
+        // they are what the conversation panel draws and what the extractor reads —
+        // so their ABSENCE has to be visible in a log, not indistinguishable from
+        // not being logged. They fire once per turn, not per delta.
+        "conversation.item.input_audio_transcription.completed",
+        "response.audio_transcript.done",
     ]
 
     // The teacher's voice. WebRTC's audio device module renders a remote track
@@ -199,8 +211,9 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
                        "output": "{\"ok\":\(ok)}"]])
     }
 
-    func updateContext(_ context: String) {
-        send(["type": "session.update", "session": ["instructions": composeInstructions(instructions, freshContext: context)]])
+    func updateContext(_ context: String, scene: ClassroomScene) {
+        send(["type": "session.update",
+              "session": ["instructions": composeInstructions(instructions, freshContext: context, scene: scene)]])
         send(["type": "conversation.item.create",
               "item": ["type": "message", "role": "user",
                        "content": [["type": "input_text",
@@ -368,7 +381,8 @@ final class QwenRealtimeTransport: ClassroomTransport {
 
     func stopSpeaking() {}
     func sendToolResult(callId: String?, ok: Bool) {}
-    func updateContext(_ context: String) {}
+    var isAlive: Bool { false }
+    func updateContext(_ context: String, scene: ClassroomScene) {}
     func injectUserText(_ text: String) {}
     func speak(_ text: String) {}
     func requestResponse() {}

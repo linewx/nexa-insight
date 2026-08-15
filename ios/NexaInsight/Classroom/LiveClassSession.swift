@@ -92,9 +92,9 @@ final class LiveClassSession: ObservableObject, Identifiable {
         let controller = ClassroomController(
             sentences: sentences, playback: playback, transport: transport,
             onNotice: { [weak self] in self?.showNotice($0) },
-            onContextRefresh: { [weak self] position in
+            onContextRefresh: { [weak self] position, scene in
                 guard let self else { return }
-                transport.updateContext(self.contextFor(position))
+                transport.updateContext(self.contextFor(position), scene: scene)
             })
         self.controller = controller
         // Deliberately no freeze here: joining brings the teacher in while the
@@ -123,6 +123,25 @@ final class LiveClassSession: ObservableObject, Identifiable {
         notice = ""
         // Give the source its full-fidelity playback session back.
         playback.configureAudioSession(voiceMode: false)
+    }
+
+    /// Whether a turn can actually be carried right now.
+    ///
+    /// `connected` alone is not enough: it records that connecting SUCCEEDED, and stays
+    /// true after the server ends an idle stream at 300s. So a hold five minutes after
+    /// the last one went through every motion against a closed channel and produced
+    /// nothing — no answer, no error, no explanation.
+    var canCarryATurn: Bool { connected && (transport?.isAlive ?? false) }
+
+    /// Rebuilds a session the server has dropped, leaving a live one alone.
+    ///
+    /// Called before a turn rather than on a timer: the timeout only matters at the
+    /// moment someone asks something, and reconnecting in the background would keep a
+    /// mic-capable session alive for a screen nobody is talking to.
+    func reconnectIfNeeded() async {
+        guard !canCarryATurn else { return }
+        end()
+        await start()
     }
 #endif
 }
