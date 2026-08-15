@@ -12,6 +12,9 @@ struct LibraryView: View {
     @StateObject private var subscriptions: SubscriptionStore
     @State private var selectedSection: AppSection = .library
     @State private var showImport = false
+    /// Why an "add to Nexa" tap failed. Only for the card path: the import sheet shows its
+    /// own inline error.
+    @State private var addFailure: String?
     @State private var urlDraft = ""
     // One navigation path PER TAB. A single shared stack would mean opening a
     // channel from Discover, switching to Library, and coming back to find the
@@ -68,7 +71,7 @@ struct LibraryView: View {
                 // twice as inset as the list.
                 DiscoverView(
                     vm: discover,
-                    importing: false,
+                    importingVideoIds: { vm.tasks.importingYouTubeIds },
                     onAddToNexa: addToNexa,
                     onOpenChannel: { channelId, title in
                         discoverPath.append(ChannelTarget(channelId: channelId, title: title))
@@ -116,6 +119,17 @@ struct LibraryView: View {
             if new < old { vm.reload() }
         }
         .onChange(of: settings.backendBaseURL) { _, _ in syncBackendClient() }
+        // Bound to the value so dismissing clears it; a `.constant` binding cannot be
+        // written back, which would make the first failure the only one ever shown.
+        .alert(
+            "\u{6dfb}\u{52a0}\u{5931}\u{8d25}",
+            isPresented: Binding(get: { addFailure != nil }, set: { if !$0 { addFailure = nil } }),
+            presenting: addFailure
+        ) { _ in
+            Button("\u{597d}") { addFailure = nil }
+        } message: { message in
+            Text(message)
+        }
     }
 
     // Each tab carries its own stack and the same two destinations, so a channel
@@ -149,7 +163,7 @@ struct LibraryView: View {
                         // The one place this round still reads youtubeId. When
                         // that field becomes source_id, this moves with it.
                     importedVideoIds: { Set(store.downloadedEpisodes().compactMap(\.youtubeId)) }),
-                    importing: false,
+                    importingVideoIds: { vm.tasks.importingYouTubeIds },
                     onImport: addToNexa)
             }
         }
@@ -168,7 +182,17 @@ struct LibraryView: View {
     // pages of scrolling. Import already runs in the background, so the only thing
     // that jump bought was showing you a progress bar you did not ask for.
     private func addToNexa(_ url: String) {
-        Task { await vm.startImport(urlString: url) }
+        Task {
+            // The result matters here in a way it does not in the import sheet. That sheet
+            // renders `submissionError` inline, so a failure explains itself; tapping ➕ on a
+            // Discover card has no such surface, and the error used to land in a published
+            // property nothing on screen was reading. Success and failure looked identical:
+            // nothing happened either way.
+            if await vm.startImport(urlString: url) == false {
+                addFailure = vm.submissionError.map(cleanedImportError)
+                    ?? "\u{6dfb}\u{52a0}\u{5931}\u{8d25}\u{ff0c}\u{8bf7}\u{7a0d}\u{540e}\u{91cd}\u{8bd5}\u{3002}"
+            }
+        }
     }
 
     // nil when no key is stored, which is the normal state for a user who has not

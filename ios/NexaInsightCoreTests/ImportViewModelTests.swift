@@ -19,6 +19,34 @@ final class ImportViewModelTests: XCTestCase {
         XCTAssertEqual(tasks.ordered.map(\.episodeId), [1, 2])
     }
 
+    // A Discover card knows its videoId and nothing about episode ids, so this set is the
+    // only way it can tell that IT is the one being fetched. Before it existed both call
+    // sites passed `importing: false` unconditionally: the ➕ changed nothing on tap, and a
+    // failure had nowhere to appear — success and failure looked identical.
+    func testImportingYouTubeIdsCoversOnlyWorkStillInFlight() {
+        var tasks = ImportTaskStore()
+        tasks.upsert(ImportTask(
+            episode: episode(id: 1, youtubeId: "running"),
+            job: JobDTO(id: 11, episodeId: 1, stage: "transcribing", status: "running", progress: 40, error: nil),
+            kind: .importing))
+        tasks.upsert(ImportTask(
+            episode: episode(id: 2, youtubeId: "queued"),
+            job: JobDTO(id: 22, episodeId: 2, stage: "metadata", status: "queued", progress: 0, error: nil),
+            kind: .importing))
+        // Finished and failed both stop the clock glyph: one becomes a tick, the other has
+        // to be tappable again rather than stuck showing progress forever.
+        tasks.upsert(ImportTask(
+            episode: episode(id: 3, youtubeId: "done"),
+            job: JobDTO(id: 33, episodeId: 3, stage: "complete", status: "complete", progress: 100, error: nil),
+            kind: .importing))
+        tasks.upsert(ImportTask(
+            episode: episode(id: 4, youtubeId: "broken"),
+            job: JobDTO(id: 44, episodeId: 4, stage: "transcribing", status: "failed", progress: 12, error: "boom"),
+            kind: .importing))
+
+        XCTAssertEqual(tasks.importingYouTubeIds, ["running", "queued"])
+    }
+
     func testTaskStoreRemovesOnlyCompletedEpisode() {
         var tasks = ImportTaskStore()
         tasks.upsert(ImportTask(

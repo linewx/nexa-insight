@@ -32,6 +32,16 @@ struct ImportTaskStore: Equatable {
 
     func task(for episodeId: Int) -> ImportTask? { tasks[episodeId] }
 
+    /// The YouTube ids currently being imported.
+    ///
+    /// A Discover card knows its videoId and nothing about episode ids, so this is the only
+    /// way it can tell that IT is the one being fetched. Without it the card passed
+    /// `importing: false` unconditionally: the glyph never changed, and tapping produced no
+    /// visible response of any kind.
+    var importingYouTubeIds: Set<String> {
+        Set(ordered.filter { !$0.isComplete && !$0.isFailed }.compactMap { $0.episode.youtubeId })
+    }
+
     mutating func upsert(_ task: ImportTask) {
         if tasks[task.episodeId] == nil { order.append(task.episodeId) }
         tasks[task.episodeId] = task

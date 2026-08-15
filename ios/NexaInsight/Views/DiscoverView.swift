@@ -14,7 +14,10 @@ import SwiftUI
 // a tab now, so this screen has no internal mode switch at all.
 struct DiscoverView: View {
     @ObservedObject var vm: DiscoverViewModel
-    let importing: Bool
+    /// The videoIds being fetched right now. A single `Bool` used to be passed here, always
+    /// false, so a card could not show that IT was the one importing — the ➕ changed
+    /// nothing on tap and a failure had nowhere to appear either.
+    var importingVideoIds: () -> Set<String> = { [] }
     let onAddToNexa: (String) -> Void
     let onOpenChannel: (String, String) -> Void
     // Which videos are already in the library. Read as a closure so a video
@@ -205,7 +208,7 @@ struct DiscoverView: View {
                 VideoCard(
                     item: card,
                     imported: importedVideoIds().contains(card.videoId),
-                    importing: importing,
+                    importing: importingVideoIds().contains(card.videoId),
                     onImport: { onAddToNexa(card.watchURL.absoluteString) },
                     onOpenChannel: onOpenChannel,
                     // Toggles: tapping the playing card collapses it. Only one

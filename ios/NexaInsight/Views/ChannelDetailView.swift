@@ -11,7 +11,9 @@ import SwiftUI
 // channel publishes before committing to it.
 struct ChannelDetailView: View {
     @StateObject var vm: ChannelDetailViewModel
-    let importing: Bool
+    /// The videoIds being fetched right now, for the same reason as Discover: a single Bool
+    /// could not tell a card that IT was the one importing.
+    var importingVideoIds: () -> Set<String> = { [] }
     let onImport: (String) -> Void
     @State private var showSearch = false
     // Separate history per surface: searching inside one channel is a different
@@ -242,7 +244,7 @@ struct ChannelDetailView: View {
                 VideoCard(
                     item: card,
                     imported: vm.isImported(videoId: card.videoId),
-                    importing: importing,
+                    importing: importingVideoIds().contains(card.videoId),
                     onImport: { onImport(card.watchURL.absoluteString) },
                     onTap: { playingId = playingId == card.videoId ? nil : card.videoId },
                     playing: playingId == card.videoId)
