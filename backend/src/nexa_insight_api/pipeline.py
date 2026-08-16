@@ -50,6 +50,7 @@ class AIAdapter(Protocol):
     def translate(self, texts: list[str]) -> list[str]: ...
     def chapters(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
     def classify_material(self, sentences: list[TranscriptSegment]) -> str: ...
+    def hidden_traps(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
 
 
 class YtDlpMediaAdapter:
@@ -303,6 +304,48 @@ class OpenAIAdapter:
     # much") and literal domain nouns ("training data center") on every source,
     # including a Patrick Collison interview. What was missing was any statement of
     # what makes an item worth studying — and any instruction to refuse.
+    # Two kinds only, and the narrowing IS the design. A scan over all six padded every
+    # batch — six items whatever the instructions said, a product name filed as a lesson —
+    # because a model given a list of categories fills them. These two are the ones a
+    # learner cannot ask about: every word is known, the sentence parses, the reading is
+    # wrong, and nothing signals it. New vocabulary is deliberately excluded — they will
+    # look a word up themselves, and whether they already know it is the one judgement only
+    # they can make.
+    HIDDEN_TRAPS = (
+        "You are scanning a transcript for a Chinese-speaking learner. Find ONLY the two "
+        "failures a learner cannot ask about, because nothing tells them they got it wrong:\n"
+        '- "shifted": the everyday sense of the words is easy AND WRONG HERE — context gives '
+        'another sense ("model weights" is not heaviness; "play the clip" is not a game). '
+        "Every word known, the sentence parses, the reading wrong.\n"
+        '- "set_phrase": every word familiar but the combination means something the words do '
+        'not ("throw shade"). The learner reads straight past it, confident and wrong.\n'
+        "Return NOTHING else. Not new vocabulary — they will look that up, and only they know "
+        "what they already know. Not discourse markers, not grammar, not implications.\n"
+        "Skip any expression that looks like a TRANSCRIPTION ERROR rather than English "
+        '("onrem" for "on-prem"): a garbled word teaches nothing and a learner would never '
+        "ask about it.\n"
+        "For each item return: text (exactly as it appears), kind, sense_group (verbatim from "
+        "the transcript), chinese (its meaning here), usage (in Chinese, one short sentence "
+        "naming the frame), literal (in Chinese, the everyday reading they would land on — "
+        'required for "shifted"), example (verbatim), example_chinese (the example translated '
+        "into Chinese), sentence_position.\n"
+        "There is no quota and no minimum. Most passages contain none of these two, and an "
+        'empty list is the expected answer. Return JSON with key "expressions".'
+    )
+
+    def hidden_traps(self, sentences: list[TranscriptSegment]) -> list[dict]:
+        payload = [{"position": i, "text": s.text} for i, s in enumerate(sentences)]
+        result = self._json(self.HIDDEN_TRAPS, {"sentences": payload})
+        if isinstance(result, list):
+            return list(result)
+        # A bare array despite the schema has been observed; accepting both shapes is the
+        # difference between dropping a whole batch and keeping it.
+        for key in ("expressions", "items"):
+            value = result.get(key) if isinstance(result, dict) else None
+            if isinstance(value, list):
+                return value
+        return []
+
     def classify_material(self, sentences: list[TranscriptSegment]) -> str:
         payload = [sentence.text for sentence in sentences[:60]]
         result = self._json(self.CLASSIFY_MATERIAL, {"sentences": payload})
@@ -384,8 +427,12 @@ class ImportPipeline:
             #
             # material_kind above is still detected and stored: it selects which prompt
             # the ON-DEMAND extraction uses when a card is actually requested.
+            # Scanned, but only for the two failures a learner cannot ask about. The
+            # earlier full extraction was removed because it pre-picked hundreds of words
+            # nobody chose; this returns nothing for most batches, which is the point.
+            traps = self._hidden_traps(all_segments, job_id)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
-            self.repo.replace_learning_content(episode.id, chapters, sentences, [])
+            self.repo.replace_learning_content(episode.id, chapters, sentences, traps)
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
         except Exception as exc:
             self.repo.upsert_job(job_id, stage=self.repo.get_job(job_id).stage, progress=self.repo.get_job(job_id).progress, status="failed", error=str(exc))
@@ -509,6 +556,63 @@ class ImportPipeline:
         except (KeyError, TypeError, ValueError):
             return None
         return {**occurrence, "sentence_position": position + offset, "start_offset": start, "end_offset": end}
+
+    # 40 lines per call: enough context to tell a shifted sense from an ordinary one,
+    # small enough that one bad batch loses little. Sequential, not concurrent — this scan
+    # returns nothing for most batches, so there is no long tail to parallelise away, and
+    # the old version's thread pool existed for a workload that no longer exists.
+    TRAP_BATCH = 40
+
+    def _hidden_traps(self, sentences: list[TranscriptSegment], job_id: int) -> list[dict]:
+        """The two invisible failure kinds, across the whole transcript.
+
+        Never raises: a scan that fails costs the learner nothing they had before, while a
+        raised exception would cost the import. Same reasoning as `_material_kind`.
+        """
+        found: list[dict] = []
+        for start in range(0, len(sentences), self.TRAP_BATCH):
+            batch = sentences[start:start + self.TRAP_BATCH]
+            try:
+                items = self.ai.hidden_traps(batch)
+            except Exception:
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                # Only the two kinds. A model handed a category list fills it, so anything
+                # else it decided to include is dropped rather than trusted.
+                kind = item.get("kind")
+                if kind not in ("shifted", "set_phrase"):
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                # The scan's field names are not the store's. The card reads 整块 from
+                # `restored`, 容易理解成 from `heard_as`, 怎么用 from `when_to_use` — mapping
+                # here is the difference between a full card and three empty sections.
+                try:
+                    position = int(item.get("sentence_position", 0)) + start
+                except (TypeError, ValueError):
+                    # Position is a hint only: the store locates by searching for the text,
+                    # so an unusable index costs the highlight nothing.
+                    position = start
+                found.append({
+                    "text": text,
+                    "type": "phrase",
+                    "chinese": item.get("chinese"),
+                    "example": item.get("example"),
+                    # NOT NULL in the schema, and a quote a learner cannot read is no
+                    # example at all — so it is asked for rather than defaulted to blank.
+                    "example_chinese": item.get("example_chinese") or "",
+                    "restored": item.get("sense_group"),
+                    "when_to_use": item.get("usage"),
+                    "heard_as": item.get("literal"),
+                    "sentence_position": position,
+                    # Marked as extraction so a reprocess may replace it, and so the purge
+                    # that cleared the last generation still applies to this one.
+                    "source": "extraction",
+                })
+        return found
 
     def _chapters(self, sentences: list[TranscriptSegment]) -> list[dict]:
         try:

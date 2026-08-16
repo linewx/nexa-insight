@@ -53,17 +53,19 @@ class FakeAI:
     def chapters(self, sentences):
         return [{"title": "All", "summary": "whole", "start_ms": 0, "end_ms": 4000}]
 
-    def learning_expressions(self, sentences, material_kind="native"):
+    def hidden_traps(self, sentences):
+        # One shifted sense in the first line of every batch, so remapping is observable.
         return [{
             "text": "Hello world",
-            "kind": "phrase",
-            "chinese": "你好，世界",
-            "pronunciation": None,
-            "example": "Hello world, again.",
-            "example_chinese": "再次向世界问好。",
-            "occurrences": [{"sentence_position": 0, "start_offset": 0, "end_offset": 11}],
+            "kind": "shifted",
+            "chinese": "\u6253\u62db\u547c",
+            "sense_group": "Hello world.",
+            "usage": "\u6d4b\u8bd5\u7528",
+            "literal": "\u4f60\u597d\uff0c\u4e16\u754c",
+            "example": "Hello world.",
+            "example_chinese": "\u4f60\u597d\uff0c\u4e16\u754c\u3002",
+            "sentence_position": 0,
         }]
-
 
 class FlakyAI(FakeAI):
     def translate(self, texts):
@@ -120,65 +122,6 @@ class EnglishOnlyAI(FakeAI):
         return list(texts)
 
 
-class BatchedExpressionAI(FakeAI):
-    def __init__(self):
-        self.expression_batches: list[list[TranscriptSegment]] = []
-        self.batches_lock = threading.Lock()
-
-    def learning_expressions(self, sentences, material_kind="native"):
-        # Batches run concurrently, so recording them needs a lock and callers
-        # must not assume the order they land in.
-        with self.batches_lock:
-            self.expression_batches.append(list(sentences))
-        return [{
-            "text": sentences[0].text,
-            "kind": "phrase",
-            "chinese": "测试短语",
-            "pronunciation": None,
-            "example": sentences[0].text,
-            "example_chinese": "测试例句",
-            "occurrences": [{"sentence_position": 0, "start_offset": 0, "end_offset": len(sentences[0].text)}],
-        }]
-
-
-class SizeLimitedExpressionAI(BatchedExpressionAI):
-    def learning_expressions(self, sentences, material_kind="native"):
-        if len(sentences) > 2:
-            raise ValueError("response was truncated")
-        return super().learning_expressions(sentences, material_kind)
-
-
-class SlowExpressionAI(BatchedExpressionAI):
-    def __init__(self):
-        super().__init__()
-        self.active = 0
-        self.max_active = 0
-        self.lock = threading.Lock()
-
-    def learning_expressions(self, sentences, material_kind="native"):
-        with self.lock:
-            self.active += 1
-            self.max_active = max(self.max_active, self.active)
-        try:
-            time.sleep(0.05)
-            return super().learning_expressions(sentences, material_kind)
-        finally:
-            with self.lock:
-                self.active -= 1
-
-
-class StringOffsetExpressionAI(BatchedExpressionAI):
-    """qwen-plus returns offsets as JSON strings, and sometimes omits them."""
-
-    def learning_expressions(self, sentences, material_kind="native"):
-        batch = super().learning_expressions(sentences, material_kind)
-        batch[0]["occurrences"] = [
-            {"sentence_position": "0", "start_offset": "0", "end_offset": str(len(sentences[0].text))},
-            {"start_offset": 0, "end_offset": 1},
-        ]
-        return batch
-
-
 def _seed(repo):
     with repo.session() as session:
         episode = Episode(source_url="https://youtu.be/x", youtube_id="abcdefghijk", status="queued")
@@ -213,9 +156,16 @@ def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     assert repo.get_episode(episode_id).audio_path == f"episodes/{episode_id}/source.mp3"
     assert repo.get_job(job_id).status == "complete"
     expressions = repo.list_learning_expressions(episode_id)
-    # A finished episode carries transcript and translation and NOTHING pre-picked:
-    # cards exist because the learner asked for one.
-    assert expressions == []
+    # Scanned again, but only for the two failures a learner cannot ask about. The card
+    # fields are what matters: 整块 reads `restored`, 容易理解成 reads `heard_as`, 怎么用 reads
+    # `when_to_use`, and the scan's own field names are none of those — a mapping slip
+    # renders three empty sections rather than failing anything.
+    assert [e.text for e in expressions] == ["Hello world"]
+    found = expressions[0]
+    assert found.source == "extraction", "a reprocess must be free to replace it"
+    assert found.restored == "Hello world."
+    assert found.heard_as == "你好，世界"
+    assert found.when_to_use == "测试用"
 
 
 def test_pipeline_audio_backfill_downloads_audio_without_reprocessing(repo, tmp_path):
@@ -329,11 +279,10 @@ def test_pipeline_records_material_kind_and_uses_the_matching_strategy(repo, tmp
 
     ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
 
-    # Classification still runs and is stored — it selects the prompt on-demand
-    # extraction will use. What is gone is extraction itself, so the episode arrives
-    # with no expressions at all.
+    # Classification still runs and is stored: it selects the prompt the on-demand
+    # teacher uses. The scan runs alongside it and is not gated on it.
     assert repo.get_episode(episode_id).material_kind == "teaching"
-    assert repo.list_learning_expressions(episode_id) == []
+    assert [e.text for e in repo.list_learning_expressions(episode_id)] == ["Hello world"]
 
 
 def test_pipeline_falls_back_to_native_when_classification_fails(repo, tmp_path):
@@ -354,29 +303,6 @@ def test_pipeline_falls_back_to_native_when_classification_fails(repo, tmp_path)
 
 class NonconformingAI(FakeAI):
     """Real qwen-plus output: IPA as a per-word list, and patterns with no slots."""
-
-    def learning_expressions(self, sentences, material_kind="native"):
-        return [
-            {
-                "text": "real talk",
-                "type": "phrase",
-                "chinese": "真心话",
-                "pronunciation": ["riːl", "tɔːk"],  # a list, not a string
-                "example": sentences[0].text,
-                "example_chinese": "真心话。",
-                "occurrences": [{"sentence_position": 0}],
-            },
-            {
-                "text": sentences[0].text,  # a whole sentence claimed as a pattern
-                "type": "pattern",
-                "chinese": "整句",
-                "pronunciation": None,
-                "example": sentences[0].text,
-                "example_chinese": "整句。",
-                "occurrences": [{"sentence_position": 0}],
-            },
-        ]
-
 
 def test_pipeline_replaces_leftover_audio_from_an_earlier_run(repo, tmp_path):
     """A source.mp3 already on disk must not be trusted.
@@ -400,6 +326,100 @@ def test_pipeline_replaces_leftover_audio_from_an_earlier_run(repo, tmp_path):
 
     assert media.downloaded_audio is True, "stale audio must be re-downloaded, not reused"
     assert stale.read_bytes() == b"ID3fake", "the stale bytes must be gone"
+
+
+# The narrowing IS the design, so it is pinned here rather than left to the prompt. A scan
+# over all six kinds padded every batch — six items whatever the instructions said, a
+# product name filed as a lesson — because a model handed a category list fills it.
+class PaddingAI(FakeAI):
+    """Returns the kinds a padding model reaches for when it has nothing real to report."""
+
+    def hidden_traps(self, sentences):
+        return [
+            {"text": "Hello world", "kind": "shifted", "chinese": "打招呼",
+             "example": "Hello world.", "example_chinese": "你好。", "sentence_position": 0},
+            # Vocabulary is deliberately out of scope: they will look a word up themselves,
+            # and whether they already know it is the one judgement only they can make.
+            {"text": "Goodbye", "kind": "word", "chinese": "再见",
+             "example": "Goodbye.", "example_chinese": "再见。", "sentence_position": 1},
+            {"text": "you know", "kind": "discourse", "chinese": "你知道的",
+             "example": "Goodbye.", "example_chinese": "再见。", "sentence_position": 1},
+            # No text is nothing to highlight and nothing to study.
+            {"text": "   ", "kind": "set_phrase", "chinese": "空",
+             "example": "Goodbye.", "example_chinese": "再见。", "sentence_position": 0},
+            "not even a dict",
+        ]
+
+
+def test_scan_keeps_only_the_two_kinds_a_learner_cannot_ask_about(repo, tmp_path):
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), PaddingAI()).run(job_id)
+
+    kept = repo.list_learning_expressions(episode_id)
+    assert [e.text for e in kept] == ["Hello world"], (
+        "vocabulary, discourse markers, blank text and non-dicts are all dropped"
+    )
+
+
+class BatchPositionAI(FakeAI):
+    """Reports a position relative to ITS batch, which is all the model can see."""
+
+    def __init__(self):
+        self.batches = []
+
+    def hidden_traps(self, sentences):
+        self.batches.append([s.text for s in sentences])
+        # The repeated phrase, reported at its position WITHIN this batch.
+        for offset, segment in enumerate(sentences):
+            if "throw shade" in segment.text:
+                return [{"text": "throw shade", "kind": "set_phrase", "chinese": "\u6697\u4e2d\u8d2c\u4f4e",
+                         "example": segment.text, "example_chinese": "\u6d4b\u8bd5\u3002",
+                         "sentence_position": offset}]
+        return []
+
+
+def test_scan_shifts_batch_positions_into_transcript_numbering(repo, tmp_path):
+    """The store searches every sentence for the text, so a position is only the first place
+    it looks — which makes the shift invisible until the SAME phrase appears twice. Then the
+    reported index decides which occurrence gets highlighted, and an unshifted one anchors
+    the card to a sentence in the wrong batch."""
+    episode_id, job_id = _seed(repo)
+    ai = BatchPositionAI()
+    media = FakeMedia(tmp_path)
+    lines = [f"line {i}." for i in range(ImportPipeline.TRAP_BATCH + 5)]
+    lines[1] = "I heard them throw shade early on."
+    target = ImportPipeline.TRAP_BATCH + 2
+    lines[target] = "They throw shade again much later."
+    media.caption_texts = lines
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, media, ai).run(job_id)
+
+    assert len(ai.batches) == 2, "the transcript is scanned in batches, not in one call"
+    sentences = {s.id: s.position for s in repo.list_sentences(episode_id)}
+    expressions = repo.list_learning_expressions(episode_id)
+    assert [e.text for e in expressions] == ["throw shade"]
+    # Reported as position 2 inside the SECOND batch, so only a shifted position lands on
+    # the later line. Unshifted it anchors to line 2, which does not contain the phrase.
+    anchored = sorted(sentences[o.sentence_id] for o in expressions[0].occurrences)
+    assert anchored == [1, target]
+
+
+class ExplodingScanAI(FakeAI):
+    def hidden_traps(self, sentences):
+        raise RuntimeError("the scan provider is down")
+
+
+def test_a_failed_scan_costs_the_import_nothing(repo, tmp_path):
+    """A scan that fails leaves the learner exactly where they were; a raised exception
+    would instead lose the transcript, translation and audio they were waiting for."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ExplodingScanAI()).run(job_id)
+
+    assert repo.get_episode(episode_id).status == "ready"
+    assert repo.get_job(job_id).status == "complete"
+    assert repo.list_learning_expressions(episode_id) == []
 
 
 def test_media_adapter_finds_homebrew_tools_when_launchd_path_is_minimal():
