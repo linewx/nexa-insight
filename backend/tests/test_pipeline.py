@@ -543,6 +543,54 @@ def test_a_failed_scan_costs_the_import_nothing(repo, tmp_path):
 # transcript. "mini bar" glossed word-by-word is 小型的酒吧, and against 迷你吧 the comparison
 # correctly says "same" — but the finder returns 迷你吧（酒店房间内收费的小冰箱）, and the aside
 # describes the thing rather than translating it, so any two strings look different.
+class StubbedAdapter(OpenAIAdapter):
+    """The real verification logic with the two model calls replaced by recorded stubs."""
+
+    def __init__(self, glosses, reaches):
+        self.seen_prompts = []
+        self.gloss_payloads = []
+        self._glosses = glosses
+        self._reaches = reaches
+
+    def _json(self, prompt, payload):
+        self.seen_prompts.append(prompt)
+        if prompt == self.WORD_GLOSSES:
+            self.gloss_payloads.append(payload)
+            return {"glosses": [{"word": w, "chinese": self._glosses[w]}
+                                for w in payload["words"]]}
+        return {"reaches": self._reaches}
+
+
+def test_the_gloss_pass_never_sees_the_phrases_meaning():
+    """Two calls rather than one, deliberately: a gloss pass shown the phrase's meaning
+    writes that meaning into the individual words, and then nothing looks compositional."""
+    ai = StubbedAdapter({"room": "房间", "key": "钥匙"}, reaches=True)
+    ai.is_compositional("room key", "房卡")
+
+    assert ai.gloss_payloads == [{"words": ["room", "key"]}]
+    for payload in ai.gloss_payloads:
+        assert "房卡" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_parts_that_lead_to_the_meaning_count_as_compositional():
+    # 房间钥匙 is not the string 房卡, but a learner who knows both words arrives at the
+    # right object. Judging string equality instead let six compounds through a real run.
+    reachable = StubbedAdapter({"room": "房间", "key": "钥匙"}, reaches=True)
+    assert reachable.is_compositional("room key", "房卡") is True
+
+    misleading = StubbedAdapter({"on": "在……上", "file": "文件"}, reaches=False)
+    assert misleading.is_compositional("on file", "已存档") is False
+
+
+def test_an_unusable_gloss_response_does_not_count_as_compositional():
+    """Unverified is not the same as rejected: the finder already had a reason to report it."""
+    class Broken(StubbedAdapter):
+        def _json(self, prompt, payload):
+            return "not a dict"
+
+    assert Broken({}, reaches=True).is_compositional("card on file", "已存档的卡") is False
+
+
 def test_core_meaning_drops_the_explanatory_aside():
     core = OpenAIAdapter._core_meaning
     assert core("迷你吧（酒店房间内收费的小冰箱）") == "迷你吧"

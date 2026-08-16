@@ -372,11 +372,22 @@ class OpenAIAdapter:
         'list of {"word", "chinese"}.'
     )
 
-    SAME_MEANING = (
-        "You are given a Chinese phrase assembled word-by-word from an English expression, "
-        "and that expression's real Chinese meaning. Do the two mean the SAME THING to a "
-        'reader?\nReturn JSON {"same": bool}. Answer only that. Do not consider whether the '
-        "expression is useful, common, or worth learning."
+    # "Would the parts LEAD you there", not "are these two strings synonymous".
+    #
+    # String equality was the wrong question, and the end-to-end run proved it: 房卡 and
+    # 房间钥匙 are different strings, so "room key" survived — but a learner who knows `room`
+    # and `key` arrives at the right object. Six transparent compounds leaked for exactly
+    # this reason. Reachability lets the wording differ while still rejecting parts that
+    # point somewhere else.
+    REACHES_MEANING = (
+        "A Chinese learner knows each English word separately and meets this expression for "
+        "the first time, with no explanation. Given the word-by-word Chinese and the "
+        "expression's real meaning, would they ARRIVE at the real meaning on their own?\n"
+        "reaches=true if the parts point at the right thing even when the natural Chinese "
+        "wording differs (房间钥匙 vs 房卡 — same object, they get there).\n"
+        "reaches=false only if the parts point somewhere ELSE, so they would be wrong "
+        "(在……上文件 vs 已存档；去穿过 vs 顺利通过).\n"
+        'Return JSON {"reaches": bool}.'
     )
 
     def teaching_traps(self, sentences: list[TranscriptSegment]) -> list[dict]:
@@ -402,18 +413,14 @@ class OpenAIAdapter:
         )
         if not assembled:
             return False
-        # Compare the CORE meaning, not the encyclopedia entry appended to it.
-        #
-        # "mini bar" glossed word-by-word is 小型的酒吧, and against 迷你吧 the answer is
-        # correctly "same". But the finder returns 迷你吧（酒店房间内收费的小冰箱） — and the
-        # parenthetical, which describes the thing rather than translating it, makes any two
-        # strings look different. Both "mini bar" and "room service" survived the filter for
-        # exactly this reason while the bare forms were dropped.
+        # The CORE meaning, not the encyclopedia entry appended to it. 迷你吧（酒店房间内收费
+        # 的小冰箱） describes the thing rather than translating it, and that aside alone let
+        # "mini bar" through a filter that dropped its bare form.
         verdict = self._json(
-            self.SAME_MEANING,
-            {"assembled_from_words": assembled, "real_meaning": self._core_meaning(meaning)},
+            self.REACHES_MEANING,
+            {"word_by_word": assembled, "real_meaning": self._core_meaning(meaning)},
         )
-        return bool(verdict.get("same")) if isinstance(verdict, dict) else False
+        return bool(verdict.get("reaches")) if isinstance(verdict, dict) else False
 
     PARENTHETICAL = re.compile(r"[（(][^）)]*[）)]")
 
