@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from openai import OpenAI
 
-from .repositories import Repository
+from .repositories import Repository, has_slot
 from .settings import Settings
 
 
@@ -345,16 +345,29 @@ class OpenAIAdapter:
     # So this asks the portable question instead: take the explanation away, meet it cold
     # months later, would it still stop them? The lesson is over in a minute; the phrase is
     # what carries.
+    # The goal for a lesson is SPEAKING, so it asks for three kinds, not two. Vocabulary
+    # alone leaves the learner able to recognise "late checkout" and still unable to ask for
+    # one — the sentence they need is the frame around it.
     TEACHING_TRAPS = (
         "This transcript TEACHES English: the speaker explains things as they go, so asking "
         "whether the learner would misread it HERE finds nothing. Ask instead: take the "
-        "explanation away, meet it cold months later — would it still stop them?\n"
-        'Return "set_phrase" (familiar words whose combination means something the parts do '
-        'not) and "shifted" (a word used in a sense other than its everyday one).\n'
+        "explanation away, meet it cold months later — could they SAY this themselves?\n"
+        "The goal is speaking, not recognition. Return three kinds:\n"
+        '- "pattern": a sentence frame SOMEONE IN THIS TRANSCRIPT ACTUALLY SAID, with the '
+        "variable part replaced by ___. Take their words and blank out only the part that "
+        "changes between uses. This is the most valuable kind: knowing the word \"checkout\" "
+        "does not let them ASK for a late one.\n"
+        "  A pattern must be traceable to a line here. Do NOT write the frame you would teach "
+        "for this topic — if the words are not in the transcript, leave it out. Give the frame, "
+        "not the whole line of dialogue.\n"
+        '- "set_phrase": familiar words whose combination means something the parts do not, or '
+        "a fixed collocation a learner would word differently themselves.\n"
+        '- "shifted": a word used in a sense other than its everyday one.\n'
         "Skip anything that looks like a TRANSCRIPTION ERROR rather than English.\n"
-        "For each: text (exactly as it appears), kind, sense_group (verbatim), chinese, usage "
-        "(in Chinese, the frame it appears in), literal (in Chinese, only if a wrong everyday "
-        "reading genuinely exists — otherwise omit; never invent one), example (verbatim), "
+        "For each: text (the expression, or the frame with ___ for a pattern), kind, "
+        "sense_group (verbatim from the transcript), chinese, usage (in Chinese: when to say "
+        "it, and what goes in the slot), literal (in Chinese, only if a wrong everyday reading "
+        "genuinely exists — otherwise omit; never invent one), example (verbatim), "
         "example_chinese, sentence_position.\n"
         'No quota. Return JSON with key "expressions".'
     )
@@ -678,24 +691,38 @@ class ImportPipeline:
     # Shapes no expression has, checkable without a model call. Each was a real result:
     # "P level" and "M Club" are a parking sign and a lounge brand; "Stay close to me" and
     # "I want to see where you go" are whole lines of dialogue from a graded story.
-    LABEL = re.compile(r"^[A-Z]$")
+    #
+    # A LONE capital letter is a label. Matching any capitalised word rejected "Could I get
+    # a late checkout" as a brand name — `I` made every first-person frame unstudiable, which
+    # is most of what a learner needs to SAY.
+    # Not "I", which is a lone capital letter AND an ordinary word. Matching it rejected
+    # every first-person frame — "Could I get a late checkout" read as a brand name.
+    LABEL = re.compile(r"^(?!I$)[A-Z]$")
     IMPERATIVE = re.compile(r"^(stay|come|let|go|don't|do not|please)\b", re.IGNORECASE)
     PARTICLE_END = re.compile(r"\b(through|off|on|in|out|up|down|with|for)$", re.IGNORECASE)
 
+    # A pattern is a frame with slots, so it is necessarily longer than a phrase: "Would you
+    # like any help with ___" is six words and exactly the point. Phrases stay capped at four
+    # to keep whole lines of dialogue out.
+    MAX_PHRASE_WORDS = 4
+    MAX_PATTERN_WORDS = 9
+
     @classmethod
-    def _mechanically_rejected(cls, text: str) -> str | None:
+    def _mechanically_rejected(cls, text: str, kind: str = "set_phrase") -> str | None:
         """Why this cannot be a studiable expression, or None if it might be."""
         words = text.split()
         if not words:
             return "empty"
         if any(cls.LABEL.fullmatch(word) for word in words):
             return "label"
-        # Longer than four words is a clause, not something reused in another sentence.
-        if len(words) > 4:
+        limit = cls.MAX_PATTERN_WORDS if kind == "pattern" else cls.MAX_PHRASE_WORDS
+        if len(words) > limit:
             return "sentence"
         # An instruction to the listener. Excluded only when it does NOT end in a particle,
-        # so "go through" and "drop off" survive while "stay together" does not.
-        if cls.IMPERATIVE.match(text) and len(words) > 1 and not cls.PARTICLE_END.search(text):
+        # so "go through" and "drop off" survive while "stay together" does not. A pattern is
+        # exempt: "Let me know if ___" is an imperative frame worth having.
+        if (kind != "pattern" and cls.IMPERATIVE.match(text) and len(words) > 1
+                and not cls.PARTICLE_END.search(text)):
             return "imperative"
         # A capital inside the phrase is a name. "I" is the one ordinary exception.
         if len(words) > 1 and any(
@@ -717,6 +744,31 @@ class ImportPipeline:
         """
         stripped = cls.INFLECTION.sub(" ", text.casefold())
         return " ".join(stripped.split())
+
+    SLOT = re.compile(r"_+")
+
+    @classmethod
+    def _pattern_is_grounded(cls, text: str, transcript: str) -> bool:
+        """Whether the frame's own words were actually said here.
+
+        Patterns are the one kind the model will INVENT. Given "Could I get ___?" as an
+        example in the prompt it returned exactly that, in two different batches, for a
+        transcript containing neither "could I get" nor "do you have any" — generic hotel
+        English rather than anything the learner heard. An invented frame also cannot anchor
+        a highlight, so it is a card attached to nothing.
+        """
+        haystack = " ".join(transcript.casefold().split())
+        # Each run of words between slots must appear. Checking the longest alone would pass
+        # a frame whose other half was invented.
+        segments = [
+            " ".join(part.casefold().split())
+            for part in cls.SLOT.split(text)
+            if part.strip(" ?!.,")
+        ]
+        meaningful = [seg.strip(" ?!.,") for seg in segments if len(seg.strip(" ?!.,")) > 2]
+        if not meaningful:
+            return False
+        return all(seg in haystack for seg in meaningful)
 
     def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str) -> list[dict]:
         """The expressions worth a card, across the whole transcript.
@@ -749,19 +801,42 @@ class ImportPipeline:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                if item.get("kind") not in ("shifted", "set_phrase"):
+                # "pattern" only from a lesson: native speech is scanned for what was misread,
+                # and a frame to reuse is not that.
+                allowed = ("shifted", "set_phrase") + (("pattern",) if teaching else ())
+                kind = item.get("kind")
+                if kind not in allowed:
                     continue
                 text = str(item.get("text") or "").strip()
                 if not text:
                     continue
-                if self._mechanically_rejected(text):
+                if kind == "pattern":
+                    # A frame with no slot is a quoted sentence — "I'd like to check in,
+                    # please." came back labelled a pattern, and a whole line teaches nothing
+                    # reusable. Demoted rather than dropped: as a phrase it still has to pass
+                    # the phrase-length limit, which is what decides whether it survives.
+                    if not has_slot(text):
+                        kind = "set_phrase"
+                    # Told not to invent frames, the model still does; this is the check that
+                    # holds. Verified against the batch it came from, not the whole
+                    # transcript, so a frame is grounded in the passage being listened to.
+                    elif not self._pattern_is_grounded(
+                        text, " ".join(segment.text for segment in batch)
+                    ):
+                        continue
+                if self._mechanically_rejected(text, kind):
                     continue
                 normalised = self._dedup_key(text)
                 meaning = str(item.get("chinese") or "").strip()
                 # Only teaching material needs this. Native speech is filtered by "is the
                 # everyday sense wrong HERE", which a compositional phrase fails on its own;
                 # a lesson has no such signal, so the parts are compared to the whole.
-                if teaching and meaning:
+                #
+                # Patterns are exempt. The check asks what the learner would produce for a
+                # meaning, and a frame's meaning is its shape — "Could I get ___?" has no
+                # translation to reach for, so the question does not apply. A pattern earns
+                # its place by being a frame, which the finder already decided.
+                if teaching and meaning and kind != "pattern":
                     if normalised not in verdicts:
                         try:
                             verdicts[normalised] = self.ai.is_compositional(text, meaning)
@@ -778,7 +853,10 @@ class ImportPipeline:
                     position = start
                 found.append({
                     "text": text,
-                    "type": "phrase",
+                    # iOS already decodes "pattern" in both LearningExpressionKind and
+                    # LearningExpressionType, where explainsComprehension is false — its own
+                    # comment calls that group "what to put in the learner's own mouth".
+                    "type": "pattern" if kind == "pattern" else "phrase",
                     "chinese": item.get("chinese"),
                     "example": item.get("example"),
                     "example_chinese": item.get("example_chinese") or "",

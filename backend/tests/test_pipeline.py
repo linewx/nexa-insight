@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from nexa_insight_api.models import Episode, ImportJob
+from nexa_insight_api.repositories import has_slot, is_studiable_expression
 from nexa_insight_api.pipeline import ImportPipeline, MediaMetadata, OpenAIAdapter, TranscriptSegment, YtDlpMediaAdapter
 from nexa_insight_api.settings import Settings
 
@@ -520,6 +521,101 @@ def test_labels_names_and_whole_sentences_are_rejected_without_a_model_call(repo
     assert kept == {"go through", "drop off"}, (
         "an imperative ending in a particle must survive; a bare imperative must not"
     )
+
+
+class PatternAI(FakeAI):
+    """Patterns are the one kind the model invents, so both cases are here."""
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        def item(text, kind="pattern"):
+            return {"text": text, "kind": kind, "chinese": "x",
+                    "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
+        return [
+            # Grounded: FakeMedia's transcript is "Hello world." / "Goodbye."
+            item("Hello ___"),
+            # Invented: generic English for the topic, in a transcript that never said it.
+            item("Could I get ___?"),
+            # A frame whose second half was invented must go too — checking only the longest
+            # run would pass this.
+            item("Hello ___ and welcome to our ___ hotel"),
+            item("check in", kind="set_phrase"),
+        ]
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+def test_patterns_must_come_from_the_transcript(repo, tmp_path):
+    """Given "Could I get ___?" as a prompt example the model returned exactly that, twice, for
+    a transcript containing neither "could I get" nor "do you have any" — generic hotel English
+    rather than anything the learner heard. An invented frame also anchors no highlight."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), PatternAI()).run(job_id)
+
+    kept = {e.text for e in repo.list_learning_expressions(episode_id)}
+    assert kept == {"Hello ___", "check in"}
+
+
+class SlotlessPatternAI(FakeAI):
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        return [
+            # Labelled a pattern, but it is a whole quoted line — nothing reusable.
+            {"text": "I'd like to check in, please.", "kind": "pattern", "chinese": "x",
+             "example": "Hello world.", "example_chinese": "y", "sentence_position": 0},
+            # A real frame, short enough to survive either way.
+            {"text": "Hello ___", "kind": "pattern", "chinese": "x",
+             "example": "Hello world.", "example_chinese": "y", "sentence_position": 0},
+        ]
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+def test_a_slotless_pattern_is_not_a_pattern(repo, tmp_path):
+    """The model labels whole quoted sentences as patterns. Demoted to a phrase, the line then
+    has to pass the phrase-length limit — which is what removes it."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), SlotlessPatternAI()).run(job_id)
+
+    stored = {e.text: e.type for e in repo.list_learning_expressions(episode_id)}
+    assert stored == {"Hello ___": "pattern"}
+
+
+def test_either_slot_notation_counts():
+    """The scan asks for `___`, which reads as a blank to fill; `{}` was the earlier prompt's
+    convention and its rows still exist. Checking only for braces demoted every pattern the
+    current scan produces, which is why none reached the store as one."""
+    assert has_slot("I have you on ___ floor")
+    assert has_slot("I have you on {floor}")
+    assert not has_slot("I'd like to check in, please.")
+    # Length is waived only for a real frame, so a slotless line cannot smuggle itself in.
+    assert is_studiable_expression("Would you like any help with ___ today please", "pattern")
+    assert not is_studiable_expression(
+        "Would you like any help with your luggage today please", "pattern"
+    )
+
+
+def test_a_pattern_may_be_longer_than_a_phrase():
+    """A frame with slots is necessarily longer — "Would you like any help with ___" is six
+    words and exactly the point — while a bare phrase stays capped so lines of dialogue stay
+    out. And "I" must not read as a brand label, or every first-person frame is unstudiable."""
+    rejected = ImportPipeline._mechanically_rejected
+    assert rejected("Would you like any help with ___?", "pattern") is None
+    assert rejected("Could I get a late checkout", "pattern") is None
+    assert rejected("Let me know if you need anything", "pattern") is None
+    # The same string as an ordinary phrase is too long to be one.
+    assert rejected("Would you like any help with ___?", "set_phrase") == "sentence"
+    # Dialogue and labels are still rejected whatever the kind claims.
+    assert rejected("P level", "pattern") == "label"
+    assert rejected("Stay close to me", "set_phrase") == "imperative"
 
 
 class ExplodingScanAI(FakeAI):

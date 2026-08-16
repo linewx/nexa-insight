@@ -34,9 +34,18 @@ EXPRESSION_TYPES = (*NATIVE_TYPES, *TEACHING_TYPES, "word", "chunk")
 # reusable. Slotted patterns are exempt — a frame is reusable however long it is.
 MAX_EXPRESSION_WORDS = 6
 
+# Either notation counts as a slot. The scan asks for `___`, which reads as a blank to fill on
+# a card; `{}` was the earlier prompt's convention and rows written by it still exist. Checking
+# only for braces demoted every pattern the current scan produces to a plain phrase.
+SLOT_MARKERS = ("___", "{")
+
+
+def has_slot(text: str) -> bool:
+    return any(marker in text for marker in SLOT_MARKERS)
+
 
 def is_studiable_expression(text: str, type_value: str) -> bool:
-    if type_value == "pattern" and "{" in text:
+    if type_value == "pattern" and has_slot(text):
         return True
     return len(text.split()) <= MAX_EXPRESSION_WORDS
 
@@ -374,7 +383,7 @@ class Repository:
                 # A pattern is a frame with slots. The model routinely labels whole
                 # quoted sentences as patterns, which teaches nothing reusable, so
                 # one without slots is recorded as the phrase it actually is.
-                if expression_data["type"] == "pattern" and "{" not in expression_data["text"]:
+                if expression_data["type"] == "pattern" and not has_slot(expression_data["text"]):
                     expression_data["type"] = "phrase"
                 if not is_studiable_expression(expression_data["text"], expression_data["type"]):
                     continue
