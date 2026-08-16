@@ -749,16 +749,32 @@ class ImportPipeline:
 
     # Determiners and possessives, which vary between mentions of the same phrase.
     INFLECTION = re.compile(r"\b(a|an|the|your|his|her|their|its|my|our)\b")
+    # Function words a frame varies freely: the slot absorbs whatever follows, so "drop me off
+    # ___" and "drop me off at the ___" are one pattern written two ways.
+    FRAME_FILLER = re.compile(r"\b(a|an|the|at|to|in|on|for|of|it|your|my|our|their|his|her)\b")
 
     @classmethod
-    def _dedup_key(cls, text: str) -> str:
+    def _dedup_key(cls, text: str, kind: str = "set_phrase") -> str:
         """One key for what is really one expression.
 
         A real run produced both "tip your housekeeper" and "tip the housekeeper" as separate
         cards. Keying on exact text splits every phrase whose determiner the speaker varied,
         and the learner gets the same card twice.
+
+        Patterns need more than that. Three passes over one transcript produced "drop me off
+        ___", "drop me off at ___" and "drop me off at the ___" — one frame, three cards —
+        plus "plug ___ in" beside "plug a ___". A frame's identity is its CONTENT words; the
+        preposition and the slot's position are exactly what varies between two people saying
+        the same thing.
         """
-        stripped = cls.INFLECTION.sub(" ", text.casefold())
+        lowered = text.casefold()
+        if kind == "pattern":
+            # The slot marker itself goes too: whether the blank sits mid-frame or at the end
+            # is not a difference worth a second card.
+            without_slots = cls.SLOT.sub(" ", lowered.replace("{", " ").replace("}", " "))
+            stripped = cls.FRAME_FILLER.sub(" ", without_slots)
+            return " ".join(stripped.split()).strip(" .?!,")
+        stripped = cls.INFLECTION.sub(" ", lowered)
         return " ".join(stripped.split())
 
     SLOT = re.compile(r"_+")
@@ -852,7 +868,7 @@ class ImportPipeline:
                         continue
                 if self._mechanically_rejected(text, kind):
                     continue
-                normalised = self._dedup_key(text)
+                normalised = self._dedup_key(text, kind)
                 meaning = str(item.get("chinese") or "").strip()
                 # Only teaching material needs this. Native speech is filtered by "is the
                 # everyday sense wrong HERE", which a compositional phrase fails on its own;

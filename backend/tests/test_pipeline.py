@@ -717,6 +717,20 @@ def test_an_unusable_attempts_response_does_not_drop_the_expression():
     assert Broken([], would_produce=True).is_compositional("card on file", "已存档的卡") is False
 
 
+def test_one_frame_written_three_ways_is_one_pattern():
+    """Three passes over one transcript produced "drop me off ___", "drop me off at ___" and
+    "drop me off at the ___" — one frame, three cards — plus "plug ___ in" beside "plug a ___".
+    A frame's identity is its content words; the preposition and where the blank sits are
+    exactly what varies between two people saying the same thing."""
+    key = lambda t: ImportPipeline._dedup_key(t, "pattern")
+    assert key("drop me off ___") == key("drop me off at ___") == key("drop me off at the ___")
+    assert key("plug ___ in") == key("plug a ___")
+    assert key("tip the ___") == key("tip your ___")
+    # Different frames must stay different: stripping function words cannot collapse them.
+    assert key("check in the ___") != key("check out the ___")
+    assert key("head down to ___") != key("drop me off at ___")
+
+
 def test_the_same_phrase_with_a_different_determiner_is_one_card():
     """A real run produced both "tip your housekeeper" and "tip the housekeeper". Keying on
     exact text splits every phrase whose determiner the speaker varied between mentions."""
