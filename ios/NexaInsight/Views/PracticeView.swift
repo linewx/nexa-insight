@@ -50,19 +50,25 @@ struct PracticeView: View {
     @State private var score: DashScopePracticeResult?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: NXSpacing.x6) {
-                sentence
-                recordButton
-                status
-                if let score { ScoreCard(score: score) }
-            }
-            .padding(.horizontal, NXSpacing.x4)
-            .padding(.top, NXSpacing.x6)
-            .padding(.bottom, NXSpacing.x4)
-            .frame(maxWidth: 560)
-            .frame(maxWidth: .infinity)
+        // No ScrollView. Everything fits a `.medium` sheet by construction — scrolling a
+        // half-sheet with four elements in it is the app admitting the layout does not fit,
+        // and the score arrived below the fold, which is the one thing you want to see.
+        //
+        // The record button shrinks once a score exists: before it is the only thing to do, and
+        // after it is "try again". Measured — 534pt of content in a 437pt sheet was the
+        // overflow, and this is where the height comes from.
+        VStack(spacing: score == nil ? NXSpacing.x6 : NXSpacing.x4) {
+            sentence
+            recordButton
+            status
+            if let score { ScoreCard(score: score) }
         }
+        .padding(.horizontal, NXSpacing.x4)
+        .padding(.top, score == nil ? NXSpacing.x6 : NXSpacing.x4)
+        .padding(.bottom, NXSpacing.x4)
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(.easeInOut(duration: 0.2), value: score == nil)
         // Centred, not leading. The button is the focus of this screen and a left-aligned
         // stack hung it off to one side of its own sheet.
         .background(NXColor.background(scheme))
@@ -80,38 +86,39 @@ struct PracticeView: View {
     /// Hearing it is support, not the task — it earned half the screen's primary controls in
     /// the previous round and did not deserve it. Speaking is the task.
     private var sentence: some View {
-        VStack(spacing: NXSpacing.x3) {
-            Text(subject.text)
-                .font(.system(.title3, design: .serif, weight: .semibold))
-                .foregroundStyle(NXColor.text(scheme))
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-            // The translation is a reference, not a peer of the English — same weight for both
-            // made the card read as two competing lines.
+        VStack(spacing: NXSpacing.x2) {
+            // Listening is an icon in the corner, not a labelled control. It kept creeping back
+            // up the hierarchy — half the primary buttons, then a captioned capsule — and it is
+            // support for the task, not a step in it.
+            HStack(alignment: .top, spacing: NXSpacing.x2) {
+                Text(subject.text)
+                    .font(.system(.title3, design: .serif, weight: .semibold))
+                    .foregroundStyle(NXColor.text(scheme))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    // Keeps the sentence optically centred despite the icon on one side.
+                    .padding(.leading, 28)
+                Button(action: listen) {
+                    Image(systemName: isListening ? "speaker.wave.2.fill" : "speaker.wave.2")
+                        .font(.system(.footnote, weight: .medium))
+                        .foregroundStyle(isListening ? NXColor.primary : NXColor.textTertiary(scheme))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isSpeaking)
+                .accessibilityLabel("听这句")
+            }
             Text(subject.chinese)
                 .font(NXFont.auxiliary)
                 .foregroundStyle(NXColor.textTertiary(scheme))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(action: listen) {
-                HStack(spacing: NXSpacing.x1) {
-                    Image(systemName: isListening ? "speaker.wave.2.fill" : "speaker.wave.2")
-                        .font(.system(.caption, weight: .semibold))
-                    Text(isListening ? "\u{6b63}\u{5728}\u{653e}" : "\u{542c}")
-                        .font(NXFont.label)
-                }
-                .foregroundStyle(NXColor.primary)
-                .padding(.horizontal, NXSpacing.x3)
-                .frame(height: 30)
-                .background(NXColor.primary.opacity(isListening ? 0.2 : 0.1), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(isSpeaking)
-            .accessibilityLabel("听这句")
         }
         .padding(.horizontal, NXSpacing.x4)
-        .padding(.vertical, NXSpacing.x6)
+        .padding(.vertical, NXSpacing.x4)
         .frame(maxWidth: .infinity)
         .background {
             // A flat grey rectangle was most of what read as crude. A soft gradient plus a
@@ -136,15 +143,20 @@ struct PracticeView: View {
     /// thumb already knows when you have finished speaking, so there is no second target to
     /// find and no state to read. It also makes an accidental take impossible — let go and it
     /// is over.
+    /// Full size while it is the only thing to do; smaller once a score is showing, where it
+    /// means "try again". This is what buys the score card its room without scrolling.
+    private var buttonDiameter: CGFloat { score == nil ? 88 : 64 }
+    private var haloDiameter: CGFloat { buttonDiameter + 30 }
+
     private var recordButton: some View {
-        VStack(spacing: NXSpacing.x3) {
+        VStack(spacing: NXSpacing.x2) {
             ZStack {
                 // A halo that only exists while recording, sized by how loudly you are
                 // speaking. A bare disc on a flat background was the crudest thing here — this
                 // gives the press somewhere to land and makes level visible at a glance.
                 Circle()
                     .fill((isSpeaking ? NXColor.error : NXColor.primary).opacity(0.14))
-                    .frame(width: 118, height: 118)
+                    .frame(width: haloDiameter, height: haloDiameter)
                     .scaleEffect(isSpeaking ? 1 + CGFloat(currentLevel) * 0.22 : 0.86)
                     .opacity(isSpeaking ? 1 : 0)
                     .animation(.easeOut(duration: 0.12), value: currentLevel)
@@ -156,7 +168,7 @@ struct PracticeView: View {
                                 ? [NXColor.error, NXColor.error.opacity(0.82)]
                                 : [NXColor.primary, NXColor.primary.opacity(0.78)],
                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 88, height: 88)
+                    .frame(width: buttonDiameter, height: buttonDiameter)
                     // A coloured shadow rather than a grey one, so the button reads as lit
                     // rather than as a sticker sitting on the page.
                     .shadow(color: (isSpeaking ? NXColor.error : NXColor.primary)
@@ -172,12 +184,12 @@ struct PracticeView: View {
                     Waveform(level: level, tint: .white)
                 } else {
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 30, weight: .medium))
+                        .font(.system(size: score == nil ? 30 : 22, weight: .medium))
                         .foregroundStyle(.white)
                         .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
                 }
             }
-            .frame(width: 118, height: 118)
+            .frame(width: haloDiameter, height: haloDiameter)
             .contentShape(Circle())
             // A DragGesture with no minimum distance fires the moment the finger lands and
             // ends when it lifts, anywhere. `LongPressGesture` would impose a delay before
@@ -188,7 +200,8 @@ struct PracticeView: View {
                     .onEnded { _ in if isSpeaking { endTake() } }
             )
             .accessibilityLabel("按住说话")
-            Text(isSpeaking ? "\u{677e}\u{5f00}\u{7ed3}\u{675f}" : "\u{6309}\u{4f4f}\u{8bf4}\u{8bdd}")
+            Text(isSpeaking ? "\u{677e}\u{5f00}\u{7ed3}\u{675f}"
+                 : (score == nil ? "\u{6309}\u{4f4f}\u{8bf4}\u{8bdd}" : "\u{6309}\u{4f4f}\u{518d}\u{8bf4}\u{4e00}\u{904d}"))
                 .font(NXFont.label)
                 .foregroundStyle(isSpeaking ? NXColor.error : NXColor.textTertiary(scheme))
                 .animation(.easeInOut(duration: 0.15), value: isSpeaking)
@@ -340,22 +353,22 @@ private struct ScoreCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x3) {
+        VStack(alignment: .leading, spacing: NXSpacing.x2) {
             HStack(alignment: .center, spacing: NXSpacing.x3) {
                 // A ring rather than a bare numeral: it shows the score against its ceiling,
                 // which a "82" alone does not.
                 ZStack {
                     Circle()
-                        .stroke(tint.opacity(0.16), lineWidth: 5)
+                        .stroke(tint.opacity(0.16), lineWidth: 4)
                     Circle()
                         .trim(from: 0, to: CGFloat(min(100, max(0, score.overall))) / 100)
-                        .stroke(tint, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                     Text("\(score.overall)")
-                        .font(.system(.title3, weight: .semibold))
+                        .font(.system(.subheadline, weight: .semibold))
                         .foregroundStyle(tint)
                 }
-                .frame(width: 56, height: 56)
+                .frame(width: 48, height: 48)
 
                 VStack(alignment: .leading, spacing: NXSpacing.x1) {
                     metric("\u{6e05}\u{6670}", score.clarity)
@@ -369,13 +382,13 @@ private struct ScoreCard: View {
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(NXSpacing.x4)
+        .padding(NXSpacing.x3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 16)
                 .fill(NXColor.surface1(scheme))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 20)
+                    RoundedRectangle(cornerRadius: 16)
                         .strokeBorder(tint.opacity(0.22), lineWidth: 1)
                 }
         }
