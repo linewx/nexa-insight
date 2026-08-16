@@ -320,24 +320,36 @@ struct StudyView: View {
         }
         .sheet(item: $shadowingSentence) { s in
             NavigationStack {
-                ShadowingView(episodeId: episodeId, sentenceId: s.id, sentenceText: s.sourceText, store: store)
+                PracticeView(
+                    subject: .init(episodeId: episodeId, text: s.sourceText, chinese: s.chinese,
+                                   expressionId: nil, sentenceId: s.id),
+                    store: store)
             }
         }
-        // Its own layer. This screen carries two item-driven sheets — shadowing and example
-        // practice — and only one presentation per view survives, so whichever lost would
+        // Its own layer. This screen carries two item-driven sheets — a transcript sentence and
+        // a card example — and only one presentation per view survives, so whichever lost would
         // simply never open. Found by grepping for the pattern after the ➕ bug rather than
         // by anyone reporting it, which is how this trap keeps hiding.
         .background {
             Color.clear
                 .sheet(item: $practiceExpression) { expression in
                     NavigationStack {
-                        ExamplePracticeView(episodeId: episodeId, expression: expression, store: store, onStartRecording: {
-                            // Practice the example against silence; the source remains paused
-                            // afterwards so the learner chooses when to resume listening.
-                            player.pause()
-                        })
+                        PracticeView(
+                            subject: .init(episodeId: episodeId, text: expression.example,
+                                           chinese: expression.exampleChinese,
+                                           expressionId: expression.id, sentenceId: nil),
+                            store: store)
                     }
                 }
+        }
+        .onChange(of: practiceExpression?.id) { _, newValue in
+            // The sentence is about to be spoken aloud, so the episode cannot keep playing
+            // underneath it. This was an `onStartRecording` callback the old view invoked at
+            // record time; now that playback starts on its own, pausing belongs here.
+            if newValue != nil { player.pause() }
+        }
+        .onChange(of: shadowingSentence?.id) { _, newValue in
+            if newValue != nil { player.pause() }
         }
         // Watching the controller has to happen in a view that OBSERVES it. `@State`
         // holds a reference without subscribing to objectWillChange, so an `.onChange`
