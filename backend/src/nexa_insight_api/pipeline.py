@@ -708,20 +708,32 @@ class ImportPipeline:
     # "P level" and "M Club" are a parking sign and a lounge brand; "Stay close to me" and
     # "I want to see where you go" are whole lines of dialogue from a graded story.
     #
-    # A LONE capital letter is a label. Matching any capitalised word rejected "Could I get
-    # a late checkout" as a brand name — `I` made every first-person frame unstudiable, which
-    # is most of what a learner needs to SAY.
-    # Not "I", which is a lone capital letter AND an ordinary word. Matching it rejected
-    # every first-person frame — "Could I get a late checkout" read as a brand name.
+    # A LONE capital letter is a label. Not "I", which is both — matching it rejected every
+    # first-person frame ("Could I get a late checkout" read as a brand name), and that is
+    # most of what a learner needs to SAY.
     LABEL = re.compile(r"^(?!I$)[A-Z]$")
     IMPERATIVE = re.compile(r"^(stay|come|let|go|don't|do not|please)\b", re.IGNORECASE)
     PARTICLE_END = re.compile(r"\b(through|off|on|in|out|up|down|with|for)$", re.IGNORECASE)
 
     # A pattern is a frame with slots, so it is necessarily longer than a phrase: "Would you
     # like any help with ___" is six words and exactly the point. Phrases stay capped at four
-    # to keep whole lines of dialogue out.
+    # to keep whole lines of dialogue out. Seven for a pattern, because eight and nine let
+    # narrated lines through — "call ___ by just dialing up a number" was one.
     MAX_PHRASE_WORDS = 4
-    MAX_PATTERN_WORDS = 9
+    MAX_PATTERN_WORDS = 7
+
+    # The host DESCRIBING what hotels do. Information, not something to put in the learner's
+    # mouth, and the one shape a regex calls reliably: "they will ask for your ___", "there's a
+    # safe where you keep ___", "all of these things are called ___".
+    NARRATION = re.compile(r"^(they|he|she|it|it's|there|there's|all of|these|those)\b", re.I)
+
+    # Determiners and glue prepositions. A PARTICLE after a verb ("plug ___ in") carries the
+    # meaning and a noun after the slot ("on the ___ floor") is the frame's whole point, so
+    # neither is filler — counting them as such rejected both.
+    FRAME_FILLER_WORDS = frozenset({
+        "the", "a", "an", "to", "of", "your", "my", "our", "their", "them", "it",
+        "is", "are", "be", "that", "this", "some", "any",
+    })
 
     @classmethod
     def _mechanically_rejected(cls, text: str, kind: str = "set_phrase") -> str | None:
@@ -745,6 +757,33 @@ class ImportPipeline:
             word[:1].isupper() and word.lower() != "i" for word in words[1:]
         ):
             return "proper noun"
+        if kind == "pattern":
+            return cls._weak_frame(text)
+        return None
+
+    @classmethod
+    def _weak_frame(cls, text: str) -> str | None:
+        """Why this frame is not worth a card.
+
+        Three-pass scanning raised coverage and exposed the quality gate as the bottleneck:
+        one 122-line lesson produced 22 patterns, 16 of them weak. They shared shapes:
+        third-person narration about what hotels do, two slots with no fixed frame left
+        between them, and a slot glued to a single content word.
+        """
+        if cls.NARRATION.match(text.strip()):
+            return "narration"
+        # Two slots means the frame is mostly hole: "they have ___ where you can ___".
+        if len(cls.SLOT.findall(text)) > 1:
+            return "two slots"
+        # Two clauses is a sentence someone said, not a frame to reuse.
+        if re.search(r"\band\b", text, re.IGNORECASE):
+            return "two clauses"
+        body = re.sub(r"[^\w' ]", " ", cls.SLOT.sub(" ", text))
+        content = [w for w in body.split() if w.lower() not in cls.FRAME_FILLER_WORDS]
+        # "under the ___", "return ___", "tip the ___": a blank plus one word teaches the word,
+        # which a phrase card already does better.
+        if len(content) < 2:
+            return "too bare"
         return None
 
     # Determiners and possessives, which vary between mentions of the same phrase.

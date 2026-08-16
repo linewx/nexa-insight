@@ -567,13 +567,14 @@ class PatternAI(FakeAI):
             return {"text": text, "kind": kind, "chinese": "x",
                     "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
         return [
-            # Grounded: FakeMedia's transcript is "Hello world." / "Goodbye."
-            item("Hello ___"),
+            # Grounded in FakeMedia's transcript ("Hello world." / "Goodbye."), and with two
+            # content words so the weak-frame rule keeps it.
+            item("Hello ___ world"),
             # Invented: generic English for the topic, in a transcript that never said it.
             item("Could I get ___?"),
             # A frame whose second half was invented must go too — checking only the longest
             # run would pass this.
-            item("Hello ___ and welcome to our ___ hotel"),
+            item("Hello ___ world and welcome to our ___ hotel"),
             item("check in", kind="set_phrase"),
         ]
 
@@ -590,7 +591,7 @@ def test_patterns_must_come_from_the_transcript(repo, tmp_path):
     ImportPipeline(repo, settings, FakeMedia(tmp_path), PatternAI()).run(job_id)
 
     kept = {e.text for e in repo.list_learning_expressions(episode_id)}
-    assert kept == {"Hello ___", "check in"}
+    assert kept == {"Hello ___ world", "check in"}
 
 
 class SlotlessPatternAI(FakeAI):
@@ -603,7 +604,7 @@ class SlotlessPatternAI(FakeAI):
             {"text": "I'd like to check in, please.", "kind": "pattern", "chinese": "x",
              "example": "Hello world.", "example_chinese": "y", "sentence_position": 0},
             # A real frame, short enough to survive either way.
-            {"text": "Hello ___", "kind": "pattern", "chinese": "x",
+            {"text": "Hello ___ world", "kind": "pattern", "chinese": "x",
              "example": "Hello world.", "example_chinese": "y", "sentence_position": 0},
         ]
 
@@ -619,7 +620,7 @@ def test_a_slotless_pattern_is_not_a_pattern(repo, tmp_path):
     ImportPipeline(repo, settings, FakeMedia(tmp_path), SlotlessPatternAI()).run(job_id)
 
     stored = {e.text: e.type for e in repo.list_learning_expressions(episode_id)}
-    assert stored == {"Hello ___": "pattern"}
+    assert stored == {"Hello ___ world": "pattern"}
 
 
 def test_either_slot_notation_counts():
@@ -634,6 +635,36 @@ def test_either_slot_notation_counts():
     assert not is_studiable_expression(
         "Would you like any help with your luggage today please", "pattern"
     )
+
+
+def test_weak_frames_are_rejected():
+    """Three-pass scanning raised coverage and exposed the quality gate as the bottleneck: one
+    122-line lesson produced 22 patterns, 16 of them weak. Every case here is a real result."""
+    weak = lambda t: ImportPipeline._mechanically_rejected(t, "pattern")
+
+    # The host DESCRIBING what hotels do. Information, not something to say.
+    assert weak("they will ask for your ___") == "narration"
+    assert weak("there's a safe where you keep ___") == "narration"
+    assert weak("all of these things are called ___") == "narration"
+    assert weak("it's directly connected to the ___") == "narration"
+    # Mostly hole: no fixed frame survives between two blanks.
+    assert weak("they have ___ where you can ___") == "narration"
+    # Two slots is checked before two clauses, and this real result trips both.
+    assert weak("plug a ___ and charge your ___") == "two slots"
+    assert weak("check in and ___") == "two clauses"
+    # A blank plus one content word teaches the word, which a phrase card does better.
+    assert weak("under the ___") == "too bare"
+    assert weak("return ___") == "too bare"
+    assert weak("tip the ___") == "too bare"
+    # A narrated line, caught by length.
+    assert weak("call ___ by just dialing up a number") == "sentence"
+
+    # And the frames that must survive: a particle after a verb carries the meaning, and a
+    # noun after the slot is the frame's whole point, so neither counts as filler.
+    for frame in ["I have you here for ___ nights.", "drop me off ___", "plug ___ in",
+                  "on the ___ floor", "you have to ___", "let's check out ___",
+                  "Could I get ___?", "Would you like any help with ___?"]:
+        assert weak(frame) is None, frame
 
 
 def test_a_pattern_may_be_longer_than_a_phrase():
