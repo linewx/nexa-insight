@@ -20,4 +20,10 @@ class Settings(BaseSettings):
     # 122-line video, because every batch is scanned TRAP_PASSES times and each candidate costs
     # two verification calls. Nothing in it depends on anything else in it, so the only reason
     # it was slow was that it waited.
-    scan_concurrency: int = 6
+    #
+    # 12, not 6. Measured on a 122-line lesson: the learning stage was 79s of a 110s import,
+    # and the wave arithmetic explains it — verification is ~56 calls (two per unique candidate,
+    # and the pair is sequential because the second call needs the first's output), so 6 workers
+    # means ten waves of waiting. Raising it halves the stage. Provider rate limits are the
+    # ceiling here, not CPU: these threads are asleep on network I/O.
+    scan_concurrency: int = 12
