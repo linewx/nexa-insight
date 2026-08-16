@@ -27,6 +27,9 @@ struct StudyView: View {
     // Intensive-listening state. Loop lives here rather than on a row so only one
     // sentence can ever loop; speed mirrors the player's rate for the badge.
     @State private var loop: SentenceLoop = .off
+    /// Where a practice preview should stop, and what to call then. A tuple rather than a
+    /// dedicated type because it lives for one sentence and nothing else reads it.
+    @State private var segmentEnd: (endMs: Int, done: () -> Void)?
     @State private var speed: Double = 1
     @State private var savedPositionMs: Int?
     // Nil until the header capsule is used: the mode then follows the persisted
@@ -183,6 +186,13 @@ struct StudyView: View {
         // playback would sail past the sentence end — the rewind has to be applied
         // as the position advances.
         .onChange(of: player.currentMs) { _, ms in
+            // Stops a practice sentence at its end. Checked before the loop, so a sentence
+            // being previewed for shadowing is not also rewound by a loop left on.
+            if let pending = segmentEnd, ms >= pending.endMs {
+                segmentEnd = nil
+                player.pause()
+                pending.done()
+            }
             if let target = loop.rewindTarget(for: current, at: ms) {
                 player.seek(target)
             }
@@ -268,7 +278,10 @@ struct StudyView: View {
                         playIntent(seekTo: ms)
                     },
                     onPractice: { expression in
-                        closeNotes()
+                        // The drawer STAYS. Practice is a half sheet over it, so closing that
+                        // sheet returns to the notes the card came from. Dismissing the
+                        // drawer here dropped the learner back on the transcript instead,
+                        // which loses their place in a list they were working through.
                         practiceExpression = expression
                     },
                     onClose: closeNotes)
@@ -321,8 +334,13 @@ struct StudyView: View {
         .sheet(item: $shadowingSentence) { s in
             PracticeView(
                 subject: .init(episodeId: episodeId, text: s.sourceText, chinese: s.chinese,
-                               expressionId: nil, sentenceId: s.id),
-                store: store)
+                               expressionId: nil, sentenceId: s.id,
+                               // The speaker's own voice for a transcript sentence. Synthesis
+                               // resolves to Apple's most compressed offline voice, and
+                               // shadowing that teaches the wrong intonation.
+                               audio: .original(startMs: s.startMs, endMs: s.endMs)),
+                store: store,
+                onPlayOriginal: { start, end, done in playSegment(from: start, to: end, then: done) })
                 .presentationDetents([.medium])
         }
         // Its own layer. This screen carries two item-driven sheets — a transcript sentence and
@@ -631,6 +649,18 @@ struct StudyView: View {
 
     // No pauseIntent here: pausing is only reachable from the dock, which has the
     // controller and calls userPausedPlayback() directly.
+
+    /// Plays one sentence of the episode and stops at its end.
+    ///
+    /// The practice sheet cannot hold its own player — two AVPlayers on one audio session
+    /// fight — so it asks for a window and StudyView drives it. Bounded playback is what makes
+    /// the real voice usable at all: a segment averages 11.5s on the hotel vlog and runs to
+    /// 33s, so unbounded "listen to this sentence" plays the paragraph around it.
+    private func playSegment(from startMs: Int, to endMs: Int, then done: @escaping () -> Void) {
+        segmentEnd = (endMs, done)
+        player.seek(startMs)
+        player.play()
+    }
 
     private func endDiscussion() {
         liveSession?.end()
