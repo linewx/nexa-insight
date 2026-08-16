@@ -841,6 +841,23 @@ class ImportPipeline:
             return False
         return all(seg in haystack for seg in meaningful)
 
+    def _scan_once(self, batch: list[TranscriptSegment], teaching: bool) -> list:
+        """One finder call. Runs on a worker thread, so it must not touch shared state.
+
+        AttributeError is NOT one of the failures worth absorbing: it means the adapter has no
+        such method, which is a wiring mistake rather than a flaky provider. Swallowed once, it
+        produced a complete import with zero cards and no trace anywhere — I had put both
+        methods on the Protocol instead of the adapter, and this except turned that into "the
+        material contains nothing".
+        """
+        try:
+            return list(self.ai.teaching_traps(batch) if teaching else self.ai.hidden_traps(batch))
+        except AttributeError:
+            raise
+        except Exception:
+            # One failed pass costs a little coverage; the other passes still ran.
+            return []
+
     def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str) -> list[dict]:
         """The expressions worth a card, across the whole transcript.
 
@@ -857,31 +874,47 @@ class ImportPipeline:
         verdicts: dict[str, bool] = {}
         # The wording each key was first seen as, so every later variant is rewritten to it.
         canonical: dict[str, str] = {}
-        for start in range(0, len(sentences), self.TRAP_BATCH):
+        # Candidates awaiting the producibility check, deduped by key so a phrase appearing in
+        # three passes is verified once rather than three times.
+        needs_verifying: dict[str, tuple[str, str]] = {}
+
+        # Every finder call runs concurrently, because none of them depends on another. This
+        # stage was the slowest part of an import purely because it waited: batches × passes
+        # calls, one at a time. The batch/pass structure itself is unchanged — one pass SAMPLES
+        # a batch rather than enumerating it (five runs of the same 40 lines returned 16 items
+        # with ZERO overlap, which is why "unlimited in-n-out" went missing), so the union of
+        # several passes is what makes coverage acceptable.
+        #
+        # Results are stored BY (batch, pass) and read back in that order, never in completion
+        # order. `as_completed` alone made the output racy in a way that reached the learner:
+        # one frame arrives worded differently on different passes ("hello ___ world" vs "hello
+        # world ___"), and `canonical` keeps whichever it sees FIRST, so the wording on the card
+        # depended on which thread won. The test for it failed about half the time.
+        batch_starts = list(range(0, len(sentences), self.TRAP_BATCH))
+        jobs = [(start, attempt)
+                for start in batch_starts
+                for attempt in range(self.TRAP_PASSES)]
+        results: dict[tuple[int, int], list] = {}
+        if jobs:
+            workers = max(1, min(self.settings.scan_concurrency, len(jobs)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(self._scan_once,
+                                    sentences[start:start + self.TRAP_BATCH], teaching): (start, attempt)
+                    for start, attempt in jobs
+                }
+                for future in as_completed(futures):
+                    results[futures[future]] = future.result()
+        scanned: dict[int, list] = {
+            start: [item
+                    for attempt in range(self.TRAP_PASSES)
+                    for item in results.get((start, attempt), [])]
+            for start in batch_starts
+        }
+
+        for start in batch_starts:
             batch = sentences[start:start + self.TRAP_BATCH]
-            # One pass SAMPLES a batch; it does not enumerate it. Running the same 40 lines
-            # five times returned 16 distinct items with ZERO overlap — every single one
-            # appeared exactly once. That is why "unlimited in-n-out" was missing: nothing
-            # rejected it, one roll of the dice just did not mention it.
-            #
-            # So each batch is scanned several times and the union is kept. The dedup below
-            # already collapses repeats, and this cost is paid once per import rather than
-            # per tap, which is the trade that makes it affordable.
-            items = []
-            for _ in range(self.TRAP_PASSES):
-                # AttributeError is NOT one of the failures worth absorbing: it means the
-                # adapter has no such method, which is a wiring mistake rather than a flaky
-                # provider. Swallowed, it produced a complete import with zero cards and no
-                # trace anywhere — I put both methods on the Protocol instead of the adapter
-                # and this except turned that into "the material contains nothing".
-                try:
-                    items.extend(self.ai.teaching_traps(batch) if teaching
-                                 else self.ai.hidden_traps(batch))
-                except AttributeError:
-                    raise
-                except Exception:
-                    continue
-            for item in items:
+            for item in scanned[start]:
                 if not isinstance(item, dict):
                     continue
                 # "pattern" only from a lesson: native speech is scanned for what was misread,
@@ -926,15 +959,10 @@ class ImportPipeline:
                 # translation to reach for, so the question does not apply. A pattern earns
                 # its place by being a frame, which the finder already decided.
                 if teaching and meaning and kind != "pattern":
-                    if normalised not in verdicts:
-                        try:
-                            verdicts[normalised] = self.ai.is_compositional(text, meaning)
-                        except Exception:
-                            # Unverified rather than rejected: the finder already had a reason
-                            # to report it, and a failed check is not evidence against it.
-                            verdicts[normalised] = False
-                    if verdicts[normalised]:
-                        continue
+                    # Verified in one concurrent pass after this loop, not here. This is 93% of
+                    # the stage's calls — two per unique candidate — so leaving it sequential
+                    # would have made parallelising the finder almost pointless.
+                    needs_verifying[normalised] = (text, meaning)
                 try:
                     position = int(item.get("sentence_position", 0)) + start
                 except (TypeError, ValueError):
@@ -959,8 +987,42 @@ class ImportPipeline:
                     # "auto" and not a third word: it is the column, schema and iOS default,
                     # and only "manual" is ever treated specially.
                     "source": "auto",
+                    # Kept so the verification pass below can drop this row. Removed before
+                    # returning — the store rejects keys it does not know.
+                    "_key": normalised,
                 })
-        return found
+
+        # Verification, all at once. Each candidate costs two model calls, and unique
+        # candidates outnumber finder calls several times over, so this is where the stage's
+        # time actually went.
+        if needs_verifying:
+            workers = max(1, min(self.settings.scan_concurrency, len(needs_verifying)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(self._verify_producible, text, meaning): key
+                    for key, (text, meaning) in needs_verifying.items()
+                }
+                for future in as_completed(futures):
+                    verdicts[futures[future]] = future.result()
+
+        # `_key` is dropped here whether or not it was verified, so a row can never reach the
+        # store carrying it.
+        return [
+            {k: v for k, v in item.items() if k != "_key"}
+            for item in found
+            if not verdicts.get(item["_key"], False)
+        ]
+
+    def _verify_producible(self, text: str, meaning: str) -> bool:
+        """Whether the learner would already say this. Runs on a worker thread.
+
+        Unverified is not rejected: the finder had a reason to report it, and a failed check is
+        not evidence against it.
+        """
+        try:
+            return self.ai.is_compositional(text, meaning)
+        except Exception:
+            return False
 
     def _chapters(self, sentences: list[TranscriptSegment]) -> list[dict]:
         try:

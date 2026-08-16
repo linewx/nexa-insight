@@ -376,14 +376,127 @@ class SamplingAI(FakeAI):
 
     def __init__(self):
         self.calls = 0
+        # The passes run concurrently now, so `calls += 1` and reading it back is a race: two
+        # threads could hand out the same number and the union would look smaller than it is.
+        self.lock = threading.Lock()
 
     def hidden_traps(self, sentences):
-        self.calls += 1
+        with self.lock:
+            self.calls += 1
+            number = self.calls
         # One item per pass, never repeating — the observed behaviour, taken to its extreme.
         return [{
-            "text": f"phrase {self.calls}", "kind": "set_phrase", "chinese": "x",
+            "text": f"phrase {number}", "kind": "set_phrase", "chinese": "x",
             "example": "Hello world.", "example_chinese": "y", "sentence_position": 0,
         }]
+
+
+class SlowFirstPassAI(FakeAI):
+    """Returns two wordings of one frame, with the FIRST pass deliberately slow.
+
+    This is the shape that made concurrency racy: reassembling in completion order let the
+    second pass land first, so `canonical` kept its wording and the card's text depended on
+    thread scheduling.
+    """
+
+    def __init__(self):
+        self.calls = 0
+        self.lock = threading.Lock()
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        with self.lock:
+            self.calls += 1
+            number = self.calls
+        if number == 1:
+            time.sleep(0.15)
+            wording = "hello ___ world"
+        else:
+            wording = "hello world ___"
+        return [{"text": wording, "kind": "pattern", "chinese": "x",
+                 "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}]
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+class VerifyingAI(FakeAI):
+    """Two candidates, one of which the learner would already say."""
+
+    def __init__(self):
+        self.verified = []
+        self.lock = threading.Lock()
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        def item(text, chinese):
+            return {"text": text, "kind": "set_phrase", "chinese": chinese,
+                    "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
+        return [item("card on file", "已存档的卡"),
+                item("free breakfast", "免费早餐")]
+
+    def is_compositional(self, text, meaning):
+        with self.lock:
+            self.verified.append(text)
+        return text == "free breakfast"
+
+
+def test_verification_runs_once_per_candidate_and_drops_what_it_rejects(repo, tmp_path):
+    """Verification is 93% of this stage's model calls — two per unique candidate — so it runs
+    concurrently and deduped. Doing it inline per item would have made parallelising the finder
+    almost pointless, and would re-verify the same phrase once per pass."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = VerifyingAI()
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    stored = [e.text for e in repo.list_learning_expressions(episode_id)]
+    assert stored == ["card on file"], "a phrase the learner would already say earns no card"
+    # Three passes, two candidates each — but each distinct candidate is checked exactly once.
+    assert sorted(ai.verified) == ["card on file", "free breakfast"]
+
+
+def test_internal_dedup_key_never_reaches_the_store():
+    """Rows carry `_key` between the collect and verify phases. The store rejects columns it
+    does not know, so leaking it would fail the whole import rather than one card."""
+    class AI(FakeAI):
+        def classify_material(self, sentences):
+            return "teaching"
+
+        def teaching_traps(self, sentences):
+            return [{"text": "card on file", "kind": "set_phrase", "chinese": "x",
+                     "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}]
+
+        def is_compositional(self, text, meaning):
+            return False
+
+    pipeline = ImportPipeline.__new__(ImportPipeline)
+    pipeline.ai = AI()
+    pipeline.settings = Settings(_env_file=None)
+    rows = pipeline._hidden_traps([TranscriptSegment(0, 900, None, "Hello world.")], "teaching")
+
+    assert rows, "the candidate survives"
+    assert not [key for row in rows for key in row if key.startswith("_")]
+
+
+def test_concurrent_passes_still_produce_the_same_card(repo, tmp_path):
+    """Order comes from (batch, pass), never from which call returned first.
+
+    Running passes concurrently made the output depend on thread scheduling: one frame arrives
+    worded differently on different passes, `canonical` keeps whichever it sees first, and the
+    text on the card changed between identical reprocesses. The test for it failed about half
+    the time before the fix.
+    """
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), SlowFirstPassAI()).run(job_id)
+
+    stored = [e.text for e in repo.list_learning_expressions(episode_id)]
+    assert stored == ["hello ___ world"], "the first pass's wording wins, however late it lands"
 
 
 def test_each_batch_is_scanned_several_times_and_the_union_kept():
@@ -393,10 +506,16 @@ def test_each_batch_is_scanned_several_times_and_the_union_kept():
     ai = SamplingAI()
     pipeline = ImportPipeline.__new__(ImportPipeline)
     pipeline.ai = ai
+    # The passes run on a thread pool now, so the concurrency setting has to be present. Reached
+    # through __new__ rather than a full constructor because this test needs neither a repo nor
+    # media, and `settings` is the one field _hidden_traps actually reads.
+    pipeline.settings = Settings(_env_file=None)
     found = pipeline._hidden_traps([TranscriptSegment(0, 900, None, "Hello world.")], "native")
 
     assert ai.calls == ImportPipeline.TRAP_PASSES
-    assert [f["text"] for f in found] == [
+    # Sorted: the passes complete in whatever order the pool returns them, and which pass
+    # produced which item is not a thing this test should pin.
+    assert sorted(f["text"] for f in found) == [
         f"phrase {n}" for n in range(1, ImportPipeline.TRAP_PASSES + 1)
     ], "every pass contributes; the union is kept rather than the last result"
 
