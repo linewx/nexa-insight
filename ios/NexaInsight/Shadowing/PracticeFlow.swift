@@ -35,17 +35,22 @@ struct PracticeFlow {
         }
     }
 
-    /// The single entry point: 跟读 from a card, or 再试一次 after a score.
+    /// 听一遍 — play the model sentence.
     mutating func begin() {
         stage = .listening
     }
 
-    /// The model sentence finished playing, so the mic opens by itself. This is the step that
-    /// makes it one tap — the learner hears the sentence and speaks, with nothing to press.
-    mutating func sentenceFinished() {
-        // Only from .listening. A playback callback arriving late — the learner already hit
-        // 再试一次 — must not reopen the mic underneath the new take.
+    /// Playback ended. The mic does NOT open on its own: auto-advancing into a recording felt
+    /// like being rushed, and the learner may want to hear the sentence twice before trying.
+    mutating func listenFinished() {
+        // Only from .listening. A late callback from a previous playback must not disturb a
+        // take that has already started.
         guard stage == .listening else { return }
+        stage = .idle
+    }
+
+    /// 说一遍 — the learner starts a take deliberately.
+    mutating func startTake() {
         stage = .speaking(level: 0)
     }
 

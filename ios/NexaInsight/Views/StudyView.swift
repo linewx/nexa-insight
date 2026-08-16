@@ -319,12 +319,11 @@ struct StudyView: View {
             .allowsHitTesting(showNotes)
         }
         .sheet(item: $shadowingSentence) { s in
-            NavigationStack {
-                PracticeView(
-                    subject: .init(episodeId: episodeId, text: s.sourceText, chinese: s.chinese,
-                                   expressionId: nil, sentenceId: s.id),
-                    store: store)
-            }
+            PracticeView(
+                subject: .init(episodeId: episodeId, text: s.sourceText, chinese: s.chinese,
+                               expressionId: nil, sentenceId: s.id),
+                store: store)
+                .presentationDetents([.medium])
         }
         // Its own layer. This screen carries two item-driven sheets — a transcript sentence and
         // a card example — and only one presentation per view survives, so whichever lost would
@@ -333,13 +332,12 @@ struct StudyView: View {
         .background {
             Color.clear
                 .sheet(item: $practiceExpression) { expression in
-                    NavigationStack {
-                        PracticeView(
-                            subject: .init(episodeId: episodeId, text: expression.example,
-                                           chinese: expression.exampleChinese,
-                                           expressionId: expression.id, sentenceId: nil),
-                            store: store)
-                    }
+                    PracticeView(
+                        subject: .init(episodeId: episodeId, text: expression.example,
+                                       chinese: expression.exampleChinese,
+                                       expressionId: expression.id, sentenceId: nil),
+                        store: store)
+                        .presentationDetents([.medium])
                 }
         }
         .onChange(of: practiceExpression?.id) { _, newValue in
