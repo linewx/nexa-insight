@@ -546,49 +546,58 @@ def test_a_failed_scan_costs_the_import_nothing(repo, tmp_path):
 class StubbedAdapter(OpenAIAdapter):
     """The real verification logic with the two model calls replaced by recorded stubs."""
 
-    def __init__(self, glosses, reaches):
-        self.seen_prompts = []
-        self.gloss_payloads = []
-        self._glosses = glosses
-        self._reaches = reaches
+    def __init__(self, attempts, would_produce):
+        self.attempt_payloads = []
+        self._attempts = attempts
+        self._would_produce = would_produce
 
     def _json(self, prompt, payload):
-        self.seen_prompts.append(prompt)
-        if prompt == self.WORD_GLOSSES:
-            self.gloss_payloads.append(payload)
-            return {"glosses": [{"word": w, "chinese": self._glosses[w]}
-                                for w in payload["words"]]}
-        return {"reaches": self._reaches}
+        if prompt == self.LEARNER_ATTEMPTS:
+            self.attempt_payloads.append(payload)
+            return {"attempts": self._attempts}
+        return {"would_produce": self._would_produce}
 
 
-def test_the_gloss_pass_never_sees_the_phrases_meaning():
-    """Two calls rather than one, deliberately: a gloss pass shown the phrase's meaning
-    writes that meaning into the individual words, and then nothing looks compositional."""
-    ai = StubbedAdapter({"room": "房间", "key": "钥匙"}, reaches=True)
-    ai.is_compositional("room key", "房卡")
+def test_the_attempts_pass_never_sees_the_target_expression():
+    """Two calls rather than one, deliberately: shown the target, the model writes it back as
+    the learner's own attempt and every expression looks like one they could already say."""
+    ai = StubbedAdapter(["very big bed", "super big bed"], would_produce=False)
+    ai.is_compositional("king-size bed", "特大号床")
 
-    assert ai.gloss_payloads == [{"words": ["room", "key"]}]
-    for payload in ai.gloss_payloads:
-        assert "房卡" not in json.dumps(payload, ensure_ascii=False)
-
-
-def test_parts_that_lead_to_the_meaning_count_as_compositional():
-    # 房间钥匙 is not the string 房卡, but a learner who knows both words arrives at the
-    # right object. Judging string equality instead let six compounds through a real run.
-    reachable = StubbedAdapter({"room": "房间", "key": "钥匙"}, reaches=True)
-    assert reachable.is_compositional("room key", "房卡") is True
-
-    misleading = StubbedAdapter({"on": "在……上", "file": "文件"}, reaches=False)
-    assert misleading.is_compositional("on file", "已存档") is False
+    assert ai.attempt_payloads, "the attempts pass must run"
+    for payload in ai.attempt_payloads:
+        assert "king" not in json.dumps(payload, ensure_ascii=False).lower()
 
 
-def test_an_unusable_gloss_response_does_not_count_as_compositional():
+def test_an_expression_the_learner_would_already_say_needs_no_card():
+    # The axis is production, not comprehension. "king-size bed" reads effortlessly — and the
+    # learner still says "very big bed", so it earns a card. Judging comprehension dropped it.
+    unreachable = StubbedAdapter(["very big bed", "super big bed"], would_produce=False)
+    assert unreachable.is_compositional("king-size bed", "特大号床") is False
+
+    already_known = StubbedAdapter(["free breakfast", "breakfast included"], would_produce=True)
+    assert already_known.is_compositional("free breakfast", "免费早餐") is True
+
+
+def test_an_unusable_attempts_response_does_not_drop_the_expression():
     """Unverified is not the same as rejected: the finder already had a reason to report it."""
     class Broken(StubbedAdapter):
         def _json(self, prompt, payload):
             return "not a dict"
 
-    assert Broken({}, reaches=True).is_compositional("card on file", "已存档的卡") is False
+    assert Broken([], would_produce=True).is_compositional("card on file", "已存档的卡") is False
+
+
+def test_the_same_phrase_with_a_different_determiner_is_one_card():
+    """A real run produced both "tip your housekeeper" and "tip the housekeeper". Keying on
+    exact text splits every phrase whose determiner the speaker varied between mentions."""
+    key = ImportPipeline._dedup_key
+    assert key("tip your housekeeper") == key("tip the housekeeper")
+    assert key("Check In") == key("check in")
+    assert key("drop off the bags") == key("drop off your bags")
+    # Distinct expressions must stay distinct: stripping determiners cannot collapse them.
+    assert key("check in") != key("check out")
+    assert key("card on file") != key("on file")
 
 
 def test_core_meaning_drops_the_explanatory_aside():

@@ -372,22 +372,29 @@ class OpenAIAdapter:
         'list of {"word", "chinese"}.'
     )
 
-    # "Would the parts LEAD you there", not "are these two strings synonymous".
+    # Could the learner SAY it, not could they understand it.
     #
-    # String equality was the wrong question, and the end-to-end run proved it: 房卡 and
-    # 房间钥匙 are different strings, so "room key" survived — but a learner who knows `room`
-    # and `key` arrives at the right object. Six transparent compounds leaked for exactly
-    # this reason. Reachability lets the wording differ while still rejecting parts that
-    # point somewhere else.
-    REACHES_MEANING = (
-        "A Chinese learner knows each English word separately and meets this expression for "
-        "the first time, with no explanation. Given the word-by-word Chinese and the "
-        "expression's real meaning, would they ARRIVE at the real meaning on their own?\n"
-        "reaches=true if the parts point at the right thing even when the natural Chinese "
-        "wording differs (房间钥匙 vs 房卡 — same object, they get there).\n"
-        "reaches=false only if the parts point somewhere ELSE, so they would be wrong "
-        "(在……上文件 vs 已存档；去穿过 vs 顺利通过).\n"
-        'Return JSON {"reaches": bool}.'
+    # Comprehension was the wrong axis. Asked whether the parts lead to the meaning, this
+    # dropped "king-size bed", "room key" and "complimentary breakfast" — all correct, and
+    # all useless as a conclusion, because understanding is not the gap. Reading "luggage
+    # cart" is effortless; producing it is not, and the learner says "luggage trolley".
+    #
+    # So the question is reversed: from the Chinese, in this situation, what English would
+    # they actually reach for? Keep the expression when their own wording would not be it.
+    LEARNER_ATTEMPTS = (
+        "A Chinese learner wants to say the following in English, in the situation given. "
+        "Write the 3 most likely things they would ACTUALLY produce — their own wording, not "
+        "the idiomatic native phrase. They translate from Chinese and reach for words they "
+        'already know.\nReturn JSON {"attempts": [str, str, str]}.'
+    )
+
+    NATIVE_WOULD_SAY = (
+        "Would a native speaker use any of these learner attempts where the target expression "
+        "belongs? Judge the WORDING, not grammar slips.\n"
+        "would_produce=true only if an attempt uses essentially the same words as the target. "
+        'A near-miss with a different noun or particle is false — "luggage trolley" is not '
+        '"luggage cart", "room card" is not "room key", "delay check out" is not "late '
+        'checkout".\nReturn JSON {"would_produce": bool}.'
     )
 
     def teaching_traps(self, sentences: list[TranscriptSegment]) -> list[dict]:
@@ -395,32 +402,30 @@ class OpenAIAdapter:
         return self._expression_list(self._json(self.TEACHING_TRAPS, {"sentences": payload}))
 
     def is_compositional(self, text: str, meaning: str) -> bool:
-        """True when the words, glossed separately, already add up to the real meaning.
+        """True when the learner would produce this expression themselves.
 
-        Two calls rather than one: the gloss pass must not see the phrase's meaning, or it
-        writes the phrase's sense into the individual words and every expression looks
-        compositional.
+        Named for what the caller does with it — an expression they would already say needs
+        no card. Two calls rather than one, and the first must not see the target: shown it,
+        the model writes the target back as the learner's own attempt and everything looks
+        producible.
         """
-        words = [w for w in text.replace("-", " ").split() if w]
-        if not words:
-            return True
-        glosses = self._json(self.WORD_GLOSSES, {"words": words})
-        listed = glosses.get("glosses") if isinstance(glosses, dict) else glosses
+        # The CORE meaning, not the encyclopedia entry appended to it. 迷你吧（酒店房间内收费
+        # 的小冰箱） describes the thing rather than translating it, which sends the attempts
+        # off after a description instead of the phrase.
+        attempts = self._json(
+            self.LEARNER_ATTEMPTS,
+            {"chinese": self._core_meaning(meaning), "situation": "this transcript"},
+        )
+        listed = attempts.get("attempts") if isinstance(attempts, dict) else attempts
         if not isinstance(listed, list):
             return False
-        assembled = "".join(
-            str(item.get("chinese", "")) for item in listed if isinstance(item, dict)
-        )
-        if not assembled:
+        wordings = [str(a) for a in listed if isinstance(a, str) and a.strip()]
+        if not wordings:
             return False
-        # The CORE meaning, not the encyclopedia entry appended to it. 迷你吧（酒店房间内收费
-        # 的小冰箱） describes the thing rather than translating it, and that aside alone let
-        # "mini bar" through a filter that dropped its bare form.
         verdict = self._json(
-            self.REACHES_MEANING,
-            {"word_by_word": assembled, "real_meaning": self._core_meaning(meaning)},
+            self.NATIVE_WOULD_SAY, {"target": text, "learner_attempts": wordings}
         )
-        return bool(verdict.get("reaches")) if isinstance(verdict, dict) else False
+        return bool(verdict.get("would_produce")) if isinstance(verdict, dict) else False
 
     PARENTHETICAL = re.compile(r"[（(][^）)]*[）)]")
 
@@ -699,6 +704,20 @@ class ImportPipeline:
             return "proper noun"
         return None
 
+    # Determiners and possessives, which vary between mentions of the same phrase.
+    INFLECTION = re.compile(r"\b(a|an|the|your|his|her|their|its|my|our)\b")
+
+    @classmethod
+    def _dedup_key(cls, text: str) -> str:
+        """One key for what is really one expression.
+
+        A real run produced both "tip your housekeeper" and "tip the housekeeper" as separate
+        cards. Keying on exact text splits every phrase whose determiner the speaker varied,
+        and the learner gets the same card twice.
+        """
+        stripped = cls.INFLECTION.sub(" ", text.casefold())
+        return " ".join(stripped.split())
+
     def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str) -> list[dict]:
         """The expressions worth a card, across the whole transcript.
 
@@ -737,7 +756,7 @@ class ImportPipeline:
                     continue
                 if self._mechanically_rejected(text):
                     continue
-                normalised = " ".join(text.casefold().split())
+                normalised = self._dedup_key(text)
                 meaning = str(item.get("chinese") or "").strip()
                 # Only teaching material needs this. Native speech is filtered by "is the
                 # everyday sense wrong HERE", which a compositional phrase fails on its own;
