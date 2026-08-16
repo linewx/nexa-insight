@@ -371,6 +371,36 @@ def test_scan_keeps_only_the_two_kinds_a_learner_cannot_ask_about(repo, tmp_path
     )
 
 
+class SamplingAI(FakeAI):
+    """A finder that returns something different every call, as the real one does."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def hidden_traps(self, sentences):
+        self.calls += 1
+        # One item per pass, never repeating — the observed behaviour, taken to its extreme.
+        return [{
+            "text": f"phrase {self.calls}", "kind": "set_phrase", "chinese": "x",
+            "example": "Hello world.", "example_chinese": "y", "sentence_position": 0,
+        }]
+
+
+def test_each_batch_is_scanned_several_times_and_the_union_kept():
+    """One pass samples a batch rather than enumerating it: five runs of the same 40 lines
+    returned 16 distinct items with ZERO overlap. A single pass therefore drops most of what
+    is there, which is why an expression can go missing with nothing rejecting it."""
+    ai = SamplingAI()
+    pipeline = ImportPipeline.__new__(ImportPipeline)
+    pipeline.ai = ai
+    found = pipeline._hidden_traps([TranscriptSegment(0, 900, None, "Hello world.")], "native")
+
+    assert ai.calls == ImportPipeline.TRAP_PASSES
+    assert [f["text"] for f in found] == [
+        f"phrase {n}" for n in range(1, ImportPipeline.TRAP_PASSES + 1)
+    ], "every pass contributes; the union is kept rather than the last result"
+
+
 class BatchPositionAI(FakeAI):
     """Reports a position relative to ITS batch, which is all the model can see."""
 
@@ -404,7 +434,10 @@ def test_scan_shifts_batch_positions_into_transcript_numbering(repo, tmp_path):
     settings = Settings(_env_file=None, data_dir=tmp_path)
     ImportPipeline(repo, settings, media, ai).run(job_id)
 
-    assert len(ai.batches) == 2, "the transcript is scanned in batches, not in one call"
+    # Distinct batches, not call count: each batch is scanned TRAP_PASSES times because one
+    # pass samples rather than enumerates, so the call total is batches × passes.
+    assert len({tuple(b) for b in ai.batches}) == 2, "the transcript is scanned in batches"
+    assert len(ai.batches) == 2 * ImportPipeline.TRAP_PASSES
     sentences = {s.id: s.position for s in repo.list_sentences(episode_id)}
     expressions = repo.list_learning_expressions(episode_id)
     assert [e.text for e in expressions] == ["throw shade"]

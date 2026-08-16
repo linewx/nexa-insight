@@ -688,6 +688,22 @@ class ImportPipeline:
     # the old version's thread pool existed for a workload that no longer exists.
     TRAP_BATCH = 40
 
+    # How many times each batch is scanned.
+    #
+    # Not redundancy — coverage. One pass SAMPLES a batch rather than enumerating it: five
+    # runs of the same 40 lines returned 16 distinct items with ZERO overlap, every one
+    # appearing exactly once. A missing expression therefore looks like a filtering bug and is
+    # usually a sampling one.
+    #
+    # Measured union growth on one batch: 11 items after one pass, 23 after two, 26, 31, 34,
+    # 34. Pass two is the real win and it keeps creeping after that, so 3 is a cost choice
+    # (3× a stage that runs once per import), not a convergence point. Raising it finds more.
+    #
+    # Honest limit: "unlimited in-n-out" — the expression that prompted this — still did not
+    # appear in six passes. Rare items stay rare, and this makes the tail smaller rather than
+    # empty. Asking the teacher directly is still the reliable way to get a specific one.
+    TRAP_PASSES = 3
+
     # Shapes no expression has, checkable without a model call. Each was a real result:
     # "P level" and "M Club" are a parking sign and a lounge brand; "Stay close to me" and
     # "I want to see where you go" are whole lines of dialogue from a graded story.
@@ -786,18 +802,28 @@ class ImportPipeline:
         verdicts: dict[str, bool] = {}
         for start in range(0, len(sentences), self.TRAP_BATCH):
             batch = sentences[start:start + self.TRAP_BATCH]
-            # AttributeError is NOT one of the failures worth absorbing: it means the
-            # adapter has no such method, which is a wiring mistake rather than a flaky
-            # provider. Swallowed, it produced a complete import with zero cards and no
-            # trace anywhere — I put both methods on the Protocol instead of the adapter
-            # and this except turned that into "the material contains nothing".
-            try:
-                items = (self.ai.teaching_traps(batch) if teaching
-                         else self.ai.hidden_traps(batch))
-            except AttributeError:
-                raise
-            except Exception:
-                continue
+            # One pass SAMPLES a batch; it does not enumerate it. Running the same 40 lines
+            # five times returned 16 distinct items with ZERO overlap — every single one
+            # appeared exactly once. That is why "unlimited in-n-out" was missing: nothing
+            # rejected it, one roll of the dice just did not mention it.
+            #
+            # So each batch is scanned several times and the union is kept. The dedup below
+            # already collapses repeats, and this cost is paid once per import rather than
+            # per tap, which is the trade that makes it affordable.
+            items = []
+            for _ in range(self.TRAP_PASSES):
+                # AttributeError is NOT one of the failures worth absorbing: it means the
+                # adapter has no such method, which is a wiring mistake rather than a flaky
+                # provider. Swallowed, it produced a complete import with zero cards and no
+                # trace anywhere — I put both methods on the Protocol instead of the adapter
+                # and this except turned that into "the material contains nothing".
+                try:
+                    items.extend(self.ai.teaching_traps(batch) if teaching
+                                 else self.ai.hidden_traps(batch))
+                except AttributeError:
+                    raise
+                except Exception:
+                    continue
             for item in items:
                 if not isinstance(item, dict):
                     continue
