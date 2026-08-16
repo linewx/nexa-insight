@@ -121,9 +121,10 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(store.chapters(for: 1).count, 1)
         XCTAssertEqual(store.downloadedEpisodes().first?.title, "T")
         XCTAssertEqual(store.localAudioPath(for: 1), "audio/1.mp3")
-        // The bundle still SHIPS batch-extracted expressions; the store no longer keeps
-        // them, so a downloaded episode arrives with transcript and chapters and no cards.
-        XCTAssertTrue(store.learningExpressions(for: 1).isEmpty)
+        // Scanned cards are kept again. They used to be dropped here, from the round when
+        // extraction pre-picked hundreds of words nobody chose; what ships now is only the
+        // two failures a learner cannot ask about, and dropping it wasted the whole scan.
+        XCTAssertEqual(store.learningExpressions(for: 1).map(\.text), ["Hello"])
     }
 
     func testSaveBundleUpsertsReplacingSentences() throws {
@@ -206,9 +207,9 @@ final class EpisodeStoreTests: XCTestCase {
         XCTAssertEqual(manual.count, 1)
         XCTAssertEqual(manual.first?.text, "Hi")
         XCTAssertEqual(manual.first?.request, "\u{53ea}\u{8bb2}\u{65f6}\u{6001}")
-        // And nothing else arrived with it: the bundle's batch-extracted row is dropped on
-        // the way in, so a redownload cannot bury the learner's own note under it.
-        XCTAssertTrue(stored.filter { $0.source == "auto" }.isEmpty)
+        // The scanned row arrives alongside it rather than instead of it. What matters is
+        // that a redownload cannot LOSE the hand-made note, not that it arrives alone.
+        XCTAssertEqual(stored.filter { $0.source == "auto" }.map(\.text), ["Hello"])
     }
 
     func testManualNoteIsAnchoredBySearchingTheSentence() throws {
@@ -318,6 +319,17 @@ final class ParagraphNoteStoreTests: XCTestCase {
             hasAudio: true, hasLearningPack: false, learningExpressions: [])
     }
 
+    /// The standard bundle with its expression list replaced. BundleDTO is immutable, so
+    /// varying the scanned cards means rebuilding it rather than assigning to a property.
+    private func bundle(expressions: [LearningExpressionDTO]) -> BundleDTO {
+        let base = bundle()
+        return BundleDTO(
+            episode: base.episode, chapters: base.chapters, sentences: base.sentences,
+            hasAudio: base.hasAudio, hasLearningPack: base.hasLearningPack,
+            learningExpressions: expressions)
+    }
+
+
     func testNoteIsStoredAgainstItsParagraph() throws {
         let s = try store()
         _ = try s.saveBundle(bundle(), localAudioPath: nil)
@@ -408,30 +420,43 @@ final class ParagraphNoteStoreTests: XCTestCase {
         XCTAssertTrue(s.paragraphNotes(for: 1).isEmpty)
     }
 
-    // A device that ran the old build still holds hundreds of batch-extracted rows per
-    // episode. Nothing regenerates them now, so they are cleared once on launch — the
-    // learner's own notes are untouched.
-    func testPurgingRemovesLegacyAutoExpressionsOnly() throws {
+    // The store used to drop every non-manual row on the way in, from the round when
+    // extraction pre-picked hundreds of words nobody chose. The scan that replaced it
+    // returns only the two failures a learner cannot ask about — so the backend did the
+    // work, shipped it in the bundle, and the phone threw it away.
+    func testScannedCardsFromTheBundleAreStored() throws {
         let s = try store()
-        _ = try s.saveBundle(bundle(), localAudioPath: nil)
-        // Inserted the way the OLD build did, since saveBundle no longer accepts them.
-        let legacy = StoredLearningExpression(
-            expressionId: 900, episodeId: 1, text: "legacy", kind: "word", type: "word",
-            chinese: "\u{65e7}", pronunciation: nil, example: "x", exampleChinese: "y",
-            source: "auto")
-        s.context.insert(legacy)
-        let dto = LearningExpressionDTO(
+        let b = bundle(expressions: [LearningExpressionDTO(
+            id: 501, text: "throw shade", kind: .phrase, type: .idiom,
+            chinese: "\u{6697}\u{4e2d}\u{8d2c}\u{4f4e}", pronunciation: nil,
+            example: "They throw shade constantly.",
+            exampleChinese: "\u{4ed6}\u{4eec}\u{603b}\u{5728}\u{6697}\u{8bbd}\u{3002}",
+            source: "auto")])
+        _ = try s.saveBundle(b, localAudioPath: nil)
+
+        XCTAssertEqual(s.learningExpressions(for: 1).map(\.text), ["throw shade"])
+    }
+
+    // And a resync replaces them rather than doubling them: the scan reruns on reprocess,
+    // so the previous generation has to go, while a hand-made note must survive.
+    func testResyncReplacesScannedCardsButKeepsManualNotes() throws {
+        let s = try store()
+        let b = bundle(expressions: [LearningExpressionDTO(
+            id: 501, text: "old scan", kind: .phrase, type: .idiom, chinese: "\u{65e7}",
+            pronunciation: nil, example: "x", exampleChinese: "y", source: "auto")])
+        _ = try s.saveBundle(b, localAudioPath: nil)
+        let mine = LearningExpressionDTO(
             id: 0, text: "Hi", kind: .phrase, type: .idiom, chinese: "\u{55e8}",
             pronunciation: nil, example: "Hi there", exampleChinese: "\u{55e8}")
-        _ = try s.addManualExpression(episodeId: 1, sentenceId: 10, expression: dto, request: nil)
+        _ = try s.addManualExpression(episodeId: 1, sentenceId: 10, expression: mine, request: nil)
 
-        let removed = try s.purgeAutoExpressions()
+        let again = bundle(expressions: [LearningExpressionDTO(
+            id: 502, text: "new scan", kind: .phrase, type: .idiom, chinese: "\u{65b0}",
+            pronunciation: nil, example: "x", exampleChinese: "y", source: "auto")])
+        _ = try s.saveBundle(again, localAudioPath: nil)
 
-        XCTAssertEqual(removed, 1)
-        XCTAssertEqual(s.learningExpressions(for: 1).map(\.text), ["Hi"],
-                       "only the learner's own note survives")
-        // Idempotent: a second launch has nothing left to do.
-        XCTAssertEqual(try s.purgeAutoExpressions(), 0)
+        XCTAssertEqual(Set(s.learningExpressions(for: 1).map(\.text)), ["new scan", "Hi"],
+                       "the old scan is replaced; the learner's own note is not")
     }
 
     func testClearingAnEpisodeWithNothingToClearIsHarmless() throws {

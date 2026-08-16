@@ -608,9 +608,11 @@ class ImportPipeline:
                     "when_to_use": item.get("usage"),
                     "heard_as": item.get("literal"),
                     "sentence_position": position,
-                    # Marked as extraction so a reprocess may replace it, and so the purge
-                    # that cleared the last generation still applies to this one.
-                    "source": "extraction",
+                    # "auto" and not a third word: it is the column default, the schema
+                    # default, the iOS default and what the existing rows already say.
+                    # Only "manual" survives a reprocess, so any other value would behave
+                    # identically here while giving the client one more thing to match on.
+                    "source": "auto",
                 })
         return found
 

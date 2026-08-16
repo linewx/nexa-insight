@@ -72,6 +72,9 @@ final class ImportViewModel: ObservableObject {
                         tasks.remove(episodeId: task.episodeId)
                         return
                     } catch {
+                        NSLog("[import] finishDownload threw: %@ (status %@)",
+                              String(describing: error),
+                              Self.httpStatus(of: error).map(String.init) ?? "none")
                         if policy.afterError(status: Self.httpStatus(of: error)) == .giveUp {
                             markFailed(latest, error: error.localizedDescription)
                             return
@@ -110,14 +113,22 @@ final class ImportViewModel: ObservableObject {
     }
 
     private func finishDownload(episodeId: Int) async throws {
+        // TEMPORARY: which of the four steps the stuck "Saving to your library" is in.
+        NSLog("[import] finishDownload %d: fetching bundle", episodeId)
         let bundle = try await client.bundle(episodeId)
+        NSLog("[import] bundle ok: sentences=%d hasAudio=%@",
+              bundle.sentences.count, bundle.hasAudio ? "yes" : "no")
         var localPath: String? = nil
         if bundle.hasAudio {
             let destination = AudioFiles.audioURL(forEpisode: episodeId)
+            NSLog("[import] downloading audio to %@", destination.path)
             try await client.downloadAudio(episodeId, to: destination)
+            NSLog("[import] audio saved")
             localPath = AudioFiles.relativePath(forEpisode: episodeId)
         }
+        NSLog("[import] saving bundle to the store")
         _ = try store.saveBundle(bundle, localAudioPath: localPath)
+        NSLog("[import] finishDownload %d complete", episodeId)
         reload()
     }
 

@@ -64,15 +64,14 @@ final class EpisodeStore {
             let sentence = StoredSentence(sentenceId: s.id, episodeId: bundle.episode.id, chapterId: s.chapterId, position: s.position, startMs: s.startMs, endMs: s.endMs, speaker: s.speaker, sourceText: s.sourceText, chinese: s.chinese)
             context.insert(sentence); stored.sentences.append(sentence)
         }
-        // Only the learner's own notes are kept. Batch extraction still runs in the
-        // pipeline and still ships inside the bundle, but nothing here stores it: cards
-        // exist because you asked for one, so a shelf of machine-picked words is noise
-        // in the notes list and, since highlights are drawn from the same rows, noise in
-        // the transcript too.
+        // Both kinds are stored now. The filter here used to keep only manual notes,
+        // because extraction pre-picked hundreds of words nobody chose; the scan that
+        // replaced it returns only the two failures a learner cannot ask about — a shifted
+        // sense, a set phrase — and returns nothing at all for most passages.
         //
-        // Filtered on the way IN rather than purged afterwards, or every resync would
-        // hand them all back.
-        for item in bundle.learningExpressions where item.source == "manual" {
+        // Left in place, this filter silently discarded every scanned card: the backend
+        // did the work, shipped it in the bundle, and the phone dropped it on the way in.
+        for item in bundle.learningExpressions {
             let expression = StoredLearningExpression(
                 expressionId: item.id, episodeId: bundle.episode.id, text: item.text,
                 kind: item.kind.rawValue, type: item.type.rawValue,
@@ -238,21 +237,6 @@ final class EpisodeStore {
     /// a device that ran the old build has them, and they would sit in the notes list and
     /// highlight the transcript forever otherwise.
     ///
-    /// Manual notes are untouched — they are the only cards that exist by intent.
-    @discardableResult
-    func purgeAutoExpressions() throws -> Int {
-        let all = (try? context.fetch(FetchDescriptor<StoredLearningExpression>())) ?? []
-        var removed = 0
-        for expression in all where !expression.isManual {
-            expression.occurrences.forEach(context.delete)
-            context.delete(expression)
-            removed += 1
-        }
-        guard removed > 0 else { return 0 }
-        try context.save()
-        return removed
-    }
-
     /// Removes everything the learner made by hand on one episode, and reports how many.
     ///
     /// Automatic rows are left alone, for the same reason a single one cannot be deleted:

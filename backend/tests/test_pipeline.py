@@ -162,7 +162,7 @@ def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     # renders three empty sections rather than failing anything.
     assert [e.text for e in expressions] == ["Hello world"]
     found = expressions[0]
-    assert found.source == "extraction", "a reprocess must be free to replace it"
+    assert found.source == "auto", "a reprocess must be free to replace it"
     assert found.restored == "Hello world."
     assert found.heard_as == "你好，世界"
     assert found.when_to_use == "测试用"
