@@ -717,6 +717,49 @@ def test_an_unusable_attempts_response_does_not_drop_the_expression():
     assert Broken([], would_produce=True).is_compositional("card on file", "已存档的卡") is False
 
 
+class FrameVariantAI(FakeAI):
+    """The three wordings three real passes produced for one frame, one per pass.
+
+    Worded against FakeMedia's own transcript ("Hello world." / "Goodbye."), because a frame
+    whose words are not in the batch is rejected as invented before dedup ever runs.
+    """
+
+    # Both wordings must be GROUNDED in that transcript, or the invented-frame check removes
+    # the second one and the test passes without dedup doing anything — which is exactly what
+    # my first attempt did. These two differ only in where the blank sits.
+    WORDINGS = ["hello ___ world", "hello world ___"]
+
+    def __init__(self):
+        self.pass_count = 0
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        wording = self.WORDINGS[self.pass_count % len(self.WORDINGS)]
+        self.pass_count += 1
+        return [{"text": wording, "kind": "pattern", "chinese": "x",
+                 "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}]
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+def test_frame_variants_reach_the_store_as_one_card(repo, tmp_path):
+    """Merging has to happen where the store can see it. The store merges by exact text, so a
+    dedup key computed and then unused left all three wordings as separate cards — which is
+    what happened live, and what a key-only unit test cannot catch. Rewriting each variant to
+    the first wording seen also keeps every occurrence, rather than dropping later rows."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = FrameVariantAI()
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    assert ai.pass_count >= 2, "several passes must run for variants to appear at all"
+    stored = [e.text for e in repo.list_learning_expressions(episode_id)]
+    assert stored == ["hello ___ world"]
+
+
 def test_one_frame_written_three_ways_is_one_pattern():
     """Three passes over one transcript produced "drop me off ___", "drop me off at ___" and
     "drop me off at the ___" — one frame, three cards — plus "plug ___ in" beside "plug a ___".

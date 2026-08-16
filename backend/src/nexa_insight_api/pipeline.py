@@ -816,6 +816,8 @@ class ImportPipeline:
         # phrase's second appearance highlights only its first. This caches the two
         # verification calls instead, which is what deduping was actually for.
         verdicts: dict[str, bool] = {}
+        # The wording each key was first seen as, so every later variant is rewritten to it.
+        canonical: dict[str, str] = {}
         for start in range(0, len(sentences), self.TRAP_BATCH):
             batch = sentences[start:start + self.TRAP_BATCH]
             # One pass SAMPLES a batch; it does not enumerate it. Running the same 40 lines
@@ -869,6 +871,12 @@ class ImportPipeline:
                 if self._mechanically_rejected(text, kind):
                     continue
                 normalised = self._dedup_key(text, kind)
+                # One wording per key, chosen once and reused. Repeated passes surface the same
+                # frame worded differently each time — "drop me off ___", "drop me off at ___",
+                # "drop me off at the ___" — and the store merges by exact text, so all three
+                # became separate cards. Rewriting the text to the first wording seen merges
+                # them THERE, which keeps every occurrence rather than dropping later rows.
+                text = canonical.setdefault(normalised, text)
                 meaning = str(item.get("chinese") or "").strip()
                 # Only teaching material needs this. Native speech is filtered by "is the
                 # everyday sense wrong HERE", which a compositional phrase fails on its own;
