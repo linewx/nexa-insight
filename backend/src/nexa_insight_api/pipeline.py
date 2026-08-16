@@ -51,6 +51,8 @@ class AIAdapter(Protocol):
     def chapters(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
     def classify_material(self, sentences: list[TranscriptSegment]) -> str: ...
     def hidden_traps(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
+    def teaching_traps(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
+    def is_compositional(self, text: str, meaning: str) -> bool: ...
 
 
 class YtDlpMediaAdapter:
@@ -333,13 +335,114 @@ class OpenAIAdapter:
         'empty list is the expected answer. Return JSON with key "expressions".'
     )
 
+    # Teaching material needs a different question asked of it.
+    #
+    # HIDDEN_TRAPS asks "would the learner misread this HERE", which finds nothing in a
+    # transcript whose speaker explains as they go — the explanation is right there, so the
+    # answer is always no. Measured: 0 items across a hotel-vocabulary vlog that plainly
+    # contains "card on file", "put money down" and "go through with".
+    #
+    # So this asks the portable question instead: take the explanation away, meet it cold
+    # months later, would it still stop them? The lesson is over in a minute; the phrase is
+    # what carries.
+    TEACHING_TRAPS = (
+        "This transcript TEACHES English: the speaker explains things as they go, so asking "
+        "whether the learner would misread it HERE finds nothing. Ask instead: take the "
+        "explanation away, meet it cold months later — would it still stop them?\n"
+        'Return "set_phrase" (familiar words whose combination means something the parts do '
+        'not) and "shifted" (a word used in a sense other than its everyday one).\n'
+        "Skip anything that looks like a TRANSCRIPTION ERROR rather than English.\n"
+        "For each: text (exactly as it appears), kind, sense_group (verbatim), chinese, usage "
+        "(in Chinese, the frame it appears in), literal (in Chinese, only if a wrong everyday "
+        "reading genuinely exists — otherwise omit; never invent one), example (verbatim), "
+        "example_chinese, sentence_position.\n"
+        'No quota. Return JSON with key "expressions".'
+    )
+
+    # Each word's ordinary sense, ALONE, with no phrase to belong to.
+    #
+    # This is the pair that makes the filter work, and it is deliberately not a judgement.
+    # Asked to rate its own candidates, the model kept 9 of 10 — including "tip" and
+    # "deposit" — and wrote justifications that just restated the word. Asked for a verdict
+    # field it set "same": false on everything, including "stay together". A model given a
+    # verdict to reach reaches it. Translation has nothing to pad and nothing to rationalise.
+    WORD_GLOSSES = (
+        "Translate each English word into Chinese IN ISOLATION — its most ordinary everyday "
+        "sense, ignoring any phrase it might belong to. Return JSON with key \"glosses\", a "
+        'list of {"word", "chinese"}.'
+    )
+
+    SAME_MEANING = (
+        "You are given a Chinese phrase assembled word-by-word from an English expression, "
+        "and that expression's real Chinese meaning. Do the two mean the SAME THING to a "
+        'reader?\nReturn JSON {"same": bool}. Answer only that. Do not consider whether the '
+        "expression is useful, common, or worth learning."
+    )
+
+    def teaching_traps(self, sentences: list[TranscriptSegment]) -> list[dict]:
+        payload = [{"position": i, "text": s.text} for i, s in enumerate(sentences)]
+        return self._expression_list(self._json(self.TEACHING_TRAPS, {"sentences": payload}))
+
+    def is_compositional(self, text: str, meaning: str) -> bool:
+        """True when the words, glossed separately, already add up to the real meaning.
+
+        Two calls rather than one: the gloss pass must not see the phrase's meaning, or it
+        writes the phrase's sense into the individual words and every expression looks
+        compositional.
+        """
+        words = [w for w in text.replace("-", " ").split() if w]
+        if not words:
+            return True
+        glosses = self._json(self.WORD_GLOSSES, {"words": words})
+        listed = glosses.get("glosses") if isinstance(glosses, dict) else glosses
+        if not isinstance(listed, list):
+            return False
+        assembled = "".join(
+            str(item.get("chinese", "")) for item in listed if isinstance(item, dict)
+        )
+        if not assembled:
+            return False
+        # Compare the CORE meaning, not the encyclopedia entry appended to it.
+        #
+        # "mini bar" glossed word-by-word is 小型的酒吧, and against 迷你吧 the answer is
+        # correctly "same". But the finder returns 迷你吧（酒店房间内收费的小冰箱） — and the
+        # parenthetical, which describes the thing rather than translating it, makes any two
+        # strings look different. Both "mini bar" and "room service" survived the filter for
+        # exactly this reason while the bare forms were dropped.
+        verdict = self._json(
+            self.SAME_MEANING,
+            {"assembled_from_words": assembled, "real_meaning": self._core_meaning(meaning)},
+        )
+        return bool(verdict.get("same")) if isinstance(verdict, dict) else False
+
+    PARENTHETICAL = re.compile(r"[（(][^）)]*[）)]")
+
+    @classmethod
+    def _core_meaning(cls, meaning: str) -> str:
+        """The translation without its explanatory aside.
+
+        Also takes the first of several senses separated by ；/、 — the comparison is about
+        whether the parts reach the meaning, and a list of alternatives is not one meaning.
+        """
+        stripped = cls.PARENTHETICAL.sub("", meaning).strip()
+        for separator in ("；", ";", "，", "、"):
+            if separator in stripped:
+                stripped = stripped.split(separator)[0].strip()
+        return stripped or meaning.strip()
+
     def hidden_traps(self, sentences: list[TranscriptSegment]) -> list[dict]:
         payload = [{"position": i, "text": s.text} for i, s in enumerate(sentences)]
-        result = self._json(self.HIDDEN_TRAPS, {"sentences": payload})
+        return self._expression_list(self._json(self.HIDDEN_TRAPS, {"sentences": payload}))
+
+    @staticmethod
+    def _expression_list(result: object) -> list[dict]:
+        """The expressions out of either response shape.
+
+        A bare array despite the schema has been observed; accepting both is the difference
+        between dropping a whole batch and keeping it.
+        """
         if isinstance(result, list):
             return list(result)
-        # A bare array despite the schema has been observed; accepting both shapes is the
-        # difference between dropping a whole batch and keeping it.
         for key in ("expressions", "items"):
             value = result.get(key) if isinstance(result, dict) else None
             if isinstance(value, list):
@@ -419,18 +522,15 @@ class ImportPipeline:
             self.repo.upsert_job(job_id, stage="learning", progress=94)
             material_kind = self._material_kind(all_segments)
             self.repo.set_material_kind(episode.id, material_kind)
-            # No batch extraction. Cards exist because the learner ASKED for one, so
-            # pre-picking a few hundred expressions per episode spent the slowest and
-            # most expensive stage of the pipeline building a shelf nobody opened — and,
-            # since transcript highlights are drawn from those same rows, marking up the
-            # text with words nobody chose.
+            # Scanned for the two failures a learner cannot ask about, and nothing else.
+            # The full extraction this replaced pre-picked hundreds of expressions per
+            # episode — a shelf nobody opened, and, since highlights are drawn from the
+            # same rows, a transcript marked up with words nobody chose.
             #
-            # material_kind above is still detected and stored: it selects which prompt
-            # the ON-DEMAND extraction uses when a card is actually requested.
-            # Scanned, but only for the two failures a learner cannot ask about. The
-            # earlier full extraction was removed because it pre-picked hundreds of words
-            # nobody chose; this returns nothing for most batches, which is the point.
-            traps = self._hidden_traps(all_segments, job_id)
+            # material_kind decides which question gets asked: native speech is scanned for
+            # senses that are wrong HERE, a lesson for expressions that would still stop the
+            # learner once the explanation is gone.
+            traps = self._hidden_traps(all_segments, material_kind)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
             self.repo.replace_learning_content(episode.id, chapters, sentences, traps)
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
@@ -563,55 +663,108 @@ class ImportPipeline:
     # the old version's thread pool existed for a workload that no longer exists.
     TRAP_BATCH = 40
 
-    def _hidden_traps(self, sentences: list[TranscriptSegment], job_id: int) -> list[dict]:
-        """The two invisible failure kinds, across the whole transcript.
+    # Shapes no expression has, checkable without a model call. Each was a real result:
+    # "P level" and "M Club" are a parking sign and a lounge brand; "Stay close to me" and
+    # "I want to see where you go" are whole lines of dialogue from a graded story.
+    LABEL = re.compile(r"^[A-Z]$")
+    IMPERATIVE = re.compile(r"^(stay|come|let|go|don't|do not|please)\b", re.IGNORECASE)
+    PARTICLE_END = re.compile(r"\b(through|off|on|in|out|up|down|with|for)$", re.IGNORECASE)
+
+    @classmethod
+    def _mechanically_rejected(cls, text: str) -> str | None:
+        """Why this cannot be a studiable expression, or None if it might be."""
+        words = text.split()
+        if not words:
+            return "empty"
+        if any(cls.LABEL.fullmatch(word) for word in words):
+            return "label"
+        # Longer than four words is a clause, not something reused in another sentence.
+        if len(words) > 4:
+            return "sentence"
+        # An instruction to the listener. Excluded only when it does NOT end in a particle,
+        # so "go through" and "drop off" survive while "stay together" does not.
+        if cls.IMPERATIVE.match(text) and len(words) > 1 and not cls.PARTICLE_END.search(text):
+            return "imperative"
+        # A capital inside the phrase is a name. "I" is the one ordinary exception.
+        if len(words) > 1 and any(
+            word[:1].isupper() and word.lower() != "i" for word in words[1:]
+        ):
+            return "proper noun"
+        return None
+
+    def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str) -> list[dict]:
+        """The expressions worth a card, across the whole transcript.
 
         Never raises: a scan that fails costs the learner nothing they had before, while a
-        raised exception would cost the import. Same reasoning as `_material_kind`.
+        raised exception would cost them the transcript, translation and audio they waited
+        for. Same reasoning as `_material_kind`.
         """
+        teaching = material_kind == "teaching"
         found: list[dict] = []
+        # Verdicts by text, NOT a seen-set that skips repeats. The store merges items by text
+        # into one expression and anchors an occurrence per reported position, so dropping a
+        # phrase's second appearance highlights only its first. This caches the two
+        # verification calls instead, which is what deduping was actually for.
+        verdicts: dict[str, bool] = {}
         for start in range(0, len(sentences), self.TRAP_BATCH):
             batch = sentences[start:start + self.TRAP_BATCH]
+            # AttributeError is NOT one of the failures worth absorbing: it means the
+            # adapter has no such method, which is a wiring mistake rather than a flaky
+            # provider. Swallowed, it produced a complete import with zero cards and no
+            # trace anywhere — I put both methods on the Protocol instead of the adapter
+            # and this except turned that into "the material contains nothing".
             try:
-                items = self.ai.hidden_traps(batch)
+                items = (self.ai.teaching_traps(batch) if teaching
+                         else self.ai.hidden_traps(batch))
+            except AttributeError:
+                raise
             except Exception:
                 continue
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                # Only the two kinds. A model handed a category list fills it, so anything
-                # else it decided to include is dropped rather than trusted.
-                kind = item.get("kind")
-                if kind not in ("shifted", "set_phrase"):
+                if item.get("kind") not in ("shifted", "set_phrase"):
                     continue
                 text = str(item.get("text") or "").strip()
                 if not text:
                     continue
-                # The scan's field names are not the store's. The card reads 整块 from
-                # `restored`, 容易理解成 from `heard_as`, 怎么用 from `when_to_use` — mapping
-                # here is the difference between a full card and three empty sections.
+                if self._mechanically_rejected(text):
+                    continue
+                normalised = " ".join(text.casefold().split())
+                meaning = str(item.get("chinese") or "").strip()
+                # Only teaching material needs this. Native speech is filtered by "is the
+                # everyday sense wrong HERE", which a compositional phrase fails on its own;
+                # a lesson has no such signal, so the parts are compared to the whole.
+                if teaching and meaning:
+                    if normalised not in verdicts:
+                        try:
+                            verdicts[normalised] = self.ai.is_compositional(text, meaning)
+                        except Exception:
+                            # Unverified rather than rejected: the finder already had a reason
+                            # to report it, and a failed check is not evidence against it.
+                            verdicts[normalised] = False
+                    if verdicts[normalised]:
+                        continue
                 try:
                     position = int(item.get("sentence_position", 0)) + start
                 except (TypeError, ValueError):
-                    # Position is a hint only: the store locates by searching for the text,
-                    # so an unusable index costs the highlight nothing.
+                    # A hint only — the store locates by searching for the text.
                     position = start
                 found.append({
                     "text": text,
                     "type": "phrase",
                     "chinese": item.get("chinese"),
                     "example": item.get("example"),
-                    # NOT NULL in the schema, and a quote a learner cannot read is no
-                    # example at all — so it is asked for rather than defaulted to blank.
                     "example_chinese": item.get("example_chinese") or "",
+                    # The scan's field names are not the store's. The card reads 整块 from
+                    # `restored`, 容易理解成 from `heard_as`, 怎么用 from `when_to_use`; a
+                    # mapping slip renders three empty sections while failing nothing.
                     "restored": item.get("sense_group"),
                     "when_to_use": item.get("usage"),
                     "heard_as": item.get("literal"),
                     "sentence_position": position,
-                    # "auto" and not a third word: it is the column default, the schema
-                    # default, the iOS default and what the existing rows already say.
-                    # Only "manual" survives a reprocess, so any other value would behave
-                    # identically here while giving the client one more thing to match on.
+                    # "auto" and not a third word: it is the column, schema and iOS default,
+                    # and only "manual" is ever treated specially.
                     "source": "auto",
                 })
         return found

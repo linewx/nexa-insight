@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from nexa_insight_api.models import Episode, ImportJob
-from nexa_insight_api.pipeline import ImportPipeline, MediaMetadata, TranscriptSegment, YtDlpMediaAdapter
+from nexa_insight_api.pipeline import ImportPipeline, MediaMetadata, OpenAIAdapter, TranscriptSegment, YtDlpMediaAdapter
 from nexa_insight_api.settings import Settings
 
 
@@ -66,6 +66,14 @@ class FakeAI:
             "example_chinese": "\u4f60\u597d\uff0c\u4e16\u754c\u3002",
             "sentence_position": 0,
         }]
+
+    # A lesson is scanned with a different question, so the fake has to answer both or the
+    # teaching path silently returns nothing — which the broad `except` would hide.
+    def teaching_traps(self, sentences):
+        return self.hidden_traps(sentences)
+
+    def is_compositional(self, text, meaning):
+        return False
 
 class FlakyAI(FakeAI):
     def translate(self, texts):
@@ -405,6 +413,115 @@ def test_scan_shifts_batch_positions_into_transcript_numbering(repo, tmp_path):
     assert anchored == [1, target]
 
 
+# The teaching path asks a different question, and routing to the wrong one is silent: a
+# lesson scanned with "would they misread it HERE" returns nothing, because the speaker just
+# explained it. Measured at 0 items on a hotel vlog that plainly contains "card on file".
+class RoutingAI(FakeAI):
+    def __init__(self, kind):
+        self.kind = kind
+        self.asked = []
+
+    def classify_material(self, sentences):
+        return self.kind
+
+    def hidden_traps(self, sentences):
+        self.asked.append("native")
+        return []
+
+    def teaching_traps(self, sentences):
+        self.asked.append("teaching")
+        return []
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+def test_a_lesson_is_scanned_with_the_teaching_question(repo, tmp_path):
+    episode_id, job_id = _seed(repo)
+    ai = RoutingAI("teaching")
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+    assert set(ai.asked) == {"teaching"}
+
+
+def test_native_speech_is_scanned_with_the_misreading_question(repo, tmp_path):
+    episode_id, job_id = _seed(repo)
+    ai = RoutingAI("native")
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+    assert set(ai.asked) == {"native"}
+
+
+class CompositionalAI(FakeAI):
+    """Reports one phrase whose parts add up and one whose parts do not."""
+
+    def __init__(self):
+        self.checked = []
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        return [
+            {"text": "mini bar", "kind": "set_phrase", "chinese": "\u8ff7\u4f60\u5427",
+             "example": "Hello world.", "example_chinese": "x", "sentence_position": 0},
+            {"text": "card on file", "kind": "set_phrase", "chinese": "\u5df2\u5b58\u6863\u7684\u5361",
+             "example": "Hello world.", "example_chinese": "x", "sentence_position": 0},
+        ]
+
+    def is_compositional(self, text, meaning):
+        self.checked.append(text)
+        # "mini" + "bar" assembles to the right meaning; "card on file" does not.
+        return text == "mini bar"
+
+
+def test_teaching_drops_expressions_whose_parts_add_up(repo, tmp_path):
+    """A lesson has no "wrong here" signal, so the filter is whether the words, glossed
+    separately, already give the meaning. Without it the scan keeps hotel jargon a learner
+    assembles correctly on first meeting."""
+    episode_id, job_id = _seed(repo)
+    ai = CompositionalAI()
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    assert [e.text for e in repo.list_learning_expressions(episode_id)] == ["card on file"]
+    assert ai.checked == ["mini bar", "card on file"], "each candidate is checked once"
+
+
+class ShapesAI(FakeAI):
+    """Everything here was a real result from a real transcript."""
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        def item(text):
+            return {"text": text, "kind": "set_phrase", "chinese": "x",
+                    "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
+        return [item(t) for t in [
+            "P level",                      # a parking sign
+            "M Club",                       # a hotel lounge brand
+            "Stay close to me",             # a line of dialogue, not a phrase
+            "I want to see where you go",   # a whole sentence
+            "go through",                   # keep: particle verb, parts mislead
+            "drop off",                     # keep: same shape
+        ]]
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+def test_labels_names_and_whole_sentences_are_rejected_without_a_model_call(repo, tmp_path):
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ShapesAI()).run(job_id)
+
+    kept = {e.text for e in repo.list_learning_expressions(episode_id)}
+    assert kept == {"go through", "drop off"}, (
+        "an imperative ending in a particle must survive; a bare imperative must not"
+    )
+
+
 class ExplodingScanAI(FakeAI):
     def hidden_traps(self, sentences):
         raise RuntimeError("the scan provider is down")
@@ -420,6 +537,23 @@ def test_a_failed_scan_costs_the_import_nothing(repo, tmp_path):
     assert repo.get_episode(episode_id).status == "ready"
     assert repo.get_job(job_id).status == "complete"
     assert repo.list_learning_expressions(episode_id) == []
+
+
+# The parenthetical is why two transparent compounds survived the filter on a real
+# transcript. "mini bar" glossed word-by-word is 小型的酒吧, and against 迷你吧 the comparison
+# correctly says "same" — but the finder returns 迷你吧（酒店房间内收费的小冰箱）, and the aside
+# describes the thing rather than translating it, so any two strings look different.
+def test_core_meaning_drops_the_explanatory_aside():
+    core = OpenAIAdapter._core_meaning
+    assert core("迷你吧（酒店房间内收费的小冰箱）") == "迷你吧"
+    assert core("客房服务（酒店提供的送餐到房间的服务）") == "客房服务"
+    # Several senses is not one meaning; the comparison takes the first.
+    assert core("已存档；已登记在系统中") == "已存档"
+    assert core("退房；查看；检查") == "退房"
+    # Nothing to strip leaves the meaning alone, and a meaning that is ONLY an aside is
+    # kept rather than reduced to nothing.
+    assert core("支付押金") == "支付押金"
+    assert core("（无）") == "（无）"
 
 
 def test_media_adapter_finds_homebrew_tools_when_launchd_path_is_minimal():
