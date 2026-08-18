@@ -89,6 +89,8 @@ final class ClassroomController: ObservableObject {
     // hold. A press with nothing said must not hand the floor to the teacher —
     // there will be no response, so the floor would stick on .teacher forever.
     private var heardSpeechThisTurn = false
+    /// Waits out a late speech_started before declaring a hold silent. See releaseQuickAsk.
+    private var noSpeechGrace: Task<Void, Never>?
     // True while the finger is down in quick-ask. The server can commit a turn
     // mid-hold (it commits on trailing silence, e.g. a pause while thinking); that
     // must NOT hand the floor over and close the mic, or the rest of the sentence
@@ -244,6 +246,8 @@ final class ClassroomController: ObservableObject {
             // (quick-ask, reading) already took the floor on press.
             if scene == .live { grantFloor(to: .user, resumeAtMs: nil) }
         case .inputAudioCommitted:
+            // The server took the turn, so any pending "nothing was said" verdict is wrong.
+            noSpeechGrace?.cancel()
             // The server has taken this turn, so the mic has done its job. In
             // quick-ask close it now — the finger is already up, and leaving it
             // open is what let the teacher's own voice trip the VAD and chain
@@ -443,11 +447,31 @@ final class ClassroomController: ObservableObject {
         // normally hands it back never arrives). Just stop where we are — podcast
         // stays paused at the frozen spot, waiting for the learner.
         guard heardSpeechThisTurn else {
-            NexaLog.log("releaseQuickAsk with no speech -> holding at \(self.frozenPositionMs ?? -1)ms")
-            transport.cancelTurn()
-            applyFloorEvent(.nothingSaid)
+            // No speech_started YET — which is not the same as nothing being said.
+            //
+            // The comment below admits speech_stopped and committed arrive after the finger
+            // lifts; speech_started can be late for the same reason, on a short hold or a slow
+            // link. Calling cancelTurn() here threw the audio away and closed the mic, so the
+            // server never committed and .inputAudioCommitted — which exists precisely to
+            // reconcile a missed speech_started — could never fire. Result: "Live 等你开口"
+            // forever, with the turn already discarded.
+            //
+            // So give the server a moment to disagree. The mic stays open and the buffer
+            // intact; if a commit lands, the normal path takes over and this timer finds
+            // heardSpeechThisTurn true and does nothing.
+            NexaLog.log("releaseQuickAsk with no speech yet -> waiting for a late commit")
+            noSpeechGrace?.cancel()
+            noSpeechGrace = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, !Task.isCancelled, !self.heardSpeechThisTurn,
+                      !self.holdingQuickAsk else { return }
+                NexaLog.log("no commit after grace -> holding at \(self.frozenPositionMs ?? -1)ms")
+                self.transport.cancelTurn()
+                self.applyFloorEvent(.nothingSaid)
+            }
             return
         }
+        noSpeechGrace?.cancel()
         state = classroomReducer(state, .discussionStarted)
         transport.endTurnAndRespond()
         // Normally the mic must stay OPEN past this point: the server ends a turn by

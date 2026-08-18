@@ -211,17 +211,38 @@ final class ClassroomControllerTests: XCTestCase {
     }
 
     // A press with nothing said gets no response, so handing the floor to the
-    // teacher would strand it there. Hold position instead.
-    func testReleaseWithoutSpeechHoldsInsteadOfWaitingForTeacher() {
+    // teacher would strand it there. Hold position instead — but only after giving the
+    // server a chance to disagree, because speech_started can arrive after the finger lifts.
+    func testReleaseWithoutSpeechHoldsInsteadOfWaitingForTeacher() async throws {
         let (c, playback, transport, _) = make()
         playback.currentMs = 2100
         c.pressQuickAsk()
         c.releaseQuickAsk()               // released without any speechStarted
+        // Not cancelled yet: the audio is still in the server's buffer, and throwing it away
+        // here is what left the UI on "Live 等你开口" with the turn already gone.
+        XCTAssertEqual(transport.cancelledTurns, 0, "verdict is deferred, not immediate")
+        try await Task.sleep(nanoseconds: 1_800_000_000)
         XCTAssertEqual(c.floor, .idle)
         XCTAssertEqual(transport.endedTurns, 0)   // no turn committed
         XCTAssertEqual(transport.cancelledTurns, 1)
         XCTAssertEqual(c.frozenPositionMs, 2100)  // stays put
         XCTAssertFalse(playback.didPlay)          // does not resume on its own
+    }
+
+    // The case that broke it: the server's speech_started lands AFTER the finger lifts, which
+    // the code's own comment says happens for speech_stopped and committed. Cancelling on
+    // release threw the audio away, so the commit never came and .inputAudioCommitted — which
+    // exists to reconcile exactly this — could never fire.
+    func testALateCommitStillReachesTheTeacher() async throws {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.releaseQuickAsk()                       // no speechStarted yet
+        c.handleRealtimeEvent(.speechStarted)     // ...arrives late
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        try await Task.sleep(nanoseconds: 1_800_000_000)
+        XCTAssertEqual(transport.cancelledTurns, 0, "a real turn must not be cancelled")
+        XCTAssertEqual(c.floor, .teacher, "the answer is coming, so the floor is the teacher's")
     }
 
     // The transport controls used to call playback.play() directly, so starting

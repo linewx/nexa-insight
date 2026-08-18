@@ -1334,6 +1334,13 @@ private struct DiscussionBar: View {
                     onLiveUnavailable: {
                         session.showNotice(liveUnavailableMessage(player.currentRoute()))
                     },
+                    // Asked at press time, not at layout time: a channel that was alive when
+                    // the dock drew may be dead by the time a finger lands on it.
+                    canCarryATurn: { session.canCarryATurn },
+                    onCannotCarry: {
+                        session.showNotice("\u{8bfe}\u{5802}\u{8fde}\u{63a5}\u{5df2}\u{65ad}\u{5f00}\u{ff0c}\u{6b63}\u{5728}\u{91cd}\u{8fde}")
+                        Task { await session.reconnectIfNeeded() }
+                    },
                     playing: player.playbackState == .playing,
                     // A class is connected here, so playback goes through the
                     // controller: taking the floor for the podcast is what
@@ -1391,6 +1398,13 @@ private struct ConnectedBarContent: View {
     // Evaluated at tap time: headphones can be plugged or unplugged at any point.
     var liveAvailable: () -> Bool = { false }
     var onLiveUnavailable: () -> Void = {}
+    /// Whether the session can still carry a turn, asked at press time.
+    ///
+    /// The server drops an idle stream after 300s. The reading path already refuses a hold on
+    /// a dead channel and says so; this one went ahead, so the hold vanished with the UI still
+    /// reading Live — indistinguishable from the app ignoring the gesture.
+    var canCarryATurn: () -> Bool = { true }
+    var onCannotCarry: () -> Void = {}
     // Playback state and intents for the in-dock play button.
     var playing: Bool = false
     var onPlayIntent: () -> Void = {}
@@ -1602,6 +1616,10 @@ private struct ConnectedBarContent: View {
             .onChanged { value in
                 guard case let .second(true, drag) = value else { return }
                 if !talking {
+                    guard canCarryATurn() else {
+                        onCannotCarry()
+                        return
+                    }
                     talking = true
                     cancelArmed = false
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
