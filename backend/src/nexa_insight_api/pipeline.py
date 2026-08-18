@@ -1151,9 +1151,21 @@ class ImportPipeline:
                     "_key": normalised,
                 })
 
-        # Mis-transcriptions, in one call for everything found. The "coined" kind legitimises
+        # Mis-transcriptions, in ONE call for everything found. The "coined" kind legitimises
         # exactly what a garbled word looks like, so "palunteer" (Palantir) and "onrem"
-        # (on-prem) became cards on a real run. Batched because this is a spelling question.
+        # (on-prem) became cards on a real run.
+        #
+        # The single call is a deliberate choice, not laziness — do not "optimise" it into
+        # smaller batches. Measured on 177 real cards: one call flags 4 items, batches of 30
+        # flag 9. The extra 5 include real mis-transcriptions ("RF farming", "ramp data") AND
+        # three of the episode's best cards ("buttered slippery slide", "long tale of buyers",
+        # "zoom out his policy").
+        #
+        # The two categories are not separable by shape: "ramp data" and "magic box" look
+        # identical to a model, and asking about them together it kept all 7 real coinages while
+        # missing 5 garbled words. So the error is chosen rather than eliminated — a surviving
+        # "monopsiny" costs one puzzling card, while a deleted coinage costs the thing the
+        # native scan exists to find.
         if found:
             try:
                 garbled = self.ai.garbled(sorted({item["text"] for item in found}))

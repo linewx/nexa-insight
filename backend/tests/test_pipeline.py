@@ -753,6 +753,11 @@ def test_a_mis_transcription_is_not_a_card(repo, tmp_path):
 
     stored = {e.text for e in repo.list_learning_expressions(episode_id)}
     assert stored == {"world"}, "the mis-transcription is dropped, the real expression kept"
+    # ONE call, deliberately. Measured on 177 real cards: one call flags 4 items, batches of 30
+    # flag 9 — and the extra 5 include three of the episode's best coinages ("buttered slippery
+    # slide", "long tale of buyers", "zoom out his policy") alongside real garbled words. The
+    # two categories are not separable by shape, so the error is chosen: a surviving
+    # "monopsiny" costs one puzzling card, a deleted coinage costs what the scan exists to find.
     assert ai.asked == [["hello", "world"]], "one call for everything found, not one per item"
 
 
