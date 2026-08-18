@@ -54,6 +54,11 @@ class FakeAI:
     def chapters(self, sentences):
         return [{"title": "All", "summary": "whole", "start_ms": 0, "end_ms": 4000}]
 
+    def garbled(self, texts):
+        # Nothing here is a mis-transcription. Real adapters ask the model; fixtures that want
+        # to exercise the filter override this.
+        return set()
+
     def hidden_traps(self, sentences):
         # One shifted sense in the first line of every batch, so remapping is observable.
         return [{
@@ -442,7 +447,7 @@ class SamplingAI(FakeAI):
         return [{
             # Lifted from the passage: grounding drops anything absent from it, and a
             # fabricated "phrase 7" is exactly what that check exists to catch.
-            "text": "Hello" if number % 2 else "world", "kind": "set_phrase", "chinese": f"x{number}",
+            "text": "hello" if number % 2 else "world", "kind": "set_phrase", "chinese": f"x{number}",
             "example": "Hello world.", "example_chinese": "y", "sentence_position": 0,
         }]
 
@@ -577,7 +582,7 @@ def test_each_batch_is_scanned_several_times_and_the_union_kept():
     # produced which item is not a thing this test should pin.
     # Every pass contributes, and the union is kept rather than the last result. The fixture
     # alternates between two words of the passage, so three passes yield both.
-    assert sorted({f["text"] for f in found}) == ["Hello", "world"]
+    assert sorted({f["text"] for f in found}) == ["hello", "world"]
 
 
 class BatchPositionAI(FakeAI):
@@ -668,12 +673,14 @@ class NativeKindsAI(FakeAI):
             return {"text": text, "kind": kind, "chinese": "x",
                     "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
         return [
-            item("Hello", "shifted"),
+            # Lowercase: a single capitalised word is rejected as a name, which is what stops
+            # "Palanteer" and "Neotron" becoming cards.
+            item("hello", "shifted"),
             item("world", "set_phrase"),
-            item("Goodbye", "coined"),      # a term the speaker made up for this discussion
-            item("Hello world", "unsayable"),  # followed but not producible
+            item("goodbye", "coined"),      # a term the speaker made up for this discussion
+            item("hello world", "unsayable"),  # followed but not producible
             # A pattern is a production tool, so native material must not yield one.
-            item("Hello ___", "pattern"),
+            item("hello ___", "pattern"),
             # Absent from the passage: the model echoing a prompt example back as a finding.
             item("blindsided", "unsayable"),
         ]
@@ -689,13 +696,64 @@ def test_native_speech_yields_coined_and_unsayable_but_not_patterns(repo, tmp_pa
     ImportPipeline(repo, settings, FakeMedia(tmp_path), NativeKindsAI()).run(job_id)
 
     stored = {e.text: e.type for e in repo.list_learning_expressions(episode_id)}
-    assert set(stored) == {"Hello", "world", "Goodbye", "Hello world"}, (
+    assert set(stored) == {"hello", "world", "goodbye", "hello world"}, (
         "coined and unsayable are kept; a pattern is teaching-only; an absent expression is "
         "dropped"
     )
     # Both map onto types iOS already treats as comprehension aids.
-    assert stored["Goodbye"] == "reference"
-    assert stored["Hello world"] == "idiom"
+    assert stored["goodbye"] == "reference"
+    assert stored["hello world"] == "idiom"
+
+
+def test_a_single_capitalised_word_is_a_name():
+    """The proper-noun rule only looked from the SECOND word on, so a lone capitalised word
+    passed — and "Palanteer" (Palantir), "Neotron" (Nvidia) and "ROCE" all became cards on a
+    real native run. The transcript is machine-punctuated, so a mid-sentence capital is a name."""
+    rejected = ImportPipeline._mechanically_rejected
+    assert rejected("Palanteer") == "proper noun"
+    assert rejected("Neotron") == "proper noun"
+    assert rejected("ROCE") == "proper noun"
+    # Real expressions are lowercase in a transcript and must survive.
+    for text in ["blindsided", "hoover up", "codified", "alpha", "rocket docket",
+                 "intelligence sovereignty"]:
+        assert rejected(text) is None, text
+
+
+class GarbledAI(FakeAI):
+    """One mis-transcription among real expressions."""
+
+    def __init__(self):
+        self.asked: list[list[str]] = []
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        def item(text, kind):
+            return {"text": text, "kind": kind, "chinese": "x",
+                    "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
+        return [item("world", "set_phrase"), item("hello", "coined")]
+
+    def garbled(self, texts):
+        self.asked.append(sorted(texts))
+        return {"hello"}
+
+
+def test_a_mis_transcription_is_not_a_card(repo, tmp_path):
+    """The "coined" kind legitimises exactly what a garbled word looks like — a made-up-sounding
+    term — so "palunteer" (Palantir), "onrem" (on-prem) and "obiated" became cards on a real
+    run. Asked in ONE batched call, since this is a spelling question rather than a judgement.
+
+    A dictionary was the obvious tool and the wrong one: /usr/share/dict/words rejects
+    "blindsided", "codified" and "clunky" while accepting "alpha"."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = GarbledAI()
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    stored = {e.text for e in repo.list_learning_expressions(episode_id)}
+    assert stored == {"world"}, "the mis-transcription is dropped, the real expression kept"
+    assert ai.asked == [["hello", "world"]], "one call for everything found, not one per item"
 
 
 def test_an_expression_absent_from_the_passage_is_dropped():

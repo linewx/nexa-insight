@@ -53,6 +53,7 @@ class AIAdapter(Protocol):
     def hidden_traps(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
     def teaching_traps(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
     def is_compositional(self, text: str, meaning: str) -> bool: ...
+    def garbled(self, texts: list[str]) -> set[str]: ...
 
 
 class YtDlpMediaAdapter:
@@ -429,6 +430,37 @@ class OpenAIAdapter:
         payload = [{"position": i, "text": s.text} for i, s in enumerate(sentences)]
         return self._expression_list(self._json(self.TEACHING_TRAPS, {"sentences": payload}))
 
+    GARBLED = (
+        "Each item below was pulled from an automatic transcript. Say which ones are not real "
+        'English — a mis-transcribed name or word, where the speaker said something else '
+        '("onrem" for "on-prem", "Palanteer" for "Palantir").\n'
+        "Real English includes rare words, jargon, and terms a speaker coined deliberately.\n"
+        'Return JSON {"garbled": [the items that are mis-transcriptions]}.'
+    )
+
+    def garbled(self, texts: list[str]) -> set[str]:
+        """Which of these are transcription errors rather than English.
+
+        One call for the whole batch, because this is a cheap yes/no about spelling rather than
+        a judgement about worth. Needed because the "coined" kind legitimises exactly what a
+        garbled word looks like — a made-up-sounding term — and "palunteer" (Palantir),
+        "onrem" (on-prem) and "obiated" all became cards on a real run.
+
+        A dictionary was the obvious tool and the wrong one: /usr/share/dict/words rejects
+        "blindsided", "codified" and "clunky" while accepting "alpha".
+        """
+        if not texts:
+            return set()
+        try:
+            result = self._json(self.GARBLED, {"items": texts})
+        except Exception:
+            # Unchecked, not condemned: the finder had a reason to report these.
+            return set()
+        listed = result.get("garbled") if isinstance(result, dict) else result
+        if not isinstance(listed, list):
+            return set()
+        return {str(item) for item in listed if isinstance(item, str)}
+
     def is_compositional(self, text: str, meaning: str) -> bool:
         """True when the learner would produce this expression themselves.
 
@@ -780,6 +812,12 @@ class ImportPipeline:
             word[:1].isupper() and word.lower() != "i" for word in words[1:]
         ):
             return "proper noun"
+        # A SINGLE capitalised word is also a name, and this rule only looked from the second
+        # word on — so "Palanteer" and "Neotron" (garbled Palantir and Nvidia) became cards.
+        # The transcript capitalises mid-sentence words only for names, since it is machine
+        # punctuation rather than prose.
+        if len(words) == 1 and words[0][:1].isupper() and words[0].lower() != "i":
+            return "proper noun"
         if kind == "pattern":
             return cls._weak_frame(text)
         return None
@@ -1075,6 +1113,20 @@ class ImportPipeline:
                     # returning — the store rejects keys it does not know.
                     "_key": normalised,
                 })
+
+        # Mis-transcriptions, in one call for everything found. The "coined" kind legitimises
+        # exactly what a garbled word looks like, so "palunteer" (Palantir) and "onrem"
+        # (on-prem) became cards on a real run. Batched because this is a spelling question.
+        if found:
+            try:
+                garbled = self.ai.garbled(sorted({item["text"] for item in found}))
+            except AttributeError:
+                raise
+            except Exception:
+                # Unchecked, not condemned: the finder had a reason to report these.
+                garbled = set()
+            if garbled:
+                found = [item for item in found if item["text"] not in garbled]
 
         # Verification, all at once. Each candidate costs two model calls, and unique
         # candidates outnumber finder calls several times over, so this is where the stage's
