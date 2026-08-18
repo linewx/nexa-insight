@@ -518,12 +518,12 @@ class ImportPipeline:
                     session.commit()
                 self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
                 return
-            self.repo.upsert_job(job_id, stage="transcription", progress=30)
+            self.repo.upsert_job(job_id, stage="transcription", progress=16)
             source_captions, _ = self.media.captions(episode.source_url, root / "captions")
             all_segments = source_captions
             if not all_segments:
                 parts = self.media.split_audio(audio, root / "chunks")
-                self.repo.upsert_job(job_id, stage="transcription", progress=30)
+                self.repo.upsert_job(job_id, stage="transcription", progress=17)
                 completed = self.repo.completed_chunks(job_id)
                 for index, part in enumerate(parts):
                     if index in completed:
@@ -533,7 +533,11 @@ class ImportPipeline:
                         segments = self.ai.transcribe(part, index * self.CHUNK_MS)
                         self.repo.save_chunk(job_id, index, index * self.CHUNK_MS, (index + 1) * self.CHUNK_MS, str(part), json.dumps([asdict(s) for s in segments]))
                     all_segments.extend(segments)
-            self.repo.upsert_job(job_id, stage="translation", progress=70)
+            # 20, not 70. The old numbers were assigned by stage ORDER rather than by how long
+            # a stage takes, so the bar reached 88% eight seconds into a 124-second import and
+            # then crawled. Measured shares on a reprocess: chapters 29% of the wait, the scan
+            # 65%. These percentages now follow that.
+            self.repo.upsert_job(job_id, stage="translation", progress=20)
             # Always translate each source sentence directly. Reusing YouTube's
             # zh-Hans auto-caption track (the old _align_chinese path) time-aligned
             # two INDEPENDENT caption timelines by interval overlap, which both
@@ -542,10 +546,14 @@ class ImportPipeline:
             # diverge over the episode). AI per-sentence translation is 1:1 by
             # construction — no duplication, no drift.
             translations = self._translate(all_segments, root / "translations", job_id)
-            self.repo.upsert_job(job_id, stage="indexing", progress=88)
+            self.repo.upsert_job(job_id, stage="indexing", progress=30)
             chapters = self._chapters(all_segments)
-            self.repo.upsert_job(job_id, stage="learning", progress=94)
+            # 36 between the two, because each of these is ONE model call and cannot report
+            # partway through. Splitting the span at least distinguishes "still chaptering"
+            # from "chaptering done, classifying" instead of one 29-second flat spot.
+            self.repo.upsert_job(job_id, stage="indexing", progress=36)
             material_kind = self._material_kind(all_segments)
+            self.repo.upsert_job(job_id, stage="learning", progress=40)
             self.repo.set_material_kind(episode.id, material_kind)
             # Scanned for the two failures a learner cannot ask about, and nothing else.
             # The full extraction this replaced pre-picked hundreds of expressions per
@@ -555,7 +563,7 @@ class ImportPipeline:
             # material_kind decides which question gets asked: native speech is scanned for
             # senses that are wrong HERE, a lesson for expressions that would still stop the
             # learner once the explanation is gone.
-            traps = self._hidden_traps(all_segments, material_kind)
+            traps = self._hidden_traps(all_segments, material_kind, job_id)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
             self.repo.replace_learning_content(episode.id, chapters, sentences, traps)
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
@@ -584,7 +592,7 @@ class ImportPipeline:
                 pending.append((batch_index, texts, cache_path))
 
         completed = total_batches - len(pending)
-        self.repo.upsert_job(job_id, stage="translation", progress=70 + int(19 * completed / total_batches))
+        self.repo.upsert_job(job_id, stage="translation", progress=20 + int(10 * completed / total_batches))
         if pending:
             workers = max(1, min(self.settings.translation_concurrency, len(pending)))
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -598,7 +606,7 @@ class ImportPipeline:
                     cache_path.write_text(json.dumps(batch, ensure_ascii=False))
                     batches[batch_index] = batch
                     completed += 1
-                    progress = 70 + int(19 * completed / total_batches)
+                    progress = 20 + int(10 * completed / total_batches)
                     self.repo.upsert_job(job_id, stage="translation", progress=progress)
 
         translated: list[str] = []
@@ -841,6 +849,21 @@ class ImportPipeline:
             return False
         return all(seg in haystack for seg in meaningful)
 
+    def _report(self, job_id: int | None, stage: str, progress: int) -> None:
+        """Progress, if there is a job to report it against.
+
+        Optional because `_hidden_traps` is called directly in tests, where there is no job
+        row — and a scan must never fail for want of somewhere to report to. Writes are
+        best-effort for the same reason: this is called from a completion loop, and losing the
+        bar is not worth losing the import.
+        """
+        if job_id is None:
+            return
+        try:
+            self.repo.upsert_job(job_id, stage=stage, progress=progress)
+        except Exception:
+            pass
+
     def _scan_once(self, batch: list[TranscriptSegment], teaching: bool) -> list:
         """One finder call. Runs on a worker thread, so it must not touch shared state.
 
@@ -858,12 +881,17 @@ class ImportPipeline:
             # One failed pass costs a little coverage; the other passes still ran.
             return []
 
-    def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str) -> list[dict]:
+    def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str,
+                      job_id: int | None = None) -> list[dict]:
         """The expressions worth a card, across the whole transcript.
 
         Never raises: a scan that fails costs the learner nothing they had before, while a
         raised exception would cost them the transcript, translation and audio they waited
         for. Same reasoning as `_material_kind`.
+
+        Reports progress across 40..99 as work completes. This is 65% of an import's wall
+        clock, and it used to set 40% once and then say nothing for a minute — a frozen bar
+        is indistinguishable from a hung import.
         """
         teaching = material_kind == "teaching"
         found: list[dict] = []
@@ -903,8 +931,13 @@ class ImportPipeline:
                                     sentences[start:start + self.TRAP_BATCH], teaching): (start, attempt)
                     for start, attempt in jobs
                 }
+                done = 0
                 for future in as_completed(futures):
                     results[futures[future]] = future.result()
+                    done += 1
+                    # 40..70 for finding. Reported as calls LAND rather than as batches start,
+                    # so the bar tracks work rather than intent.
+                    self._report(job_id, "learning", 40 + int(30 * done / len(jobs)))
         scanned: dict[int, list] = {
             start: [item
                     for attempt in range(self.TRAP_PASSES)
@@ -1002,8 +1035,14 @@ class ImportPipeline:
                     executor.submit(self._verify_producible, text, meaning): key
                     for key, (text, meaning) in needs_verifying.items()
                 }
+                done = 0
                 for future in as_completed(futures):
                     verdicts[futures[future]] = future.result()
+                    done += 1
+                    # 70..99. Never 100 from here: the store still has to write everything, and
+                    # a bar that reads 100% while work continues is the complaint this fixes.
+                    self._report(job_id, "learning",
+                                 70 + int(29 * done / len(needs_verifying)))
 
         # `_key` is dropped here whether or not it was verified, so a row can never reach the
         # store carrying it.

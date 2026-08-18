@@ -153,6 +153,60 @@ def _seed_audio_backfill(repo):
         return episode.id, job.id
 
 
+class ProgressRecordingRepo:
+    """Wraps a repo and records every progress write, in order."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.reports: list[tuple[str, int]] = []
+
+    def upsert_job(self, job_id, *, stage, progress, status="running", error=None):
+        self.reports.append((stage, progress))
+        return self._inner.upsert_job(job_id, stage=stage, progress=progress,
+                                      status=status, error=error)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class ManyCandidatesAI(FakeAI):
+    """Enough candidates that the scan has something to report progress across."""
+
+    def classify_material(self, sentences):
+        return "teaching"
+
+    def teaching_traps(self, sentences):
+        return [{"text": f"phrase {n}", "kind": "set_phrase", "chinese": f"x{n}",
+                 "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
+                for n in range(4)]
+
+    def is_compositional(self, text, meaning):
+        return False
+
+
+def test_progress_never_goes_backwards_and_never_claims_done_early(repo, tmp_path):
+    """The bar reached 88% eight seconds into a 124-second import and then crawled: the
+    percentages were assigned by stage ORDER rather than by measured duration, and the scan —
+    65% of the wall clock — set one value and then reported nothing for a minute. A frozen bar
+    is indistinguishable from a hung import."""
+    episode_id, job_id = _seed(repo)
+    recording = ProgressRecordingRepo(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(recording, settings, FakeMedia(tmp_path), ManyCandidatesAI()).run(job_id)
+
+    values = [progress for _, progress in recording.reports]
+    assert values, "the pipeline reports progress"
+    assert values == sorted(values), f"progress must not go backwards: {values}"
+    # 100 is reported exactly once, at the end — not before the store has written anything.
+    assert values[-1] == 100
+    assert values.count(100) == 1, "reaching 100% is what 'finished' means"
+
+    # The scan reports repeatedly rather than once, which is the fix for the frozen bar.
+    during_scan = [p for stage, p in recording.reports if stage == "learning"]
+    assert len(during_scan) > 3, f"the scan must report as it works, got {during_scan}"
+    assert max(during_scan) < 100, "the scan cannot claim the import is done"
+
+
 def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     episode_id, job_id = _seed(repo)
     settings = Settings(_env_file=None, data_dir=tmp_path)
