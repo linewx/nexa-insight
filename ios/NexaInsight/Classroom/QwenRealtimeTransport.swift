@@ -21,6 +21,13 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
     // valid while one is; sending it otherwise draws a "Conversation has none
     // active response" error. Set on response.created, cleared on response.done.
     private var hasActiveResponse = false
+    /// True while a response we CANCELLED is still winding down.
+    ///
+    /// The server sends response.done for a cancelled response too, and that event used to be
+    /// handled as "the teacher finished" — which moved the scene out of the state the learner
+    /// was in. Holding to talk mid-answer therefore showed Live 等你开口 while the controller
+    /// had already been told the turn was over, and nothing responded.
+    private var cancelledResponse = false
 
     /// Open data channel = a turn can still be carried. Deliberately the CHANNEL and not
     /// a flag set at connect time: the flag is what stayed true through the server's idle
@@ -202,6 +209,7 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         // this server rejects with invalid_value.
         guard hasActiveResponse else { return }
         hasActiveResponse = false
+        cancelledResponse = true
         send(["type": "response.cancel"])
     }
 
@@ -249,7 +257,17 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         // the podcast plays) and clear any buffered audio so the turn starts from
         // the moment they pressed, not from podcast bleed before it.
         micTrack?.isEnabled = true
+        // Whether the track EXISTS is the thing worth logging. "Live, 等你开口" with no
+        // response can mean the mic never opened at all — the UI reports the floor, which is
+        // local state, not whether audio is reaching the server.
+        NexaLog.log("beginListening: micTrack=\(micTrack == nil ? "nil" : "enabled") sender=\(micSenderState)")
         send(["type": "input_audio_buffer.clear"])
+    }
+
+    private var micSenderState: String {
+        guard let peer else { return "no-peer" }
+        let senders = peer.senders.filter { $0.track?.kind == "audio" }
+        return "audioSenders=\(senders.count)"
     }
 
     func stopListening() {
@@ -354,11 +372,26 @@ extension QwenRealtimeTransport: RTCDataChannelDelegate {
             case "response.done": self.hasActiveResponse = false
             default: break
             }
+            // A cancelled response still reports response.done, and forwarding it as
+            // "the teacher finished" handed the floor and the scene phase away from a learner
+            // who was mid-hold — the "Live, 等你开口 but no answer" bug.
+            //
+            // Only the TURN-ENDED signal is suppressed. Tool calls ride on this same event
+            // (parseAll digs them out of `output`), and a note the teacher saved a moment
+            // before the cancel must still be written — dropping the frame wholesale would
+            // lose it silently, which is worse than the bug being fixed.
+            let wasCancelled = type == "response.done" && self.cancelledResponse
+            if wasCancelled {
+                self.cancelledResponse = false
+                NexaLog.log("response.done for a CANCELLED response — tool calls only")
+            }
             // parseAll, not parse: a response.done carrying several tool calls used to
             // yield only the first, so the other saves were dropped AND the .responseDone
             // that hands the floor back was never emitted — the teacher appeared to be
             // still speaking forever.
-            for event in RealtimeEventParser.parseAll(json) { self.onEvent?(event) }
+            let parsed = CancelledResponse.forwarded(RealtimeEventParser.parseAll(json),
+                                                     wasCancelled: wasCancelled)
+            for event in parsed { self.onEvent?(event) }
         }
     }
 }
