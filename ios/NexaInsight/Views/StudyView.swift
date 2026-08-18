@@ -901,7 +901,14 @@ private struct StudyWorkspace: View {
             // ScrollView keeps handling the drag.
             .simultaneousGesture(
                 DragGesture(minimumDistance: 12)
-                    .onChanged { _ in onManualScroll() }
+                    .onChanged { value in
+                        // Vertical only. A sideways drag is the notes-drawer swipe (leftward
+                        // past 60pt), and treating that as "reading elsewhere" would drop
+                        // following — and reveal "Back to current" — every time the drawer is
+                        // opened, which has nothing to do with where the transcript is.
+                        guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                        onManualScroll()
+                    }
             )
             .onChange(of: current?.id) { _, newValue in
                 if following, let newValue {
