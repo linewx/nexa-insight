@@ -440,7 +440,9 @@ class SamplingAI(FakeAI):
             number = self.calls
         # One item per pass, never repeating — the observed behaviour, taken to its extreme.
         return [{
-            "text": f"phrase {number}", "kind": "set_phrase", "chinese": "x",
+            # Lifted from the passage: grounding drops anything absent from it, and a
+            # fabricated "phrase 7" is exactly what that check exists to catch.
+            "text": "Hello" if number % 2 else "world", "kind": "set_phrase", "chinese": f"x{number}",
             "example": "Hello world.", "example_chinese": "y", "sentence_position": 0,
         }]
 
@@ -506,7 +508,10 @@ def test_verification_runs_once_per_candidate_and_drops_what_it_rejects(repo, tm
     episode_id, job_id = _seed(repo)
     settings = Settings(_env_file=None, data_dir=tmp_path)
     ai = VerifyingAI()
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+    # Grounded: `_is_grounded` drops an expression absent from its passage.
+    media = FakeMedia(tmp_path)
+    media.caption_texts = ["I keep a card on file.", "The free breakfast is included."]
+    ImportPipeline(repo, settings, media, ai).run(job_id)
 
     stored = [e.text for e in repo.list_learning_expressions(episode_id)]
     assert stored == ["card on file"], "a phrase the learner would already say earns no card"
@@ -522,7 +527,8 @@ def test_internal_dedup_key_never_reaches_the_store():
             return "teaching"
 
         def teaching_traps(self, sentences):
-            return [{"text": "card on file", "kind": "set_phrase", "chinese": "x",
+            # From the passage below, since grounding drops anything absent from it.
+            return [{"text": "Hello world", "kind": "set_phrase", "chinese": "x",
                      "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}]
 
         def is_compositional(self, text, meaning):
@@ -569,9 +575,9 @@ def test_each_batch_is_scanned_several_times_and_the_union_kept():
     assert ai.calls == ImportPipeline.TRAP_PASSES
     # Sorted: the passes complete in whatever order the pool returns them, and which pass
     # produced which item is not a thing this test should pin.
-    assert sorted(f["text"] for f in found) == [
-        f"phrase {n}" for n in range(1, ImportPipeline.TRAP_PASSES + 1)
-    ], "every pass contributes; the union is kept rather than the last result"
+    # Every pass contributes, and the union is kept rather than the last result. The fixture
+    # alternates between two words of the passage, so three passes yield both.
+    assert sorted({f["text"] for f in found}) == ["Hello", "world"]
 
 
 class BatchPositionAI(FakeAI):
@@ -651,6 +657,60 @@ def test_a_lesson_is_scanned_with_the_teaching_question(repo, tmp_path):
     assert set(ai.asked) == {"teaching"}
 
 
+class NativeKindsAI(FakeAI):
+    """The four kinds a native scan may return, plus one the model invented."""
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        def item(text, kind):
+            return {"text": text, "kind": kind, "chinese": "x",
+                    "example": "Hello world.", "example_chinese": "y", "sentence_position": 0}
+        return [
+            item("Hello", "shifted"),
+            item("world", "set_phrase"),
+            item("Goodbye", "coined"),      # a term the speaker made up for this discussion
+            item("Hello world", "unsayable"),  # followed but not producible
+            # A pattern is a production tool, so native material must not yield one.
+            item("Hello ___", "pattern"),
+            # Absent from the passage: the model echoing a prompt example back as a finding.
+            item("blindsided", "unsayable"),
+        ]
+
+
+def test_native_speech_yields_coined_and_unsayable_but_not_patterns(repo, tmp_path):
+    """Native material is scanned for UNDERSTANDING, so a term the speaker coined and a word the
+    learner follows but could not produce both count — 720 sentences previously gave 2 cards.
+    Filtering coinages out as "unportable" would be a production argument, and production is the
+    teaching path's job; here, not knowing one means not following the sentence."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), NativeKindsAI()).run(job_id)
+
+    stored = {e.text: e.type for e in repo.list_learning_expressions(episode_id)}
+    assert set(stored) == {"Hello", "world", "Goodbye", "Hello world"}, (
+        "coined and unsayable are kept; a pattern is teaching-only; an absent expression is "
+        "dropped"
+    )
+    # Both map onto types iOS already treats as comprehension aids.
+    assert stored["Goodbye"] == "reference"
+    assert stored["Hello world"] == "idiom"
+
+
+def test_an_expression_absent_from_the_passage_is_dropped():
+    """Naming examples in a prompt gets them returned verbatim: a draft of HIDDEN_TRAPS
+    mentioned "blindsided", "clunky" and "job displacement", and a batch containing none of the
+    three reported all three. The instruction alone did not hold, so this is checked in code —
+    and an ungrounded expression has no occurrence to highlight anyway."""
+    grounded = ImportPipeline._is_grounded
+    passage = "We were caught off guard by the new tariffs."
+    assert grounded("caught off guard", passage)
+    assert grounded("Caught Off Guard", passage), "case and spacing are normalised"
+    assert not grounded("blindsided", passage)
+    assert not grounded("", passage)
+
+
 def test_native_speech_is_scanned_with_the_misreading_question(repo, tmp_path):
     episode_id, job_id = _seed(repo)
     ai = RoutingAI("native")
@@ -689,7 +749,10 @@ def test_teaching_drops_expressions_whose_parts_add_up(repo, tmp_path):
     episode_id, job_id = _seed(repo)
     ai = CompositionalAI()
     settings = Settings(_env_file=None, data_dir=tmp_path)
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+    # Grounded: `_is_grounded` drops an expression absent from its passage.
+    media = FakeMedia(tmp_path)
+    media.caption_texts = ["The mini bar and the card on file."]
+    ImportPipeline(repo, settings, media, ai).run(job_id)
 
     assert [e.text for e in repo.list_learning_expressions(episode_id)] == ["card on file"]
     assert ai.checked == ["mini bar", "card on file"], "each candidate is checked once"
@@ -721,7 +784,10 @@ class ShapesAI(FakeAI):
 def test_labels_names_and_whole_sentences_are_rejected_without_a_model_call(repo, tmp_path):
     episode_id, job_id = _seed(repo)
     settings = Settings(_env_file=None, data_dir=tmp_path)
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), ShapesAI()).run(job_id)
+    # Grounded: `_is_grounded` drops an expression absent from its passage.
+    media = FakeMedia(tmp_path)
+    media.caption_texts = ["Go through the P level and the M Club.", "Stay close to me, I want to see where you go, drop off here."]
+    ImportPipeline(repo, settings, media, ShapesAI()).run(job_id)
 
     kept = {e.text for e in repo.list_learning_expressions(episode_id)}
     assert kept == {"go through", "drop off"}, (
@@ -761,7 +827,10 @@ def test_patterns_must_come_from_the_transcript(repo, tmp_path):
     rather than anything the learner heard. An invented frame also anchors no highlight."""
     episode_id, job_id = _seed(repo)
     settings = Settings(_env_file=None, data_dir=tmp_path)
-    ImportPipeline(repo, settings, FakeMedia(tmp_path), PatternAI()).run(job_id)
+    # Grounded: `_is_grounded` drops an expression absent from its passage.
+    media = FakeMedia(tmp_path)
+    media.caption_texts = ["Hello world.", "Goodbye.", "check in now."]
+    ImportPipeline(repo, settings, media, PatternAI()).run(job_id)
 
     kept = {e.text for e in repo.list_learning_expressions(episode_id)}
     assert kept == {"Hello ___ world", "check in"}

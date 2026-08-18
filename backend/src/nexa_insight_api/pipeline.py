@@ -306,33 +306,48 @@ class OpenAIAdapter:
     # much") and literal domain nouns ("training data center") on every source,
     # including a Patrick Collison interview. What was missing was any statement of
     # what makes an item worth studying — and any instruction to refuse.
-    # Two kinds only, and the narrowing IS the design. A scan over all six padded every
-    # batch — six items whatever the instructions said, a product name filed as a lesson —
-    # because a model given a list of categories fills them. These two are the ones a
-    # learner cannot ask about: every word is known, the sentence parses, the reading is
-    # wrong, and nothing signals it. New vocabulary is deliberately excluded — they will
-    # look a word up themselves, and whether they already know it is the one judgement only
-    # they can make.
+    # For native speech the goal is UNDERSTANDING, and two kinds were too few for it: 720
+    # sentences of an AI podcast produced 2 cards. Both additions are things that stop a
+    # learner mid-listen, which is the only test that matters here:
+    #
+    # "coined" — a metaphor or label the speaker invented for this discussion ("nealism", a
+    # "buttered slippery slide"). No dictionary has it and the audio never explains it. It was
+    # tempting to filter these out as unportable — you will never meet them again — but that is
+    # a PRODUCTION argument, and production is the teaching path's concern. Here, not knowing
+    # one means not following the sentence.
+    #
+    # "unsayable" — established vocabulary they follow but could never produce ("hoover up",
+    # "codified"). Passive, not active.
+    #
+    # NO EXAMPLE EXPRESSIONS BELOW, deliberately. An earlier draft named "blindsided",
+    # "clunky" and "job displacement"; a batch containing none of the three returned all
+    # three. The same failure as the pattern prompt — a named example comes back as a finding —
+    # so the kinds are described by shape only, and `_is_grounded` enforces it in code because
+    # the instruction alone did not.
     HIDDEN_TRAPS = (
-        "You are scanning a transcript for a Chinese-speaking learner. Find ONLY the two "
-        "failures a learner cannot ask about, because nothing tells them they got it wrong:\n"
-        '- "shifted": the everyday sense of the words is easy AND WRONG HERE — context gives '
-        'another sense ("model weights" is not heaviness; "play the clip" is not a game). '
-        "Every word known, the sentence parses, the reading wrong.\n"
-        '- "set_phrase": every word familiar but the combination means something the words do '
-        'not ("throw shade"). The learner reads straight past it, confident and wrong.\n'
-        "Return NOTHING else. Not new vocabulary — they will look that up, and only they know "
-        "what they already know. Not discourse markers, not grammar, not implications.\n"
-        "Skip any expression that looks like a TRANSCRIPTION ERROR rather than English "
-        '("onrem" for "on-prem"): a garbled word teaches nothing and a learner would never '
-        "ask about it.\n"
+        "You are scanning a native-speed transcript for a Chinese-speaking learner. The goal is "
+        "UNDERSTANDING: find every place they would stall, misread, or follow without being "
+        "able to use it themselves. Four kinds:\n"
+        '- "shifted": the everyday sense of the words is easy AND WRONG in this context. Every '
+        "word known, the sentence parses, the reading wrong.\n"
+        '- "set_phrase": every word is familiar but the combination means something the words '
+        "do not. The learner reads straight past it, confident and wrong.\n"
+        '- "coined": a metaphor, label or term this speaker INVENTED for this discussion. No '
+        "dictionary has it and the audio never explains it, so it stops the learner cold. "
+        "Include it even though they will never meet it again — understanding THIS episode is "
+        "the goal.\n"
+        '- "unsayable": established vocabulary they would follow here but could never produce '
+        "themselves. Passive, not active.\n"
+        "EVERY item must be lifted from the lines given to you. Do not report an expression "
+        "that is not present in this passage, however typical of the topic it seems.\n"
+        "Skip discourse filler, grammar, and anything that looks like a TRANSCRIPTION ERROR "
+        "rather than English: a garbled word teaches nothing.\n"
         "For each item return: text (exactly as it appears), kind, sense_group (verbatim from "
         "the transcript), chinese (its meaning here), usage (in Chinese, one short sentence "
         "naming the frame), literal (in Chinese, the everyday reading they would land on — "
-        'required for "shifted"), example (verbatim), example_chinese (the example translated '
-        "into Chinese), sentence_position.\n"
-        "There is no quota and no minimum. Most passages contain none of these two, and an "
-        'empty list is the expected answer. Return JSON with key "expressions".'
+        'required for "shifted" and "coined"), example (verbatim), example_chinese (the example '
+        "translated into Chinese), sentence_position.\n"
+        'No quota. Return JSON with key "expressions".'
     )
 
     # Teaching material needs a different question asked of it.
@@ -849,6 +864,24 @@ class ImportPipeline:
             return False
         return all(seg in haystack for seg in meaningful)
 
+    @classmethod
+    def _is_grounded(cls, text: str, transcript: str) -> bool:
+        """Whether this expression was actually said in the passage it came from.
+
+        Applies to every kind, not just frames. Naming example expressions in a prompt gets
+        them returned verbatim: a draft of HIDDEN_TRAPS mentioned "blindsided", "clunky" and
+        "job displacement", and a batch containing none of the three reported all three. The
+        instruction "only report what is present" did not hold on its own, which is why this
+        check lives in code.
+
+        An ungrounded item is also a card anchored to nothing — the store locates an expression
+        by searching the transcript for its text, so it would have no occurrence to highlight.
+        """
+        needle = " ".join(text.casefold().split()).strip(" ?!.,")
+        if not needle:
+            return False
+        return needle in " ".join(transcript.casefold().split())
+
     def _report(self, job_id: int | None, stage: str, progress: int) -> None:
         """Progress, if there is a job to report it against.
 
@@ -952,13 +985,19 @@ class ImportPipeline:
                     continue
                 # "pattern" only from a lesson: native speech is scanned for what was misread,
                 # and a frame to reuse is not that.
-                allowed = ("shifted", "set_phrase") + (("pattern",) if teaching else ())
+                # Native speech is scanned for four kinds because its goal is UNDERSTANDING: a
+                # term the speaker coined, or one the learner follows but could not produce,
+                # both stop them mid-listen. "pattern" stays teaching-only — a frame to reuse
+                # is a production tool.
+                allowed = ("shifted", "set_phrase")
+                allowed += (("pattern",) if teaching else ("coined", "unsayable"))
                 kind = item.get("kind")
                 if kind not in allowed:
                     continue
                 text = str(item.get("text") or "").strip()
                 if not text:
                     continue
+                passage = " ".join(segment.text for segment in batch)
                 if kind == "pattern":
                     # A frame with no slot is a quoted sentence — "I'd like to check in,
                     # please." came back labelled a pattern, and a whole line teaches nothing
@@ -969,10 +1008,13 @@ class ImportPipeline:
                     # Told not to invent frames, the model still does; this is the check that
                     # holds. Verified against the batch it came from, not the whole
                     # transcript, so a frame is grounded in the passage being listened to.
-                    elif not self._pattern_is_grounded(
-                        text, " ".join(segment.text for segment in batch)
-                    ):
+                    elif not self._pattern_is_grounded(text, passage):
                         continue
+                # Everything else must be present too, for the same reason and one more: an
+                # ungrounded expression has no occurrence to highlight, so it is a card
+                # attached to nothing.
+                elif not self._is_grounded(text, passage):
+                    continue
                 if self._mechanically_rejected(text, kind):
                     continue
                 normalised = self._dedup_key(text, kind)
@@ -1006,7 +1048,16 @@ class ImportPipeline:
                     # iOS already decodes "pattern" in both LearningExpressionKind and
                     # LearningExpressionType, where explainsComprehension is false — its own
                     # comment calls that group "what to put in the learner's own mouth".
-                    "type": "pattern" if kind == "pattern" else "phrase",
+                    # The two new native kinds map onto types the store and iOS already know,
+                    # and both sit in `explainsComprehension: true` — which is exactly what
+                    # they are for. A coined metaphor is a "reference": understanding it means
+                    # understanding what the speaker built it out of. An unsayable word is
+                    # ordinary vocabulary used at speed, which is what "idiom" covers here.
+                    "type": {
+                        "pattern": "pattern",
+                        "coined": "reference",
+                        "unsayable": "idiom",
+                    }.get(kind, "phrase"),
                     "chinese": item.get("chinese"),
                     "example": item.get("example"),
                     "example_chinese": item.get("example_chinese") or "",
