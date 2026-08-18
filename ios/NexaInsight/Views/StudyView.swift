@@ -13,6 +13,8 @@ struct StudyView: View {
     @StateObject private var player: LocalAudioPlayback
     @State private var audioRefreshState: AudioRefreshState = .idle
     @State private var shadowingSentence: SentenceDTO?
+    /// Incremented by "Back to current" so the transcript scrolls on the press itself.
+    @State private var syncRequest = 0
     @State private var liveSession: LiveClassSession?
     // How far the screen is dragged during a back-swipe. Drives the follow-the-finger
     // offset so the gesture has the visual feedback the system one would give.
@@ -117,6 +119,7 @@ struct StudyView: View {
             current: current,
             audioRefreshState: audioRefreshState,
             following: vm.following,
+            syncRequest: syncRequest,
             player: player,
             onSentenceTap: { sentence in
                 switch SentencePlaybackToggle.action(
@@ -127,7 +130,10 @@ struct StudyView: View {
                 }
             },
             onShadow: { sentence in shadowingSentence = sentence },
-            onSync: { vm.syncNow() },
+            onSync: {
+                vm.syncNow()
+                syncRequest += 1
+            },
             onManualScroll: { vm.onManualScroll() },
             onRefreshAudio: { Task { await refreshAudio() } },
             onTalk: startDiscussion,
@@ -753,6 +759,9 @@ private struct StudyWorkspace: View {
     let current: SentenceDTO?
     let audioRefreshState: AudioRefreshState
     let following: Bool
+    /// Bumped on every "Back to current" press. A counter rather than a flag because two
+    /// presses in a row must each scroll, and onChange sees no change in `true` -> `true`.
+    let syncRequest: Int
     @ObservedObject var player: LocalAudioPlayback
     let onSentenceTap: (SentenceDTO) -> Void
     let onShadow: (SentenceDTO) -> Void
@@ -855,7 +864,10 @@ private struct StudyWorkspace: View {
                         .nxFloatingShadow(scheme)
                     }
                     .buttonStyle(.plain)
-                    .padding(.bottom, discussionSession == nil ? NXSpacing.x4 : 92)
+                    // Clear of BOTH the dock and the home indicator. 16pt put the capsule
+                    // almost on the indicator and 92 had it touching the bar above it —
+                    // "贴的太紧" was about a real gap of a few points.
+                    .padding(.bottom, discussionSession == nil ? NXSpacing.x12 : 116)
                 }
                 .transition(.opacity)
             }
@@ -912,7 +924,21 @@ private struct StudyWorkspace: View {
             )
             .onChange(of: current?.id) { _, newValue in
                 if following, let newValue {
-                    proxy.scrollTo(newValue, anchor: .center)
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(newValue, anchor: .center)
+                    }
+                }
+            }
+            // Pressing the button has to MOVE the page, now, not just re-arm following.
+            //
+            // `syncNow()` only set the flag, and the actual scroll lived in the onChange
+            // above — which fires when the playing sentence CHANGES. So the button did
+            // nothing visible until the next line began, up to several seconds later, and
+            // read as broken. This is what makes the press land.
+            .onChange(of: syncRequest) { _, _ in
+                guard let id = current?.id else { return }
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo(id, anchor: .center)
                 }
             }
         }
