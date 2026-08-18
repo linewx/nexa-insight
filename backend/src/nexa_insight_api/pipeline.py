@@ -874,8 +874,26 @@ class ImportPipeline:
             without_slots = cls.SLOT.sub(" ", lowered.replace("{", " ").replace("}", " "))
             stripped = cls.FRAME_FILLER.sub(" ", without_slots)
             return " ".join(stripped.split()).strip(" .?!,")
+        # Stems, so a word's grammatical form is not a second card. A real native run produced
+        # "intelligence sovereignty" beside "intelligent sovereignty" — one concept the speaker
+        # kept rephrasing, and three passes each caught a different wording of it.
+        #
+        # NOT sorted for phrases: "check in" and "check out" must stay apart, and word order is
+        # what distinguishes many pairs like them.
         stripped = cls.INFLECTION.sub(" ", lowered)
-        return " ".join(stripped.split())
+        return " ".join(cls._stem(word) for word in stripped.split())
+
+    # Suffixes stripped when comparing two expressions. Crude on purpose: this only has to see
+    # "intelligence" and "intelligent" as the same word, not do real morphology.
+    STEM_SUFFIXES = ("ences", "ence", "ents", "ent", "ing", "ers", "er", "es", "s", "ed", "ly")
+
+    @classmethod
+    def _stem(cls, word: str) -> str:
+        for suffix in cls.STEM_SUFFIXES:
+            # The length guard keeps short words intact: "es" off "yes", "s" off "is".
+            if len(word) > len(suffix) + 3 and word.endswith(suffix):
+                return word[: -len(suffix)]
+        return word
 
     SLOT = re.compile(r"_+")
 

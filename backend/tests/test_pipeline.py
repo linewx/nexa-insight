@@ -1105,6 +1105,29 @@ def test_one_frame_written_three_ways_is_one_pattern():
     assert key("head down to ___") != key("drop me off at ___")
 
 
+def test_one_concept_rephrased_is_one_card():
+    """A real native run produced "intelligence sovereignty" beside "intelligent sovereignty" —
+    one concept the speaker kept rephrasing, and three passes each caught a different wording.
+    Keys are stemmed so a word's grammatical form is not a second card."""
+    key = lambda text: ImportPipeline._dedup_key(text, "set_phrase")
+    assert key("intelligence sovereignty") == key("intelligent sovereignty")
+    assert key("job displacement") == key("job displacements")
+
+    # Word order still separates expressions, so keys are NOT sorted: these two differ by a
+    # particle that carries the whole meaning.
+    assert key("check in") != key("check out")
+    # A synonym is not an inflection. Merging "AI" into "intelligence" needs judgement about
+    # meaning, which a stemmer has no business making.
+    assert key("AI sovereignty") != key("intelligence sovereignty")
+    # And a longer expression containing a shorter one stays its own card.
+    assert key("headcount") != key("entry level headcount")
+
+    # Short words survive stemming: stripping "s" from "is" or "es" from "yes" would merge
+    # unrelated expressions.
+    assert ImportPipeline._stem("is") == "is"
+    assert ImportPipeline._stem("yes") == "yes"
+
+
 def test_the_same_phrase_with_a_different_determiner_is_one_card():
     """A real run produced both "tip your housekeeper" and "tip the housekeeper". Keying on
     exact text splits every phrase whose determiner the speaker varied between mentions."""
