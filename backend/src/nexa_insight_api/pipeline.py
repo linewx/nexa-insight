@@ -921,6 +921,25 @@ class ImportPipeline:
         return all(seg in haystack for seg in meaningful)
 
     @classmethod
+    def _contains_garbled(cls, text: str, garbled: set[str]) -> bool:
+        """Whether any flagged mis-transcription appears in this expression.
+
+        Not exact matching. Asked about "monopsiny buyer situation", the model returns the
+        garbled WORD — "monopsiny" — rather than the phrase it was given, so an exact-match
+        filter removed nothing and the card survived a real run. Matched per word, since a
+        phrase built on a mis-transcribed word is just as unusable as the word alone.
+        """
+        if not garbled:
+            return False
+        flagged_words = {
+            word
+            for item in garbled
+            for word in re.sub(r"[^\w' ]", " ", item.casefold()).split()
+        }
+        words = set(re.sub(r"[^\w' ]", " ", text.casefold()).split())
+        return bool(words & flagged_words)
+
+    @classmethod
     def _is_grounded(cls, text: str, transcript: str) -> bool:
         """Whether this expression was actually said in the passage it came from.
 
@@ -1144,7 +1163,8 @@ class ImportPipeline:
                 # Unchecked, not condemned: the finder had a reason to report these.
                 garbled = set()
             if garbled:
-                found = [item for item in found if item["text"] not in garbled]
+                found = [item for item in found
+                         if not self._contains_garbled(item["text"], garbled)]
 
         # Verification, all at once. Each candidate costs two model calls, and unique
         # candidates outnumber finder calls several times over, so this is where the stage's

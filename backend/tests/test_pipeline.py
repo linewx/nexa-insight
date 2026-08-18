@@ -756,6 +756,23 @@ def test_a_mis_transcription_is_not_a_card(repo, tmp_path):
     assert ai.asked == [["hello", "world"]], "one call for everything found, not one per item"
 
 
+def test_a_phrase_built_on_a_garbled_word_is_dropped():
+    """The model answers with the garbled WORD, not the phrase it was handed: asked about
+    "monopsiny buyer situation" it returns "monopsiny". An exact-match filter therefore removed
+    nothing and that card survived a real run. A phrase built on a mis-transcribed word is just
+    as unusable as the word alone."""
+    contains = ImportPipeline._contains_garbled
+    flagged = {"monopsiny", "moratorum"}
+    assert contains("monopsiny buyer situation", flagged)
+    assert contains("moratorum", flagged)
+    assert contains("Monopsiny Buyer Situation", flagged), "case is normalised"
+    # Real expressions are untouched, including ones that merely share a common word.
+    assert not contains("cost of capital", flagged)
+    assert not contains("long tale of buyers", flagged)
+    assert not contains("buyer situation", flagged), "only the garbled word condemns a phrase"
+    assert not contains("anything", set()), "nothing flagged means nothing dropped"
+
+
 def test_an_expression_absent_from_the_passage_is_dropped():
     """Naming examples in a prompt gets them returned verbatim: a draft of HIDDEN_TRAPS
     mentioned "blindsided", "clunky" and "job displacement", and a batch containing none of the
