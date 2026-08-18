@@ -53,7 +53,3 @@ func formatTime(_ ms: Int) -> String {
 func scrollOffsetToCenter(viewportHeight: CGFloat, rowOffsetTop: CGFloat, rowHeight: CGFloat) -> CGFloat {
     max(0, (rowOffsetTop - (viewportHeight - rowHeight) / 2).rounded())
 }
-
-func isManualScrollAway(currentScrollTop: CGFloat, targetScrollTop: CGFloat, tolerancePx: CGFloat) -> Bool {
-    abs(currentScrollTop - targetScrollTop) > tolerancePx
-}

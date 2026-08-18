@@ -128,6 +128,7 @@ struct StudyView: View {
             },
             onShadow: { sentence in shadowingSentence = sentence },
             onSync: { vm.syncNow() },
+            onManualScroll: { vm.onManualScroll() },
             onRefreshAudio: { Task { await refreshAudio() } },
             onTalk: startDiscussion,
             onSeekIntent: { ms in playIntent(seekTo: ms) },
@@ -756,6 +757,9 @@ private struct StudyWorkspace: View {
     let onSentenceTap: (SentenceDTO) -> Void
     let onShadow: (SentenceDTO) -> Void
     let onSync: () -> Void
+    /// The learner dragged the transcript. Passed in rather than read from a view model,
+    /// because this subview has neither — it takes closures, like every other action here.
+    let onManualScroll: () -> Void
     let onRefreshAudio: () -> Void
     let onTalk: () -> Void
     // Seeking is the only playback action routed from here (the scrubber in the top
@@ -884,6 +888,21 @@ private struct StudyWorkspace: View {
                     .padding(.bottom, bottomInset)
                     .frame(maxWidth: .infinity)
             }
+            // What tells us the learner has scrolled away from the playing line.
+            //
+            // `onManualScroll` existed and was never called from anywhere, so `following`
+            // was permanently true and "Back to current" — button, action and all — could
+            // never render. This is the missing wire.
+            //
+            // A gesture-based signal rather than per-row geometry: putting a
+            // GeometryReader on TranscriptRow would break its Equatable conformance and
+            // bring back the 1400-rebuilds-per-second scrolling problem, which cost real
+            // work to fix. `.simultaneously` so it observes without consuming — the
+            // ScrollView keeps handling the drag.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 12)
+                    .onChanged { _ in onManualScroll() }
+            )
             .onChange(of: current?.id) { _, newValue in
                 if following, let newValue {
                     proxy.scrollTo(newValue, anchor: .center)

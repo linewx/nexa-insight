@@ -25,19 +25,34 @@ final class StudyViewModelTests: XCTestCase {
     }
 
     func testManualScrollLeavesFollowThenSyncRestores() {
+        // `following` gates the auto-scroll AND the visibility of "Back to current". Nothing
+        // called this method, so the flag stayed true forever and that button — which existed,
+        // wired to an action, laid out above the dock — could never render.
         let vm = StudyViewModel()
         XCTAssertTrue(vm.following)
-        vm.onManualScroll(currentOffset: 300, targetOffset: 160)
+        vm.onManualScroll()
         XCTAssertFalse(vm.following)
         vm.syncNow()
         XCTAssertTrue(vm.following)
     }
 
-    func testTapSeeksAndPlays() {
+    func testScrollingAwayDoesNotResumeFollowingOnItsOwn() async throws {
+        // No timer any more. Ten seconds is a normal amount of time to spend on a paragraph,
+        // and the page yanking itself back mid-sentence is worse than a button you press.
+        let vm = StudyViewModel()
+        vm.onManualScroll()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertFalse(vm.following, "following resumes only when asked")
+    }
+
+    func testTapSeeksAndPlaysAndResumesFollowing() {
         let vm = StudyViewModel()
         let player = FakePlayback()
+        vm.onManualScroll()
         vm.tap(sentence: lines[2], playback: player)
         XCTAssertEqual(player.seeks, [2000])
         XCTAssertTrue(player.didPlay)
+        // Tapping a line is a request to be AT that line, so the button must not linger.
+        XCTAssertTrue(vm.following)
     }
 }

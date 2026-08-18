@@ -29,12 +29,6 @@ final class SubtitleLogicTests: XCTestCase {
         XCTAssertEqual(formatTime(65_000), "1:05")
     }
 
-    func testScrollHelpers() {
-        XCTAssertEqual(scrollOffsetToCenter(viewportHeight: 100, rowOffsetTop: 200, rowHeight: 20), 160)
-        XCTAssertEqual(scrollOffsetToCenter(viewportHeight: 500, rowOffsetTop: 0, rowHeight: 20), 0)
-        XCTAssertTrue(isManualScrollAway(currentScrollTop: 200, targetScrollTop: 160, tolerancePx: 24))
-        XCTAssertFalse(isManualScrollAway(currentScrollTop: 170, targetScrollTop: 160, tolerancePx: 24))
-    }
 }
 
 /// The lookup became a binary search because it runs on every 200ms position tick

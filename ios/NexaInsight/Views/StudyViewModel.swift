@@ -10,14 +10,20 @@ final class StudyViewModel: ObservableObject {
         activeSentence(sentences, cursorMs) ?? sentences.first
     }
 
-    func onManualScroll(currentOffset: CGFloat, targetOffset: CGFloat) {
-        guard isManualScrollAway(currentScrollTop: currentOffset, targetScrollTop: targetOffset, tolerancePx: 24) else { return }
-        following = false
+    /// The learner dragged the transcript, so stop following the playing line.
+    ///
+    /// Took offsets before and compared them to where the playing line would be — and was
+    /// never called from anywhere, so `following` stayed true forever and the "Back to
+    /// current" button could not render. The drag itself is the signal: if a finger moved the
+    /// page, they are reading somewhere else.
+    ///
+    /// Deliberately NOT auto-resuming after a delay any more. Ten seconds is a normal amount
+    /// of time to spend on one paragraph, and the page yanking itself back mid-sentence is
+    /// worse than a button you have to press. Following resumes when the learner asks for it,
+    /// or when they tap a line — both explicit.
+    func onManualScroll() {
         idleTask?.cancel()
-        idleTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            if !Task.isCancelled { await MainActor.run { self?.following = true } }
-        }
+        following = false
     }
 
     func syncNow() {
@@ -26,6 +32,9 @@ final class StudyViewModel: ObservableObject {
     }
 
     func tap(sentence: SentenceDTO, playback: Playback) {
+        // Tapping a line is a request to be AT that line, so following resumes — otherwise
+        // "Back to current" would still be showing while the transcript is already there.
+        syncNow()
         playback.seek(sentence.startMs)
         playback.play()
     }
