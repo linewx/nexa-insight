@@ -766,44 +766,6 @@ private func cleanedImportError(_ message: String) -> String {
         .map(String.init) ?? "Add failed. Check the source URL and backend connection."
 }
 
-private func processingStageTitle(_ stage: String) -> String {
-    switch normalizedProcessingStage(stage) {
-    case "upload", "uploading":
-        return "Uploading"
-    case "parsing":
-        return "Parsing source"
-    case "transcribing":
-        return "Generating transcript"
-    case "chapters":
-        return "Generating chapters"
-    case "translation", "translating":
-        return "Preparing bilingual context"
-    case "ready":
-        return "Ready to discuss"
-    default:
-        return stage.isEmpty ? "Processing" : stage.capitalized
-    }
-}
-
-private func normalizedProcessingStage(_ stage: String) -> String {
-    switch stage.lowercased() {
-    case "upload", "uploading":
-        return "uploading"
-    case "download", "downloading", "parse", "parsing", "metadata", "extracting":
-        return "parsing"
-    case "transcript", "transcribing", "transcription", "asr":
-        return "transcribing"
-    case "chapters", "chaptering", "analysis", "analyzing", "summarizing":
-        return "chapters"
-    case "translation", "translating":
-        return "translation"
-    case "complete", "completed", "ready":
-        return "ready"
-    default:
-        return stage.lowercased()
-    }
-}
-
 private func durationText(_ durationMs: Int?) -> String {
     guard let durationMs, durationMs > 0 else { return "No duration" }
     let totalSeconds = durationMs / 1000
