@@ -136,6 +136,7 @@ struct StudyView: View {
             },
             onManualScroll: { vm.onManualScroll(translation: $0) },
             onScrollEnded: { vm.onScrollEnded() },
+            onContentOffset: { vm.onContentOffset($0) },
             onRefreshAudio: { Task { await refreshAudio() } },
             onTalk: startDiscussion,
             onSeekIntent: { ms in playIntent(seekTo: ms) },
@@ -771,6 +772,9 @@ private struct StudyWorkspace: View {
     /// because this subview has neither — it takes closures, like every other action here.
     let onManualScroll: (CGFloat) -> Void
     let onScrollEnded: () -> Void
+    let onContentOffset: (CGFloat) -> Void
+    /// Named so the content's GeometryReader can measure against the scroll view itself.
+    static let scrollSpace = "transcriptScroll"
     let onRefreshAudio: () -> Void
     let onTalk: () -> Void
     // Seeking is the only playback action routed from here (the scrubber in the top
@@ -909,6 +913,21 @@ private struct StudyWorkspace: View {
         ScrollViewReader { proxy in
             ScrollView {
                 transcriptContent
+                    // ONE reader on the content, not one per row: a GeometryReader inside
+                    // TranscriptRow would break its Equatable and bring back 1400 row rebuilds
+                    // per second. This reports how far the CONTENT has moved, which is what
+                    // "the playing line left the screen" actually means.
+                    //
+                    // Finger travel was the wrong measure. A flick moves a finger 150-250pt and
+                    // then momentum carries the content several screens — so a 220pt finger
+                    // threshold meant the button never appeared no matter how far you scrolled.
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: TranscriptOffsetKey.self,
+                                value: geo.frame(in: .named(Self.scrollSpace)).minY)
+                        }
+                    )
                     .frame(maxWidth: contentMaxWidth, alignment: .leading)
                     .padding(.horizontal, horizontalPadding)
                     // Breathing room under the header. Was 64 to clear a floating
@@ -928,6 +947,10 @@ private struct StudyWorkspace: View {
             // bring back the 1400-rebuilds-per-second scrolling problem, which cost real
             // work to fix. `.simultaneously` so it observes without consuming — the
             // ScrollView keeps handling the drag.
+            .coordinateSpace(name: Self.scrollSpace)
+            .onPreferenceChange(TranscriptOffsetKey.self) { offset in
+                onContentOffset(offset)
+            }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 12)
                     .onChanged { value in
@@ -996,6 +1019,17 @@ private struct StudyWorkspace: View {
                 rowActions: rowActions
             )
         }
+    }
+}
+
+/// Reports the transcript content's vertical offset inside its scroll view.
+///
+/// One reader on the content rather than one per row: a GeometryReader inside TranscriptRow
+/// breaks its Equatable conformance and brings back 1400 row rebuilds per second.
+private struct TranscriptOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
