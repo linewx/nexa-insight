@@ -60,6 +60,11 @@ class FakeAI:
         # to exercise the filter override this.
         return set()
 
+    def generic_usage(self, texts):
+        # No general-usage section by default. Fixtures that care override this; the enrichment
+        # pass is best-effort, so a card without it is still a card.
+        return {}
+
     def hidden_traps(self, sentences):
         # One shifted sense in the first line of every batch, so remapping is observable.
         return [{
@@ -232,9 +237,12 @@ def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     assert [e.text for e in expressions] == ["Hello world"]
     found = expressions[0]
     assert found.source == "auto", "a reprocess must be free to replace it"
+    # Five fields now, not ten. 这集里 lives in `restored`; 常见用法 comes from the enrichment
+    # pass (absent here, since FakeAI returns none); 容易理解成 is gone entirely — a correct
+    # gloss already shows up the literal misreading, which is why the learner stopped.
     assert found.restored == "Hello world."
-    assert found.heard_as == "你好，世界"
-    assert found.when_to_use == "测试用"
+    assert found.heard_as is None, "容易理解成 was removed as redundant with the gloss"
+    assert found.when_to_use is None, "no generic usage unless the enrichment pass supplies it"
 
 
 def test_pipeline_audio_backfill_downloads_audio_without_reprocessing(repo, tmp_path):
@@ -1126,6 +1134,72 @@ def test_one_frame_written_three_ways_is_one_pattern():
     # Different frames must stay different: stripping function words cannot collapse them.
     assert key("check in the ___") != key("check out the ___")
     assert key("head down to ___") != key("drop me off at ___")
+
+
+class UsageAI(FakeAI):
+    """Supplies general usage for one expression and honestly declines for the other."""
+
+    def __init__(self):
+        self.asked: list[list[str]] = []
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        def item(text):
+            return {"text": text, "kind": "set_phrase", "chinese": "x",
+                    "example": "hello world.", "example_chinese": "y", "sentence_position": 0}
+        return [item("hello"), item("world")]
+
+    def generic_usage(self, texts):
+        self.asked.append(sorted(texts))
+        # "world" gets a usage; "hello" is treated as a one-off with none.
+        return {"world": "政策评论，正式\n银行游说写出对自己有利的规定。"}
+
+
+def test_general_usage_is_a_separate_pass(repo, tmp_path):
+    """This section is what makes a card reusable: seeing an expression once in one argument does
+    not tell you where it belongs generally.
+
+    It cannot come from the finder. The finder is bound to the transcript — `_is_grounded`
+    rejects anything absent from it — and general usage must come from OUTSIDE. One call cannot
+    be asked for both, and this session has shown what happens when a model is given two
+    conflicting jobs: it satisfies one with the other's answer.
+    """
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = UsageAI()
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    stored = {e.text: e.when_to_use for e in repo.list_learning_expressions(episode_id)}
+    assert stored.get("world", "").startswith("政策评论")
+    # A declined usage stays empty rather than being filled with something plausible: an
+    # invented general meaning teaches a usage that does not exist.
+    assert not stored.get("hello")
+    assert ai.asked == [["hello", "world"]], "one batched call, not one per card"
+
+
+def test_the_source_line_is_one_sentence_without_transcript_artefacts():
+    """The field averaged 111 characters and ran to 1590 on a real episode, at which point it
+    held the same text as the example and neither showed the expression's shape."""
+    line = ImportPipeline._source_line(
+        "center myself",
+        ">> he did respond to me. I mean, I I want to center myself, but the reality is he did "
+        "not respond to what Gavin said.")
+    assert line.startswith("I mean, I want to center myself"), line
+    assert ">>" not in line, "speaker markers are transcription artefacts, not English"
+    assert "I I" not in line, "so are stutters"
+
+    # A speaker change is a sentence boundary even without punctuation. Stripping only a LEADING
+    # marker left a second one mid-sentence on a real card.
+    two_speakers = ">> When's the last time we heard >> Unfortunately, it was written by us."
+    assert ">>" not in ImportPipeline._source_line("written by us", two_speakers)
+
+    # Absent from the passage: return NOTHING. Matching on the first word gave "clear all the
+    # pathways" the line "Now, [clears throat] do it." — a wrong source line is worse than an
+    # absent one, because the learner cannot tell it is wrong.
+    assert ImportPipeline._source_line(
+        "clear all the pathways", "Now, [clears throat] do it. Now, do it for homes.") == ""
 
 
 def test_a_verb_and_its_bare_object_are_one_card():

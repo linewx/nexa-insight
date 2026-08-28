@@ -2691,37 +2691,24 @@ private struct ExpressionInlineCard: View {
             }
             Text(expression.chinese).font(NXFont.body).foregroundStyle(NXColor.textSecondary(scheme))
 
-            // A reduction or an ellipsis is only worth a card because of the gap
-            // between what reached the ear and what was said, so that comparison
-            // leads rather than sitting below the gloss.
-            // The sense group: the unit a native speaker takes in at once. Shown before
-            // anything explanatory, because knowing where the expression BEGINS and ENDS is
-            // what makes it usable — "throw shade" alone leaves you unable to build a
-            // sentence with it.
-            if let group = expression.restored {
-                labelled("\u{6574}\u{5757}", group, mono: true)
-            }
-
-            // The misreading, named beside the real meaning. This is the whole point of a
-            // card for a word you already "know": every word familiar, the reading still
-            // wrong, and nothing to prompt you to check. Naming it is what prevents it.
-            if let literal = expression.heardAs {
-                wrongReading(literal)
-            }
-
-            if let mistake = expression.commonMistake {
-                mistakeContrast(wrong: mistake, right: expression.text)
-            }
-            // "为什么难" is gone. It explained a difficulty the learner had already felt —
-            // they stopped to ask — and one sentence only ever produced a label like
-            // "弱读脱落". Nothing populates whyHard now.
+            // Two layers, deliberately separate.
             //
-            // "什么时候用" became "怎么用": the old prompt said only "Give when_to_use" and
-            // got "日常对话中使用" back, which is true of everything. It now carries the
-            // frame — what comes before, what comes after.
+            // 常见用法 is how the expression works ANYWHERE — what lets you carry it out of
+            // this episode. 这集里 is what this speaker meant by it, which is the reason you
+            // listened. Folded into one gloss (as they were) you learn neither: the card
+            // defined "regulatory capture" as what one company is accused of, so meeting the
+            // word elsewhere taught you the accusation instead of the word.
+            //
+            // Both are conditional. No general currency for a coined metaphor, and no 这集里
+            // when the speaker used the expression in its ordinary sense — an echo of the
+            // gloss is noise.
             if let usage = expression.whenToUse {
-                labelled("\u{600e}\u{4e48}\u{7528}", usage)
+                labelled("\u{5e38}\u{89c1}\u{7528}\u{6cd5}", usage)
             }
+            if let here = expression.restored {
+                labelled("\u{8fd9}\u{96c6}\u{91cc}", here)
+            }
+
 
             VStack(alignment: .leading, spacing: NXSpacing.x1) {
                 Text(expression.example).font(NXFont.bodyMedium).foregroundStyle(NXColor.text(scheme))
@@ -2735,41 +2722,9 @@ private struct ExpressionInlineCard: View {
         .overlay(RoundedRectangle(cornerRadius: NXRadius.surface).stroke(NXColor.primary.opacity(0.16), lineWidth: 1))
     }
 
-    /// Heard on the left, actually said on the right — the whole point of the item.
-    /// The reading you would have arrived at, marked as the wrong one.
-    ///
-    /// Replaces the old heard-versus-actual arrow, which assumed a MISHEARING. The failure
-    /// this card now covers is different and more invisible: nothing was misheard, the
-    /// everyday sense was simply the wrong one here.
-    private func wrongReading(_ literal: String) -> some View {
-        HStack(alignment: .top, spacing: NXSpacing.x2) {
-            Image(systemName: "xmark.circle")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(NXColor.textTertiary(scheme))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("\u{5bb9}\u{6613}\u{7406}\u{89e3}\u{6210}")
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-                Text(literal)
-                    .font(NXFont.body)
-                    .foregroundStyle(NXColor.textSecondary(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.vertical, NXSpacing.x1)
-        .accessibilityLabel("容易理解成 \(literal)")
-    }
 
-    /// The Chinese-English attempt this replaces. Dictionaries cannot give this.
-    private func mistakeContrast(wrong: String, right: String) -> some View {
-        VStack(alignment: .leading, spacing: NXSpacing.x1) {
-            Label(wrong, systemImage: "xmark")
-                .font(NXFont.auxiliary).foregroundStyle(NXColor.error)
-            Label(right, systemImage: "checkmark")
-                .font(NXFont.auxiliary).foregroundStyle(NXColor.primary)
-        }
-        .accessibilityLabel("常见错误 \(wrong)，正确说法 \(right)")
-    }
+
+
 
     @ViewBuilder private func labelled(_ title: String, _ body: String, mono: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: NXSpacing.x1) {

@@ -54,6 +54,7 @@ class AIAdapter(Protocol):
     def teaching_traps(self, sentences: list[TranscriptSegment]) -> list[dict]: ...
     def is_compositional(self, text: str, meaning: str) -> bool: ...
     def garbled(self, texts: list[str]) -> set[str]: ...
+    def generic_usage(self, texts: list[str]) -> dict[str, str]: ...
 
 
 class YtDlpMediaAdapter:
@@ -404,11 +405,11 @@ class OpenAIAdapter:
         "a fixed collocation a learner would word differently themselves.\n"
         '- "shifted": a word used in a sense other than its everyday one.\n'
         "Skip anything that looks like a TRANSCRIPTION ERROR rather than English.\n"
-        "For each: text (the expression, or the frame with ___ for a pattern), kind, "
-        "sense_group (verbatim from the transcript), chinese, usage (in Chinese: when to say "
-        "it, and what goes in the slot), literal (in Chinese, only if a wrong everyday reading "
-        "genuinely exists — otherwise omit; never invent one), example (verbatim), "
-        "example_chinese, sentence_position.\n"
+        "For each: text (the expression, or the frame with ___ for a pattern), kind, chinese "
+        "(what it MEANS, in Chinese, stated so it holds outside this lesson), context_meaning "
+        "(in Chinese, what it means HERE, and ONLY when that differs from the general meaning — "
+        "for a pattern, what goes in the slot; omit when the two are the same), example (the ONE "
+        "sentence containing it, verbatim), example_chinese, sentence_position.\n"
         'No quota. Return JSON with key "expressions".'
     )
 
@@ -461,6 +462,56 @@ class OpenAIAdapter:
         "Real English includes rare words, jargon, and terms a speaker coined deliberately.\n"
         'Return JSON {"garbled": [the items that are mis-transcriptions]}.'
     )
+
+    GENERIC_USAGE = (
+        "For each English expression below, say how it is used OUTSIDE any single conversation "
+        "— what a Chinese learner needs in order to use it somewhere else.\n"
+        "Give two things:\n"
+        '  "usage": in Chinese, one short sentence on where it belongs (register, formality, '
+        "typical subject matter).\n"
+        '  "example": in Chinese, ONE concrete situation that has nothing to do with AI, '
+        "podcasts or technology, showing the expression in use.\n"
+        "If the expression has no general currency — a metaphor someone invented, a term coined "
+        'for one argument — return "usage": null for it. Do NOT manufacture a general meaning '
+        "for something that has none; an invented example teaches a usage that does not exist.\n"
+        'Return JSON {"items": [{"text", "usage", "example"}]}.'
+    )
+
+    def generic_usage(self, texts: list[str]) -> dict[str, str]:
+        """How each expression is used in general, keyed by expression.
+
+        A separate call because the finder cannot answer this: it is looking at one transcript,
+        and `_is_grounded` requires everything it returns to appear there. General usage must
+        come from OUTSIDE the episode — the two requirements are opposites, and asking one call
+        to satisfy both is how it ends up using one task's answer for the other.
+
+        Batched, and never raises: a card without this section is still a card.
+        """
+        if not texts:
+            return {}
+        try:
+            result = self._json(self.GENERIC_USAGE, {"expressions": texts})
+        except Exception:
+            return {}
+        items = result.get("items") if isinstance(result, dict) else result
+        if not isinstance(items, list):
+            return {}
+        usages: dict[str, str] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            usage = item.get("usage")
+            if not text or not isinstance(usage, str) or not usage.strip():
+                # null usage is the honest answer for a one-off coinage, so it is kept out
+                # rather than filled with something plausible.
+                continue
+            example = item.get("example")
+            body = usage.strip()
+            if isinstance(example, str) and example.strip():
+                body += "\n" + example.strip()
+            usages[text] = body
+        return usages
 
     def garbled(self, texts: list[str]) -> set[str]:
         """Which of these are transcription errors rather than English.
@@ -971,6 +1022,43 @@ class ImportPipeline:
         words = set(re.sub(r"[^\w' ]", " ", text.casefold()).split())
         return bool(words & flagged_words)
 
+    # A transcript speaker marker ANYWHERE, not just at the start: ">> When's the last time we
+    # heard >> Unfortunately..." is two speakers in one blob, and stripping only the leading
+    # marker left the second one in the middle of the "sentence".
+    SPEAKER_MARKER = re.compile(r"\s*>>\s*")
+    STUTTER = re.compile(r"\b(\w+)( \1\b)+", re.IGNORECASE)
+
+    @classmethod
+    def _source_line(cls, text: str, passage: str) -> str:
+        """The ONE sentence containing this expression, cleaned up.
+
+        The card shows this so the learner can see the expression's real shape — where it
+        begins and ends, what it collocates with. A paragraph cannot do that: the field
+        averaged 111 characters and ran to 1590 on a real episode, at which point it held the
+        same text as the example field and neither was usable.
+
+        Speaker markers and stutters are stripped because they are transcription artefacts, not
+        English: ">> he did respond to me. I mean, I I want to center myself" is not a sentence
+        anyone said.
+        """
+        # A speaker change is a sentence boundary even without punctuation, so split there too.
+        cleaned = cls.STUTTER.sub(r"\1", cls.SPEAKER_MARKER.sub(" | ", passage)).strip(" |")
+        needle = " ".join(text.casefold().split())
+        sentences = [
+            part.strip(" |")
+            for chunk in cleaned.split("|")
+            for part in re.split(r"(?<=[.!?])\s+", chunk)
+            if part.strip(" |")
+        ]
+        for sentence in sentences:
+            if needle and needle in " ".join(sentence.casefold().split()):
+                return sentence
+        # Not found. Return NOTHING rather than a guess: matching on the first word gave
+        # "clear all the pathways" the line "Now, [clears throat] do it." — a wrong source line
+        # is worse than an absent one, because the learner cannot tell it is wrong. An empty
+        # value also means the card simply omits the section, which the view already handles.
+        return ""
+
     @classmethod
     def _is_grounded(cls, text: str, transcript: str) -> bool:
         """Whether this expression was actually said in the passage it came from.
@@ -1166,14 +1254,29 @@ class ImportPipeline:
                         "unsayable": "idiom",
                     }.get(kind, "phrase"),
                     "chinese": item.get("chinese"),
-                    "example": item.get("example"),
+                    # ONE sentence, cleaned. The model's own `example` was often a paragraph
+                    # carrying speaker markers and stutters — ">> he did respond to me. I mean,
+                    # I I want to center myself..." — which shows the learner nothing about the
+                    # expression's shape. Falls back to the model's text if extraction finds
+                    # nothing, since an example is the one section a card cannot do without.
+                    "example": self._source_line(text, str(item.get("example") or ""))
+                                or item.get("example"),
                     "example_chinese": item.get("example_chinese") or "",
-                    # The scan's field names are not the store's. The card reads 整块 from
-                    # `restored`, 容易理解成 from `heard_as`, 怎么用 from `when_to_use`; a
-                    # mapping slip renders three empty sections while failing nothing.
-                    "restored": item.get("sense_group"),
-                    "when_to_use": item.get("usage"),
-                    "heard_as": item.get("literal"),
+                    # Five fields, down from ten. Each answers a question the learner has:
+                    # what it means, how it is used generally, what it means HERE, and what it
+                    # actually looked like.
+                    #
+                    # `restored` now carries 这集里 — the meaning specific to this episode,
+                    # which is the point of listening to it. Previously it held a verbatim
+                    # "sense group" that averaged 111 characters and ran to 1590, duplicating
+                    # the example field.
+                    #
+                    # `when_to_use` is filled by the enrichment pass below, not by the finder,
+                    # which cannot see outside this transcript.
+                    #
+                    # `heard_as` (容易理解成) is gone: a correct gloss already shows up the
+                    # literal misreading, since misreading it is why the learner stopped.
+                    "restored": item.get("context_meaning") or item.get("sense_group"),
                     "sentence_position": position,
                     # "auto" and not a third word: it is the column, schema and iOS default,
                     # and only "manual" is ever treated specially.
@@ -1228,6 +1331,19 @@ class ImportPipeline:
                     # a bar that reads 100% while work continues is the complaint this fixes.
                     self._report(job_id, "learning",
                                  70 + int(29 * done / len(needs_verifying)))
+
+        # How each expression is used OUTSIDE this episode, in one batched call. This is the
+        # section that lets a card teach something reusable: seeing "regulatory capture" once in
+        # an AI argument does not tell you it belongs to policy criticism generally.
+        #
+        # A separate call by necessity, not convenience — the finder is bound to this transcript
+        # (`_is_grounded` rejects anything absent from it) and general usage must come from
+        # outside it. One call cannot be asked for both.
+        if found:
+            usages = self.ai.generic_usage(sorted({item["text"] for item in found}))
+            for item in found:
+                if usage := usages.get(item["text"]):
+                    item["when_to_use"] = usage
 
         # `_key` is dropped here whether or not it was verified, so a row can never reach the
         # store carrying it.
