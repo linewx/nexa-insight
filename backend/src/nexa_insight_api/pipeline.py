@@ -368,11 +368,20 @@ class OpenAIAdapter:
         "that is not present in this passage, however typical of the topic it seems.\n"
         "Skip discourse filler, grammar, and anything that looks like a TRANSCRIPTION ERROR "
         "rather than English: a garbled word teaches nothing.\n"
-        "For each item return: text (exactly as it appears), kind, sense_group (verbatim from "
-        "the transcript), chinese (its meaning here), usage (in Chinese, one short sentence "
-        "naming the frame), literal (in Chinese, the everyday reading they would land on — "
-        'required for "shifted" and "coined"), example (verbatim), example_chinese (the example '
-        "translated into Chinese), sentence_position.\n"
+        "For each item return:\n"
+        "  text — exactly as it appears\n"
+        "  kind\n"
+        "  chinese — what it MEANS, IN CHINESE, stated so it still holds outside this episode. "
+        "Do NOT fold this speaker's argument into the definition: a card that defines "
+        '"regulatory capture" as what one company is accused of teaches the accusation instead '
+        "of the word.\n"
+        "  context_meaning — IN CHINESE, what the speaker means by it HERE, and only when that "
+        "differs from the general meaning. This is where their argument belongs; for a coined "
+        "term it may be the whole meaning. Omit it when the two are the same. This field must "
+        "be Chinese prose, NOT a quotation from the transcript.\n"
+        "  example — the ONE sentence containing the expression, verbatim\n"
+        "  example_chinese — that sentence in Chinese\n"
+        "  sentence_position\n"
         'No quota. Return JSON with key "expressions".'
     )
 
@@ -1028,6 +1037,25 @@ class ImportPipeline:
     SPEAKER_MARKER = re.compile(r"\s*>>\s*")
     STUTTER = re.compile(r"\b(\w+)( \1\b)+", re.IGNORECASE)
 
+    HAN = re.compile(r"[\u4e00-\u9fff]")
+
+    @classmethod
+    def _chinese_only(cls, value: object) -> str | None:
+        """A Chinese explanation, or nothing.
+
+        Fields asked for in Chinese come back in English often enough to matter: one run
+        produced 196 of 196 cards whose 这集里 was raw transcript. The card renders whatever is
+        here, so a wrong-language value is worse than an empty one — it occupies the section
+        that was supposed to explain what the speaker meant.
+        """
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        # A real Chinese gloss is mostly Han characters even when it quotes English terms.
+        return text if len(cls.HAN.findall(text)) >= max(2, len(text) // 10) else None
+
     @classmethod
     def _source_line(cls, text: str, passage: str) -> str:
         """The ONE sentence containing this expression, cleaned up.
@@ -1276,7 +1304,11 @@ class ImportPipeline:
                     #
                     # `heard_as` (容易理解成) is gone: a correct gloss already shows up the
                     # literal misreading, since misreading it is why the learner stopped.
-                    "restored": item.get("context_meaning") or item.get("sense_group"),
+                    # NO fallback to sense_group. The model ignored `context_meaning` on a real
+                    # run and every one of 196 cards silently fell back to raw English
+                    # transcript — the field looked populated and taught nothing. An absent
+                    # section is honest; a section holding the wrong thing is not.
+                    "restored": self._chinese_only(item.get("context_meaning")),
                     "sentence_position": position,
                     # "auto" and not a third word: it is the column, schema and iOS default,
                     # and only "manual" is ever treated specially.

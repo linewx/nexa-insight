@@ -71,7 +71,7 @@ class FakeAI:
             "text": "Hello world",
             "kind": "shifted",
             "chinese": "\u6253\u62db\u547c",
-            "sense_group": "Hello world.",
+            "context_meaning": "\u8fd9\u96c6\u91cc\u6307\u6d4b\u8bd5\u7528\u7684\u6253\u62db\u547c",
             "usage": "\u6d4b\u8bd5\u7528",
             "literal": "\u4f60\u597d\uff0c\u4e16\u754c",
             "example": "Hello world.",
@@ -240,7 +240,9 @@ def test_pipeline_produces_ready_bilingual_episode(repo, tmp_path):
     # Five fields now, not ten. 这集里 lives in `restored`; 常见用法 comes from the enrichment
     # pass (absent here, since FakeAI returns none); 容易理解成 is gone entirely — a correct
     # gloss already shows up the literal misreading, which is why the learner stopped.
-    assert found.restored == "Hello world."
+    # 这集里 must be Chinese prose, not a transcript quotation. A real run produced 196 of 196
+    # cards holding raw English here, because the mapping fell back to the old field.
+    assert found.restored == "\u8fd9\u96c6\u91cc\u6307\u6d4b\u8bd5\u7528\u7684\u6253\u62db\u547c"
     assert found.heard_as is None, "容易理解成 was removed as redundant with the gloss"
     assert found.when_to_use is None, "no generic usage unless the enrichment pass supplies it"
 
@@ -1177,6 +1179,25 @@ def test_general_usage_is_a_separate_pass(repo, tmp_path):
     # invented general meaning teaches a usage that does not exist.
     assert not stored.get("hello")
     assert ai.asked == [["hello", "world"]], "one batched call, not one per card"
+
+
+def test_a_chinese_field_holding_english_is_dropped():
+    """One run produced 196 of 196 cards whose 这集里 was raw English transcript. The model had
+    ignored the field name and a tolerant `or` fallback quietly substituted the old value, so
+    every card looked populated and taught nothing.
+
+    The card renders whatever is in the field, so a wrong-language value is worse than an empty
+    one: it occupies the section that was meant to explain what the speaker meant.
+    """
+    keep = ImportPipeline._chinese_only
+    assert keep("监管俘获：被监管方让规则服务自己") is not None
+    # Chinese prose quoting English terms is still Chinese prose.
+    assert keep("主播指 Anthropic 借 AI safety 推动监管") is not None
+
+    assert keep("I know the Silicon Valley shorthand where regulation equals") is None
+    assert keep("") is None
+    assert keep(None) is None
+    assert keep("ok") is None, "too short to be an explanation"
 
 
 def test_the_source_line_is_one_sentence_without_transcript_artefacts():
