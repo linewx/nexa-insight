@@ -472,6 +472,9 @@ class OpenAIAdapter:
         'Return JSON {"garbled": [the items that are mis-transcriptions]}.'
     )
 
+    # Words a model writes when it means "nothing here". Stored verbatim they read as content.
+    PLACEHOLDERS = frozenset({"null", "none", "nil", "n/a", "na", "-", "无", "暂无", "不适用"})
+
     GENERIC_USAGE = (
         "For each English expression below, say how it is used OUTSIDE any single conversation "
         "— what a Chinese learner needs in order to use it somewhere else.\n"
@@ -511,6 +514,10 @@ class OpenAIAdapter:
                 continue
             text = str(item.get("text") or "").strip()
             usage = item.get("usage")
+            # A model asked to return null sometimes writes the WORD instead, and one card
+            # stored "null" as its 常见用法 section. Checking for emptiness alone missed it.
+            if isinstance(usage, str) and usage.strip().lower() in self.PLACEHOLDERS:
+                continue
             if not text or not isinstance(usage, str) or not usage.strip():
                 # null usage is the honest answer for a one-off coinage, so it is kept out
                 # rather than filled with something plausible.

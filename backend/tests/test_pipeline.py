@@ -1220,6 +1220,32 @@ def test_general_usage_is_asked_in_small_batches(repo, tmp_path):
     assert all(stored), "every card got its usage section"
 
 
+class PlaceholderUsageAI(OpenAIAdapter):
+    """The real parsing logic with the model call replaced."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def _json(self, prompt, payload):
+        return self._payload
+
+
+def test_the_word_null_is_not_a_usage_section():
+    """A model asked to return null sometimes writes the WORD. One card stored "null" as its
+    常见用法, because checking for emptiness alone does not catch a non-empty placeholder —
+    and stored verbatim it reads as content."""
+    ai = PlaceholderUsageAI({"items": [
+        {"text": "unobfuscate these thinking tokens", "usage": "null"},
+        {"text": "doomerism", "usage": "  None  "},
+        {"text": "pearl-clutching", "usage": "讽刺性习语，多用于文化批评"},
+    ]})
+    usages = ai.generic_usage(["unobfuscate these thinking tokens", "doomerism", "pearl-clutching"])
+
+    assert "unobfuscate these thinking tokens" not in usages
+    assert "doomerism" not in usages
+    assert usages["pearl-clutching"].startswith("讽刺性习语")
+
+
 def test_an_example_is_never_a_paragraph():
     """The example is the one section a card cannot do without, so it is capped rather than
     dropped. A tolerant `or` fallback to the model's raw text stored 4699 characters on one real
