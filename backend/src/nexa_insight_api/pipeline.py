@@ -108,9 +108,33 @@ class YtDlpMediaAdapter:
             raise RuntimeError("Timed out while contacting YouTube. Check the backend server's network or proxy.") from exc
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or "").strip()
+            if hint := self._known_failure(detail):
+                raise RuntimeError(hint) from exc
             if detail:
                 raise RuntimeError(f"yt-dlp failed: {detail[-1000:]}") from exc
             raise RuntimeError("yt-dlp failed while reading this YouTube URL") from exc
+
+    @staticmethod
+    def _known_failure(detail: str) -> str | None:
+        """A sentence that says what to DO, for failures whose raw text does not.
+
+        `HTTP Error 403: Forbidden` reached the learner verbatim and reads like the video is
+        private or the network is blocked. It is neither: YouTube periodically changes how the
+        media URL is signed, and a yt-dlp older than that change computes a signature the CDN
+        rejects. Seen with 2026.07.04 against a public video whose formats listed fine —
+        metadata worked, only the download 403'd, which is the fingerprint.
+        """
+        lowered = detail.lower()
+        if "403" in lowered and "forbidden" in lowered:
+            return ("YouTube refused the download (HTTP 403). This usually means yt-dlp is out "
+                    "of date — YouTube changed how media URLs are signed. Update it "
+                    "(`brew upgrade yt-dlp`) and retry.")
+        if "sign in to confirm" in lowered or "not a bot" in lowered:
+            return ("YouTube asked this server to prove it is not a bot. Retry later, or give "
+                    "yt-dlp cookies from a signed-in browser session.")
+        if "video unavailable" in lowered or "private video" in lowered:
+            return "This video is private or unavailable, so there is nothing to import."
+        return None
 
     def metadata(self, url: str) -> MediaMetadata:
         result = self._run(self._yt_dlp_command("--dump-single-json", "--skip-download", url))

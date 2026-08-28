@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -1173,6 +1174,36 @@ def test_core_meaning_drops_the_explanatory_aside():
     # kept rather than reduced to nothing.
     assert core("支付押金") == "支付押金"
     assert core("（无）") == "（无）"
+
+
+def test_a_403_says_what_to_do_about_it():
+    """`HTTP Error 403: Forbidden` reached the learner verbatim and reads like the video is
+    private or the network is blocked. It is neither: YouTube periodically changes how media
+    URLs are signed, and a yt-dlp older than that change computes a signature the CDN rejects.
+    Seen with 2026.07.04 against a public video whose formats listed fine — metadata worked and
+    only the download 403'd, which is the fingerprint.
+
+    Driven through _run rather than calling _known_failure directly: testing the helper alone
+    passes even when nothing raises its result, which is exactly the vacuous test this repo
+    keeps producing.
+    """
+    adapter = YtDlpMediaAdapter()
+    failure = subprocess.CalledProcessError(
+        1, ["yt-dlp"], stderr="ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    with patch("subprocess.run", side_effect=failure):
+        with pytest.raises(RuntimeError) as raised:
+            adapter._run(["yt-dlp", "--version"])
+    message = str(raised.value)
+    assert "yt-dlp" in message and "date" in message, message
+    assert "403" in message
+
+def test_other_youtube_refusals_are_named_too():
+    known = YtDlpMediaAdapter._known_failure
+    assert "bot" in (known("ERROR: Sign in to confirm you're not a bot") or "")
+    assert "private" in (known("ERROR: Private video. Sign in if you've been granted access") or "")
+    # Anything unrecognised keeps its raw text, which is more useful than a wrong guess.
+    assert known("ERROR: some brand new failure mode") is None
+    assert known("") is None
 
 
 def test_media_adapter_finds_homebrew_tools_when_launchd_path_is_minimal():
