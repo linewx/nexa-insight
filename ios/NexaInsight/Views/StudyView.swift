@@ -134,7 +134,8 @@ struct StudyView: View {
                 vm.syncNow()
                 syncRequest += 1
             },
-            onManualScroll: { vm.onManualScroll() },
+            onManualScroll: { vm.onManualScroll(translation: $0) },
+            onScrollEnded: { vm.onScrollEnded() },
             onRefreshAudio: { Task { await refreshAudio() } },
             onTalk: startDiscussion,
             onSeekIntent: { ms in playIntent(seekTo: ms) },
@@ -768,7 +769,8 @@ private struct StudyWorkspace: View {
     let onSync: () -> Void
     /// The learner dragged the transcript. Passed in rather than read from a view model,
     /// because this subview has neither — it takes closures, like every other action here.
-    let onManualScroll: () -> Void
+    let onManualScroll: (CGFloat) -> Void
+    let onScrollEnded: () -> Void
     let onRefreshAudio: () -> Void
     let onTalk: () -> Void
     // Seeking is the only playback action routed from here (the scrubber in the top
@@ -852,19 +854,34 @@ private struct StudyWorkspace: View {
             if !following {
                 VStack {
                     Spacer(minLength: 0)
-                    Button(action: onSync) {
-                        HStack(spacing: NXSpacing.x1) {
-                            Image(systemName: "scope").font(.system(size: 12, weight: .semibold))
-                            Text("Back to current").font(NXFont.control)
+                    // An icon, not a labelled accent capsule. The old one was filled in the
+                    // theme colour with white text and a shadow — maximum visual weight for a
+                    // control whose whole job is "scroll back". It competed with the transcript
+                    // for attention while reading, which is the one thing this page is for.
+                    //
+                    // Small and quiet, but the tap target stays 44pt: unobtrusive must not mean
+                    // fiddly. Right-aligned, where a thumb already rests.
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button(action: onSync) {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(NXColor.textSecondary(scheme))
+                                .frame(width: 36, height: 36)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .overlay(Circle().stroke(NXColor.border(scheme), lineWidth: 0.5))
+                                // The visible circle is 36pt; the hit area is 44.
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, NXSpacing.x3)
-                        .frame(height: 34)
-                        .background(NXColor.primary, in: Capsule())
-                        .nxFloatingShadow(scheme)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("回到当前播放位置")
                     }
-                    .buttonStyle(.plain)
-                    // Clear of BOTH the dock and the home indicator. 16pt put the capsule
+                    // In from the screen edge, so it sits at the text column's margin instead
+                    // of flush against the bezel. x2 rather than the transcript's own padding
+                    // because the 44pt hit area already carries 4pt of slack around the circle.
+                    .padding(.trailing, NXSpacing.x2)
+                    // Clear of BOTH the dock and the home indicator. 16pt put the control
                     // almost on the indicator and 92 had it touching the bar above it —
                     // "贴的太紧" was about a real gap of a few points.
                     .padding(.bottom, discussionSession == nil ? NXSpacing.x12 : 116)
@@ -916,11 +933,15 @@ private struct StudyWorkspace: View {
                     .onChanged { value in
                         // Vertical only. A sideways drag is the notes-drawer swipe (leftward
                         // past 60pt), and treating that as "reading elsewhere" would drop
-                        // following — and reveal "Back to current" — every time the drawer is
+                        // following — and reveal the sync button — every time the drawer is
                         // opened, which has nothing to do with where the transcript is.
                         guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                        onManualScroll()
+                        // How FAR, not merely whether. A 12pt nudge leaves the playing line on
+                        // screen, and offering to scroll back to a line you can already see is
+                        // the "too sensitive" complaint.
+                        onManualScroll(value.translation.height)
                     }
+                    .onEnded { _ in onScrollEnded() }
             )
             .onChange(of: current?.id) { _, newValue in
                 if following, let newValue {
