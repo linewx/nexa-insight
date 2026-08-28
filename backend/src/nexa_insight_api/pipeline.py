@@ -873,6 +873,11 @@ class ImportPipeline:
 
     # Determiners and possessives, which vary between mentions of the same phrase.
     INFLECTION = re.compile(r"\b(a|an|the|your|his|her|their|its|my|our)\b")
+    # A bare object pronoun at the END, which carries no meaning of its own: "obfuscate" and
+    # "obfuscates it" arrived as two cards on a real run, differing only by this. Anchored to
+    # the end so "it" inside a phrase ("call it a day") is untouched, and applied only when
+    # something precedes it, so the pronoun alone is not stripped to nothing.
+    TRAILING_OBJECT = re.compile(r"\s+(it|them|this|that)$", re.IGNORECASE)
     # Function words a frame varies freely: the slot absorbs whatever follows, so "drop me off
     # ___" and "drop me off at the ___" are one pattern written two ways.
     FRAME_FILLER = re.compile(r"\b(a|an|the|at|to|in|on|for|of|it|your|my|our|their|his|her)\b")
@@ -904,12 +909,15 @@ class ImportPipeline:
         #
         # NOT sorted for phrases: "check in" and "check out" must stay apart, and word order is
         # what distinguishes many pairs like them.
-        stripped = cls.INFLECTION.sub(" ", lowered)
+        stripped = cls.TRAILING_OBJECT.sub("", cls.INFLECTION.sub(" ", lowered).strip())
         return " ".join(cls._stem(word) for word in stripped.split())
 
     # Suffixes stripped when comparing two expressions. Crude on purpose: this only has to see
     # "intelligence" and "intelligent" as the same word, not do real morphology.
-    STEM_SUFFIXES = ("ences", "ence", "ents", "ent", "ing", "ers", "er", "es", "s", "ed", "ly")
+    # "es" is absent on purpose: stripping both letters made "obfuscates" -> "obfuscat" while
+    # "obfuscate" kept its e, so the two never met. The plain "s" rule handles it and leaves the
+    # stem-final e in place for both.
+    STEM_SUFFIXES = ("ences", "ence", "ents", "ent", "ing", "ers", "er", "s", "ed", "ly")
 
     @classmethod
     def _stem(cls, word: str) -> str:

@@ -1128,6 +1128,26 @@ def test_one_frame_written_three_ways_is_one_pattern():
     assert key("head down to ___") != key("drop me off at ___")
 
 
+def test_a_verb_and_its_bare_object_are_one_card():
+    """ep8 produced "obfuscate", "obfuscates it" and "promulgates" as separate cards. A trailing
+    object pronoun carries no meaning of its own, and the stemmer was asymmetric: it stripped
+    both letters of "es", so "obfuscates" became "obfuscat" while "obfuscate" kept its e and the
+    two never met."""
+    key = lambda text: ImportPipeline._dedup_key(text, "set_phrase")
+    assert key("obfuscate") == key("obfuscates it")
+    assert key("obfuscate") == key("promulgate".replace("promulgate", "obfuscates"))
+    assert key("job displacement") == key("job displacements")
+
+    # Anchored to the END, so a pronoun inside a phrase is untouched — "call it a day" is not
+    # "call a day".
+    assert key("call it a day") != key("call a day")
+    # And the user's line on what stays separate: containment and prefixes are different cards,
+    # because "jailbreak models" and "unobfuscate" can be distinct things to learn.
+    assert key("jailbreak") != key("jailbreak models")
+    assert key("obfuscate") != key("unobfuscate")
+    assert key("headcount") != key("entry level headcount")
+
+
 def test_one_concept_rephrased_is_one_card():
     """A real native run produced "intelligence sovereignty" beside "intelligent sovereignty" —
     one concept the speaker kept rephrasing, and three passes each caught a different wording.
