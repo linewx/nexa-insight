@@ -173,6 +173,19 @@ private struct BackendSettingsPage: View {
     @ObservedObject var settings: AppSettings
     @Environment(\.colorScheme) private var scheme
 
+    @State private var reachability: BackendReachability = .untested
+
+    private func testConnection() {
+        guard let url = URL(string: settings.backendBaseURL) else {
+            reachability = .unreachable("\u{4e0d}\u{662f}\u{6709}\u{6548}\u{7684} URL")
+            return
+        }
+        reachability = .checking
+        Task {
+            reachability = await BackendClient(baseURL: url).probe()
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NXSpacing.x8) {
@@ -182,8 +195,17 @@ private struct BackendSettingsPage: View {
                         text: $settings.backendBaseURL,
                         placeholder: AppSettings.defaultBackendBaseURL,
                         systemName: "network")
+                    // Reachability where the string check used to be. "Backend URL looks
+                    // valid" only parsed the text and never sent a request, so a green dot
+                    // could sit beside an address nothing was listening on — answering
+                    // "is this a URL?" when the question was "is this right?".
+                    ConnectionStatus(urlString: settings.backendBaseURL, result: reachability)
                     HStack(spacing: NXSpacing.x3) {
-                        ConnectionStatus(urlString: settings.backendBaseURL)
+                        NXTextButton(
+                            title: reachability.isChecking ? "\u{6d4b}\u{8bd5}\u{4e2d}..." : "\u{6d4b}\u{8bd5}\u{8fde}\u{63a5}",
+                            systemName: reachability.isChecking ? "hourglass" : "bolt.horizontal",
+                            disabled: reachability.isChecking,
+                            action: testConnection)
                         Spacer()
                         NXTextButton(title: "\u{6062}\u{590d}\u{9ed8}\u{8ba4}", systemName: "arrow.counterclockwise") {
                             settings.backendBaseURL = AppSettings.defaultBackendBaseURL
@@ -372,21 +394,49 @@ private struct SettingsFieldLabel: View {
 
 private struct ConnectionStatus: View {
     let urlString: String
+    /// What the last test found, or `.untested`. The syntax check still runs — telling someone
+    /// the URL is malformed before they press a button is faster than a failed request — but it
+    /// no longer PRETENDS to be a connection check.
+    var result: BackendReachability = .untested
     @Environment(\.colorScheme) private var scheme
 
-    private var valid: Bool {
+    private var wellFormed: Bool {
         guard let url = URL(string: urlString), let scheme = url.scheme else { return false }
         return ["http", "https"].contains(scheme) && url.host() != nil
+    }
+
+    private var display: (color: Color, text: String) {
+        guard wellFormed else {
+            return (NXColor.error, "\u{8bf7}\u{8f93}\u{5165}\u{6709}\u{6548}\u{7684} http \u{6216} https \u{5730}\u{5740}")
+        }
+        switch result {
+        case .untested:
+            // Deliberately not green. Nothing has been contacted, and a green dot here is what
+            // made the old indicator misleading.
+            return (NXColor.textTertiary(scheme), "\u{5730}\u{5740}\u{683c}\u{5f0f}\u{6b63}\u{5e38}，\u{5c1a}\u{672a}\u{6d4b}\u{8bd5}")
+        case .checking:
+            return (NXColor.primary, "\u{6b63}\u{5728}\u{8fde}\u{63a5}...")
+        case let .reachable(count):
+            return (NXColor.success, "\u{5df2}\u{8fde}\u{63a5}，\u{540e}\u{7aef}\u{6709} \(count) \u{4e2a}\u{8282}\u{76ee}")
+        case let .wrongService(message):
+            // Amber, not red: the network is fine and the address is not, which is a different
+            // thing to go and check.
+            return (NXColor.insight, message)
+        case let .unreachable(message):
+            return (NXColor.error, message)
+        }
     }
 
     var body: some View {
         HStack(spacing: NXSpacing.x2) {
             Circle()
-                .fill(valid ? NXColor.success : NXColor.error)
+                .fill(display.color)
                 .frame(width: 7, height: 7)
-            Text(valid ? "Backend URL looks valid" : "Enter a valid http or https URL")
+            Text(display.text)
                 .font(NXFont.auxiliary)
-                .foregroundStyle(valid ? NXColor.textTertiary(scheme) : NXColor.error)
+                .foregroundStyle(display.color == NXColor.textTertiary(scheme)
+                                 ? NXColor.textTertiary(scheme) : display.color)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, NXSpacing.x2)
     }

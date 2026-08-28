@@ -38,6 +38,28 @@ struct BackendClient {
         return try Self.jsonDecoder.decode(T.self, from: data)
     }
 
+    /// Contacts the backend and reports what came back.
+    ///
+    /// Never throws: every outcome is a verdict the settings screen renders, and "it failed"
+    /// is the most useful one. Uses its own short-timeout session because `URLSession.shared`
+    /// defaults to a seven-day resource timeout — long enough that a half-open connection
+    /// would leave the button spinning until the app was killed.
+    func probe() async -> BackendReachability {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = BackendProbe.timeout
+        config.timeoutIntervalForResource = BackendProbe.timeout
+        let probeSession = URLSession(configuration: config)
+        do {
+            let (data, response) = try await probeSession.data(for: URLRequest(url: url(path: "/api/episodes")))
+            let status = (response as? HTTPURLResponse)?.statusCode
+            let episodes = try? Self.jsonDecoder.decode([EpisodeDTO].self, from: data)
+            return BackendProbe.verdict(status: status, decodedEpisodes: episodes?.count, error: nil)
+        } catch {
+            return BackendProbe.verdict(status: nil, decodedEpisodes: nil,
+                                        error: error.localizedDescription)
+        }
+    }
+
     func listEpisodes() async throws -> [EpisodeDTO] { try await get("/api/episodes") }
 
     func importEpisode(url urlString: String) async throws -> (episode: EpisodeDTO, job: JobDTO) {
