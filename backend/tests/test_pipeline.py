@@ -1231,6 +1231,44 @@ class PlaceholderUsageAI(OpenAIAdapter):
         return self._payload
 
 
+class FlakyUsageAI(FakeAI):
+    """Fails the first general-usage call, succeeds on the retry."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        return [{"text": "hello", "kind": "set_phrase", "chinese": "x",
+                 "example": "hello world.", "example_chinese": "y", "sentence_position": 0}]
+
+    def generic_usage(self, texts):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("provider hiccup")
+        return {"hello": "\u53e3\u8bed\uff0c\u591a\u7528\u4e8e\u95ee\u5019"}
+
+
+def test_a_failed_usage_batch_retries_and_says_so(repo, tmp_path, capsys):
+    """A failed batch returns {} for all 20 of its expressions, which looks exactly like "none of
+    these has a general usage". 52 cards were missing the section and the log said nothing, so a
+    dropped batch and an honest answer were indistinguishable.
+
+    Fifth instance this session of a swallowed failure that produced plausible-looking output.
+    """
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = FlakyUsageAI()
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    assert ai.calls == 2, "the batch is retried rather than abandoned"
+    card = repo.list_learning_expressions(episode_id)[0]
+    assert card.when_to_use, "the retry's answer reaches the card"
+    assert "failed" in capsys.readouterr().out, "and the first failure is on the record"
+
+
 def test_the_word_null_is_not_a_usage_section():
     """A model asked to return null sometimes writes the WORD. One card stored "null" as its
     常见用法, because checking for emptiness alone does not catch a non-empty placeholder —

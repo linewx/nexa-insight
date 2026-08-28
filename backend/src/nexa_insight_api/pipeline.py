@@ -1603,14 +1603,27 @@ class ImportPipeline:
         ]
 
     def _usage_batch(self, texts: list[str]) -> dict[str, str]:
-        """One general-usage call. Runs on a worker thread, so it touches no shared state."""
-        try:
-            return self.ai.generic_usage(texts)
-        except AttributeError:
-            raise
-        except Exception:
-            # A card without this section is still a card.
-            return {}
+        """One general-usage call. Runs on a worker thread, so it touches no shared state.
+
+        Retries once. A batch that fails returns {} for all 20 of its expressions, which is
+        indistinguishable from "none of these has a general usage" — 52 cards were missing this
+        section and the log said nothing at all, so I could not tell a dropped batch from an
+        honest answer. Now the failure is logged and retried.
+        """
+        for attempt in (1, 2):
+            try:
+                return self.ai.generic_usage(texts)
+            except AttributeError:
+                raise
+            except Exception as exc:
+                # stdout, which is where the worker's log goes — this backend uses no logging
+                # module. Flushed so a crash later in the run cannot lose the line.
+                print(
+                    f"general-usage batch of {len(texts)} failed "
+                    f"(attempt {attempt}/2): {exc!r}",
+                    flush=True,
+                )
+        return {}
 
     def _verify_producible(self, text: str, meaning: str) -> bool:
         """Whether the learner would already say this. Runs on a worker thread.
