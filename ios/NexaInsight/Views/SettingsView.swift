@@ -176,8 +176,11 @@ private struct BackendSettingsPage: View {
     @State private var reachability: BackendReachability = .untested
 
     private func testConnection() {
-        guard let url = URL(string: settings.backendBaseURL) else {
-            reachability = .unreachable("\u{4e0d}\u{662f}\u{6709}\u{6548}\u{7684} URL")
+        // A malformed address is named as such rather than probed. "hello" and
+        // "localhost:8000" both satisfy URL(string:), so a bare guard on that sent a doomed
+        // request and blamed the network for a missing "http://".
+        guard let url = BackendProbe.usable(settings.backendBaseURL) else {
+            reachability = .unreachable("\u{5730}\u{5740}\u{4e0d}\u{5b8c}\u{6574}，\u{9700}\u{8981} http:// \u{6216} https:// \u{548c}\u{4e3b}\u{673a}\u{540d}")
             return
         }
         reachability = .checking

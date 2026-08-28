@@ -47,3 +47,18 @@ final class BackendReachabilityTests: XCTestCase {
         XCTAssertGreaterThan(BackendProbe.timeout, 1)
     }
 }
+
+extension BackendReachabilityTests {
+    func testOnlyAddressesWorthProbingArePassedThrough() {
+        // URL(string:) is far more permissive than it looks. Each of these produces a URL, so
+        // a bare nil-check let a typo through and reported the resulting failure as
+        // "unreachable" — blaming the network for a missing scheme.
+        for bad in ["", "hello", "localhost:8000", "http://", "not a url", "ftp://host"] {
+            XCTAssertNil(BackendProbe.usable(bad), bad)
+        }
+        XCTAssertNotNil(BackendProbe.usable("http://localhost:8000"))
+        XCTAssertNotNil(BackendProbe.usable("https://nexa.example.com"))
+        // Trailing whitespace is what a paste from a terminal leaves behind.
+        XCTAssertNotNil(BackendProbe.usable("  http://100.64.0.1:8000 "))
+    }
+}

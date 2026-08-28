@@ -22,6 +22,22 @@ enum BackendReachability: Equatable {
 
 /// Turns a probe outcome into a verdict. Pure, so the mapping is testable without a server.
 enum BackendProbe {
+    /// Whether this string is worth sending a request to.
+    ///
+    /// `URL(string:)` is far more permissive than it looks: "hello", "localhost:8000" and
+    /// "http://" all produce a URL, the first two with no scheme or no host. Guarding only on
+    /// `URL(string:) != nil` meant pressing 测试连接 on a typo fired a request that could only
+    /// fail, and reported it as "unreachable" — sending the learner to check their network over
+    /// a missing "http://".
+    static func usable(_ urlString: String) -> URL? {
+        guard let url = URL(string: urlString.trimmingCharacters(in: .whitespaces)),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host(), !host.isEmpty
+        else { return nil }
+        return url
+    }
+
     /// How long to wait. `URLSession.shared` defaults to a 7-day resource timeout, so a
     /// half-open connection would leave the button spinning until the app was killed — the
     /// same trap that made an import hang on "Saving to your library".
