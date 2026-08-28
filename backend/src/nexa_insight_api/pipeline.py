@@ -515,9 +515,16 @@ class OpenAIAdapter:
         "and leaves them unable to produce anything. Keep the expression itself intact and "
         "unchanged.\n"
         '  "example_chinese": that English sentence translated into Chinese.\n'
-        "If the expression has no general currency — a metaphor someone invented, a term coined "
-        'for one argument — return "usage": null for it. Do NOT manufacture a general meaning '
-        "for something that has none; an invented example teaches a usage that does not exist.\n"
+        'Return "usage": null ONLY when the expression exists nowhere outside this one '
+        "conversation — a metaphor this speaker invented on the spot, a label built for this "
+        "argument alone. That bar is high and most expressions do not meet it.\n"
+        "In particular, an expression made of ordinary words DOES have general usage even when "
+        "the pairing feels new: rage baiting, golden vote, glitzy marketing, pearl-clutching and "
+        "robo-taxi are all things people say elsewhere, and a learner can reuse every one of "
+        "them. Answer for these.\n"
+        "The point of null is to avoid teaching a usage that does not exist. It is not a way to "
+        "skip an expression you are unsure about — an omission and a genuine coinage look "
+        "identical to the learner, so guessing null costs them a section they needed.\n"
         'Return JSON {"items": [{"text", "usage", "example"}]}.'
     )
 
@@ -899,6 +906,10 @@ class ImportPipeline:
     # call covering all 140 answered 18 of them while batches of 20 answered 79. A long list
     # gets skimmed, and the skipped ones look exactly like "this has no general usage".
     USAGE_BATCH = 20
+
+    # Second-pass size for expressions the first pass skipped. Small enough that the model
+    # answers each one rather than skimming past it.
+    USAGE_RETRY_BATCH = 5
 
     # Shapes no expression has, checkable without a model call. Each was a real result:
     # "P level" and "M Club" are a parking sign and a lounge brand; "Stay close to me" and
@@ -1575,6 +1586,31 @@ class ImportPipeline:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 for result in executor.map(self._usage_batch, groups):
                     usages.update(result)
+
+            # A second pass over whatever the first one skipped, in much smaller groups.
+            #
+            # The misses are not errors: the log recorded zero failed batches while
+            # pearl-clutching, pump, seeded and rage baiting all came back empty — and every one
+            # of them answers in full when asked in a group of five. A long list simply gets
+            # skimmed, and the omissions are silent, which makes them indistinguishable from "this
+            # expression has no general usage".
+            #
+            # Expressions that genuinely have none (thinking tokens, safety stack) decline again
+            # here, which costs a little and stays correct.
+            missed = [text for text in unique if text not in usages]
+            if missed:
+                retry_groups = [missed[i:i + self.USAGE_RETRY_BATCH]
+                                for i in range(0, len(missed), self.USAGE_RETRY_BATCH)]
+                workers = max(1, min(self.settings.scan_concurrency, len(retry_groups)))
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    for result in executor.map(self._usage_batch, retry_groups):
+                        usages.update(result)
+                print(
+                    f"general-usage: {len(unique) - len(missed)}/{len(unique)} on the first pass, "
+                    f"{len(usages)}/{len(unique)} after retrying {len(missed)} in "
+                    f"{len(retry_groups)} small groups",
+                    flush=True,
+                )
             for item in found:
                 # Checked HERE as well as inside the adapter's parsing. The adapter's check only
                 # covers its own JSON handling, so any other supplier of usages — including a

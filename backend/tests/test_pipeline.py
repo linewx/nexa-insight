@@ -1179,7 +1179,12 @@ def test_general_usage_is_a_separate_pass(repo, tmp_path):
     # A declined usage stays empty rather than being filled with something plausible: an
     # invented general meaning teaches a usage that does not exist.
     assert not stored.get("hello")
-    assert ai.asked == [["hello", "world"]], "one batched call, not one per card"
+    # Two passes: everything once in a batch, then whatever came back empty in small groups. The
+    # log recorded zero failures while pearl-clutching, pump and seeded all returned nothing, and
+    # each answers in full when asked in a group of five — a long list gets skimmed silently, and
+    # a skipped expression is indistinguishable from one with no general usage.
+    assert ai.asked[0] == ["hello", "world"], "first pass covers everything in one batch"
+    assert ai.asked[1:] == [["hello"]], "second pass re-asks only what was skipped"
 
 
 class BatchSizeAI(FakeAI):
@@ -1229,6 +1234,24 @@ class PlaceholderUsageAI(OpenAIAdapter):
 
     def _json(self, prompt, payload):
         return self._payload
+
+
+def test_the_prompt_reserves_null_for_real_coinages():
+    """Three wrong diagnoses preceded this one: batch too large, batch dropped, batch too small.
+    The log showed zero failures, and expressions declined a batch of 20 declined a group of 5 and
+    declined when asked ALONE — so batch size was never the mechanism.
+
+    The cause was my own wording. "no general currency — a metaphor someone invented, a term
+    coined for one argument" reads as a licence to decline anything whose pairing feels new, so
+    rage baiting, golden vote and pearl-clutching all came back null despite being perfectly
+    reusable English. The instruction now says the bar is high, names those very cases as ones to
+    answer, and states why guessing null is not free: an omission and a genuine coinage look
+    identical on the card.
+    """
+    prompt = OpenAIAdapter.GENERIC_USAGE
+    assert "ONLY when" in prompt, "the bar must be stated as narrow"
+    assert "rage baiting" in prompt, "the borderline cases are named, not left to judgement"
+    assert "identical to the learner" in prompt, "declining has a stated cost"
 
 
 class FlakyUsageAI(FakeAI):
