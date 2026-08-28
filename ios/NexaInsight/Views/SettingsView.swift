@@ -203,6 +203,12 @@ private struct BackendSettingsPage: View {
                     // could sit beside an address nothing was listening on — answering
                     // "is this a URL?" when the question was "is this right?".
                     ConnectionStatus(urlString: settings.backendBaseURL, result: reachability)
+                        // A verdict belongs to the address that was tested. Editing the field
+                        // left 已连接 showing in green for a URL nothing had contacted, which
+                        // is the same lie the old syntax-only indicator told.
+                        .onChange(of: settings.backendBaseURL) { _, _ in
+                            reachability = .untested
+                        }
                     HStack(spacing: NXSpacing.x3) {
                         NXTextButton(
                             title: reachability.isChecking ? "\u{6d4b}\u{8bd5}\u{4e2d}..." : "\u{6d4b}\u{8bd5}\u{8fde}\u{63a5}",
