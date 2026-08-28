@@ -36,6 +36,30 @@ class TranscriptSegment:
     text: str
 
 
+# Chinese prose, or nothing. Used by BOTH the adapter (register notes) and the pipeline (这集里),
+# so it lives at module level: an earlier version was a classmethod on ImportPipeline that
+# OpenAIAdapter called through `self`, which would have raised on the first real enrichment.
+_HAN = re.compile(r"[\u4e00-\u9fff]")
+
+
+def chinese_prose(value: object) -> str | None:
+    """The value if it reads as Chinese prose, else None.
+
+    Fields asked for in Chinese come back in English often enough to matter: one run produced
+    196 of 196 cards whose 这集里 was raw transcript, and another put an English register note
+    in 常见用法. The card renders whatever is there, so a wrong-language value is worse than an
+    empty one — it occupies the section that was meant to explain something.
+
+    A Chinese gloss quoting English terms still passes; a mostly-English sentence does not.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    return text if len(_HAN.findall(text)) >= max(2, len(text) // 10) else None
+
+
 class MediaAdapter(Protocol):
     def metadata(self, url: str) -> MediaMetadata: ...
     def stream(self, url: str) -> tuple[str | None, datetime | None]: ...
@@ -372,9 +396,11 @@ class OpenAIAdapter:
         "  text — exactly as it appears\n"
         "  kind\n"
         "  chinese — what it MEANS, IN CHINESE, stated so it still holds outside this episode. "
-        "Do NOT fold this speaker's argument into the definition: a card that defines "
-        '"regulatory capture" as what one company is accused of teaches the accusation instead '
-        "of the word.\n"
+        "It must contain NO reference to this conversation: no 此处, no 说话人, no 本集, no "
+        "speaker, and no names from this discussion. Write the definition you would put in a "
+        "dictionary. Everything about how THIS speaker used it goes in context_meaning instead — "
+        'a card that defines "regulatory capture" as what one company is accused of teaches the '
+        "accusation instead of the word.\n"
         "  context_meaning — IN CHINESE, what the speaker means by it HERE, and only when that "
         "differs from the general meaning. This is where their argument belongs; for a coined "
         "term it may be the whole meaning. Omit it when the two are the same. This field must "
@@ -478,11 +504,17 @@ class OpenAIAdapter:
     GENERIC_USAGE = (
         "For each English expression below, say how it is used OUTSIDE any single conversation "
         "— what a Chinese learner needs in order to use it somewhere else.\n"
-        "Give two things:\n"
-        '  "usage": in Chinese, one short sentence on where it belongs (register, formality, '
-        "typical subject matter).\n"
-        '  "example": in Chinese, ONE concrete situation that has nothing to do with AI, '
-        "podcasts or technology, showing the expression in use.\n"
+        "Give three things:\n"
+        '  "usage": IN CHINESE, one short sentence on where it belongs — register, formality, '
+        "what subjects it turns up in. Chinese, not English: the learner reads this to "
+        "understand, and English here makes them decode the explanation as well as the "
+        "expression.\n"
+        '  "example": ONE natural ENGLISH sentence using the expression, on a subject unrelated '
+        "to AI, podcasts or technology. This is what the learner will actually say, so it must "
+        "be English they could reuse — a Chinese description of a situation teaches recognition "
+        "and leaves them unable to produce anything. Keep the expression itself intact and "
+        "unchanged.\n"
+        '  "example_chinese": that English sentence translated into Chinese.\n'
         "If the expression has no general currency — a metaphor someone invented, a term coined "
         'for one argument — return "usage": null for it. Do NOT manufacture a general meaning '
         "for something that has none; an invented example teaches a usage that does not exist.\n"
@@ -522,10 +554,23 @@ class OpenAIAdapter:
                 # null usage is the honest answer for a one-off coinage, so it is kept out
                 # rather than filled with something plausible.
                 continue
-            example = item.get("example")
+            # Chinese, checked rather than trusted: one card's 常见用法 opened with "Informal,
+            # often ironic or critical register; used in commentary (e.g., op-eds…)" — correct
+            # content in the wrong language, which makes the learner read metalanguage instead
+            # of an explanation. Dropped rather than kept, since the English example below it
+            # still carries the section.
+            if not chinese_prose(usage):
+                continue
             body = usage.strip()
+            # The English sentence is the point of this section: it is what the learner says.
+            # An earlier version asked for the situation in Chinese and got 84 cards describing
+            # a scene — "保健品公司请明星代言量子能量手环" — from which nothing can be spoken.
+            example = item.get("example")
             if isinstance(example, str) and example.strip():
                 body += "\n" + example.strip()
+                gloss = item.get("example_chinese")
+                if isinstance(gloss, str) and gloss.strip():
+                    body += "\n" + gloss.strip()
             usages[text] = body
         return usages
 
@@ -1070,6 +1115,111 @@ class ImportPipeline:
             return candidate
         return candidate[: cls.MAX_EXAMPLE_CHARS].rsplit(" ", 1)[0] + "…"
 
+    # Words that mean the sentence is talking ABOUT this episode rather than defining the
+    # expression: "此处…", "说话人用它表示…". A company name is NOT evidence — "frontier labs"
+    # legitimately means OpenAI, Anthropic and DeepMind, so naming them is the definition.
+    EPISODE_DEICTIC = re.compile(r"此处|本集|这集里|说话人|主播|\bspeaker\b", re.IGNORECASE)
+
+    @classmethod
+    def _general_definition(cls, value: object) -> str | None:
+        """The definition with this episode's argument cut off, or None.
+
+        The prompt forbids folding the speaker's argument into the gloss and 22 of 132 cards did
+        it anyway — "…夸张地做出惊恐姿态；此处被 speaker 用作批判性标签，特指 Anthropic 在 AI
+        风险叙事中…". The learner then meets the word elsewhere and the card teaches them the
+        accusation. 这集里 already holds that half, so this is duplication as well as pollution.
+
+        Cut at the clause boundary rather than rejected: the part BEFORE the deixis is a good
+        definition, and throwing it away would lose the only section every card needs.
+        """
+        text = chinese_prose(value)
+        if not text:
+            return None
+        match = cls.EPISODE_DEICTIC.search(text)
+        if not match:
+            return text
+        # Prefer cutting at the last clause break before the deixis, so the definition ends
+        # cleanly instead of mid-sentence.
+        head = text[: match.start()]
+        for sep in ("；", ";", "。", "，", ","):
+            if sep in head:
+                head = head.rsplit(sep, 1)[0]
+                break
+        head = head.strip(" ；;。，,、")
+        # The deixis can sit INSIDE a parenthetical — "（源自…操作'双击'，此处为比喻）" — and
+        # cutting there left an unclosed bracket on a real card. Drop the dangling opener.
+        if head.count("（") > head.count("）"):
+            head = head[: head.rindex("（")].strip(" ；;。，,、")
+        if head.count("(") > head.count(")"):
+            head = head[: head.rindex("(")].strip(" ；;。，,、")
+        # Too little left to be a definition — better the original than a fragment. This also
+        # covers a definition that OPENS with the deixis: "说话人临时创造的术语，指…" is not
+        # pollution, it is what a coined term's definition looks like.
+        return head if len(_HAN.findall(head)) >= 4 else text
+
+    # Beyond this an "example" is a passage, not a sentence, and shows the learner nothing
+    # about the expression's shape.
+    MAX_EXAMPLE_CHARS = 220
+
+    @classmethod
+    def _example_line(cls, text: str, raw: object) -> str:
+        """One sentence containing the expression, or a hard-capped fallback.
+
+        The example is the one section a card cannot do without, so unlike 这集里 this cannot
+        simply be dropped — but it must not be a paragraph either. When no sentence contains the
+        expression, the raw text is truncated rather than stored whole.
+        """
+        passage = str(raw or "")
+        line = cls._source_line(text, passage)
+        if line and len(line) <= cls.MAX_EXAMPLE_CHARS:
+            return line
+        candidate = line or " ".join(cls.SPEAKER_MARKER.sub(" ", passage).split())
+        if len(candidate) <= cls.MAX_EXAMPLE_CHARS:
+            return candidate
+        return candidate[: cls.MAX_EXAMPLE_CHARS].rsplit(" ", 1)[0] + "…"
+
+    # Words that mean the sentence is talking ABOUT this episode rather than defining the
+    # expression: "此处…", "说话人用它表示…". A company name is NOT evidence — "frontier labs"
+    # legitimately means OpenAI, Anthropic and DeepMind, so naming them is the definition.
+    EPISODE_DEICTIC = re.compile(r"此处|本集|这集里|说话人|主播|\bspeaker\b", re.IGNORECASE)
+
+    @classmethod
+    def _general_definition(cls, value: object) -> str | None:
+        """The definition with this episode's argument cut off, or None.
+
+        The prompt forbids folding the speaker's argument into the gloss and 22 of 132 cards did
+        it anyway — "…夸张地做出惊恐姿态；此处被 speaker 用作批判性标签，特指 Anthropic 在 AI
+        风险叙事中…". The learner then meets the word elsewhere and the card teaches them the
+        accusation. 这集里 already holds that half, so this is duplication as well as pollution.
+
+        Cut at the clause boundary rather than rejected: the part BEFORE the deixis is a good
+        definition, and throwing it away would lose the only section every card needs.
+        """
+        text = chinese_prose(value)
+        if not text:
+            return None
+        match = cls.EPISODE_DEICTIC.search(text)
+        if not match:
+            return text
+        # Prefer cutting at the last clause break before the deixis, so the definition ends
+        # cleanly instead of mid-sentence.
+        head = text[: match.start()]
+        for sep in ("；", ";", "。", "，", ","):
+            if sep in head:
+                head = head.rsplit(sep, 1)[0]
+                break
+        head = head.strip(" ；;。，,、")
+        # The deixis can sit INSIDE a parenthetical — "（源自…操作'双击'，此处为比喻）" — and
+        # cutting there left an unclosed bracket on a real card. Drop the dangling opener.
+        if head.count("（") > head.count("）"):
+            head = head[: head.rindex("（")].strip(" ；;。，,、")
+        if head.count("(") > head.count(")"):
+            head = head[: head.rindex("(")].strip(" ；;。，,、")
+        # Too little left to be a definition — better the original than a fragment. This also
+        # covers a definition that OPENS with the deixis: "说话人临时创造的术语，指…" is not
+        # pollution, it is what a coined term's definition looks like.
+        return head if len(_HAN.findall(head)) >= 4 else text
+
     HAN = re.compile(r"[\u4e00-\u9fff]")
 
     @classmethod
@@ -1314,7 +1464,10 @@ class ImportPipeline:
                         "coined": "reference",
                         "unsayable": "idiom",
                     }.get(kind, "phrase"),
-                    "chinese": item.get("chinese"),
+                    # Cut at this episode's argument if the model folded it in — it belongs to
+                    # 这集里, which already has it.
+                    "chinese": self._general_definition(item.get("chinese"))
+                                or item.get("chinese"),
                     # ONE sentence, cleaned. The model's own `example` was often a paragraph
                     # carrying speaker markers and stutters — ">> he did respond to me. I mean,
                     # I I want to center myself..." — which shows the learner nothing about the
@@ -1346,7 +1499,7 @@ class ImportPipeline:
                     # run and every one of 196 cards silently fell back to raw English
                     # transcript — the field looked populated and taught nothing. An absent
                     # section is honest; a section holding the wrong thing is not.
-                    "restored": self._chinese_only(item.get("context_meaning")),
+                    "restored": chinese_prose(item.get("context_meaning")),
                     "sentence_position": position,
                     # "auto" and not a third word: it is the column, schema and iOS default,
                     # and only "manual" is ever treated specially.
@@ -1423,7 +1576,22 @@ class ImportPipeline:
                 for result in executor.map(self._usage_batch, groups):
                     usages.update(result)
             for item in found:
-                if usage := usages.get(item["text"]):
+                # Checked HERE as well as inside the adapter's parsing. The adapter's check only
+                # covers its own JSON handling, so any other supplier of usages — including a
+                # test fake — reached the card unchecked, and an English register note did. The
+                # guard belongs where the value is consumed, not only where it is parsed.
+                #
+                # The first line is the register note; the English example below it is expected,
+                # so only that line is language-checked.
+                usage = usages.get(item["text"])
+                if not usage:
+                    continue
+                register, _, rest = usage.partition("\n")
+                if not chinese_prose(register):
+                    # The note is unusable, but an English example still teaches something, so
+                    # it survives on its own when there is one.
+                    usage = rest.strip()
+                if usage:
                     item["when_to_use"] = usage
 
         # `_key` is dropped here whether or not it was verified, so a row can never reach the

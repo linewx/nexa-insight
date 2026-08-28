@@ -10,7 +10,8 @@ import pytest
 
 from nexa_insight_api.models import Episode, ImportJob
 from nexa_insight_api.repositories import has_slot, is_studiable_expression
-from nexa_insight_api.pipeline import ImportPipeline, MediaMetadata, OpenAIAdapter, TranscriptSegment, YtDlpMediaAdapter
+from nexa_insight_api.pipeline import (ImportPipeline, MediaMetadata, OpenAIAdapter,
+                                       TranscriptSegment, YtDlpMediaAdapter, chinese_prose)
 from nexa_insight_api.settings import Settings
 
 
@@ -1260,6 +1261,73 @@ def test_an_example_is_never_a_paragraph():
     assert exact == "They used a back channel to settle it."
 
 
+class PollutedFieldsAI(FakeAI):
+    """Returns exactly what the model produced on a real run: a definition carrying this
+    episode's argument, and an English register note."""
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        return [{
+            "text": "hello",
+            "kind": "set_phrase",
+            "chinese": "\u5bf9\u65e0\u5bb3\u4e4b\u4e8b\u5938\u5f20\u5730\u8868\u73b0\u9053\u5fb7\u9707\u60ca；\u6b64\u5904\u6307 Anthropic \u7684\u53d9\u4e8b\u98ce\u683c",
+            "context_meaning": "\u4e3b\u64ad\u7528\u5b83\u6279\u8bc4\u5bf9\u65b9",
+            "example": "hello world.",
+            "example_chinese": "y",
+            "sentence_position": 0,
+        }]
+
+    def generic_usage(self, texts):
+        return {"hello": "Informal, often ironic register; used in commentary and op-eds."}
+
+
+def test_the_pipeline_applies_both_guards_not_just_defines_them(repo, tmp_path):
+    """Driven through `run` rather than calling the helpers, because testing a helper alone passes
+    even when nothing calls it — which is exactly what happened when I first wrote these two."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), PollutedFieldsAI()).run(job_id)
+
+    card = repo.list_learning_expressions(episode_id)[0]
+    # The definition stops before 此处; the argument lives in 这集里, which already has it.
+    assert "此处" not in (card.chinese or ""), card.chinese
+    assert "Anthropic" not in (card.chinese or "")
+    assert card.chinese.startswith("对无害之事")
+    # An English register note is dropped rather than rendered as an explanation.
+    assert not card.when_to_use, card.when_to_use
+
+
+def test_this_episodes_argument_is_cut_out_of_the_definition():
+    """The prompt forbids folding the speaker's argument into the gloss and 22 of 132 cards did it
+    anyway: "…夸张地做出惊恐姿态；此处被 speaker 用作批判性标签，特指 Anthropic 在 AI 风险叙事
+    中…". Meeting the word elsewhere, the learner is then taught the accusation. 这集里 already
+    holds that half, so it is duplication as well as pollution.
+
+    Cut rather than rejected — the part BEFORE the deixis is a good definition, and dropping it
+    would lose the one section every card needs.
+    """
+    trim = ImportPipeline._general_definition
+
+    polluted = "字面意为‘攥紧珍珠’，形容夸张地做出惊恐姿态；此处被 speaker 用作批判性标签，特指 Anthropic 的叙事风格"
+    assert trim(polluted) == "字面意为‘攥紧珍珠’，形容夸张地做出惊恐姿态"
+
+    # The deixis can sit INSIDE a parenthetical, and cutting there left an unclosed bracket on a
+    # real card: "…（源自计算机操作‘双击’打开文件/信息".
+    parenthetical = "深入探究某事的深层原因或细节（源自计算机操作‘双击’，此处为比喻性引申）"
+    assert trim(parenthetical) == "深入探究某事的深层原因或细节"
+
+    # A definition that OPENS with the deixis is not pollution — "a term the speaker coined" is
+    # what a coined term's definition looks like. Cutting would leave nothing, so it stays.
+    coined = "说话人临时创造的术语，指模型生成过程中的中间推理表征"
+    assert trim(coined) == coined
+
+    # A company name is not evidence: "frontier labs" legitimately MEANS those companies.
+    legit = "前沿实验室：指在基础模型研发上最领先的少数机构（如 OpenAI、Anthropic、DeepMind）"
+    assert trim(legit) == legit
+
+
 def test_a_chinese_field_holding_english_is_dropped():
     """One run produced 196 of 196 cards whose 这集里 was raw English transcript. The model had
     ignored the field name and a tolerant `or` fallback quietly substituted the old value, so
@@ -1268,7 +1336,7 @@ def test_a_chinese_field_holding_english_is_dropped():
     The card renders whatever is in the field, so a wrong-language value is worse than an empty
     one: it occupies the section that was meant to explain what the speaker meant.
     """
-    keep = ImportPipeline._chinese_only
+    keep = chinese_prose
     assert keep("监管俘获：被监管方让规则服务自己") is not None
     # Chinese prose quoting English terms is still Chinese prose.
     assert keep("主播指 Anthropic 借 AI safety 推动监管") is not None
