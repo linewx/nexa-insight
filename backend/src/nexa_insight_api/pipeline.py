@@ -843,6 +843,11 @@ class ImportPipeline:
     # empty. Asking the teacher directly is still the reliable way to get a specific one.
     TRAP_PASSES = 3
 
+    # Expressions per general-usage call. NOT the whole episode at once: measured on ep8, one
+    # call covering all 140 answered 18 of them while batches of 20 answered 79. A long list
+    # gets skimmed, and the skipped ones look exactly like "this has no general usage".
+    USAGE_BATCH = 20
+
     # Shapes no expression has, checkable without a model call. Each was a real result:
     # "P level" and "M Club" are a parking sign and a lounge brand; "Stay close to me" and
     # "I want to see where you go" are whole lines of dialogue from a graded story.
@@ -1036,6 +1041,27 @@ class ImportPipeline:
     # marker left the second one in the middle of the "sentence".
     SPEAKER_MARKER = re.compile(r"\s*>>\s*")
     STUTTER = re.compile(r"\b(\w+)( \1\b)+", re.IGNORECASE)
+
+    # Beyond this an "example" is a passage, not a sentence, and shows the learner nothing
+    # about the expression's shape.
+    MAX_EXAMPLE_CHARS = 220
+
+    @classmethod
+    def _example_line(cls, text: str, raw: object) -> str:
+        """One sentence containing the expression, or a hard-capped fallback.
+
+        The example is the one section a card cannot do without, so unlike 这集里 this cannot
+        simply be dropped — but it must not be a paragraph either. When no sentence contains the
+        expression, the raw text is truncated rather than stored whole.
+        """
+        passage = str(raw or "")
+        line = cls._source_line(text, passage)
+        if line and len(line) <= cls.MAX_EXAMPLE_CHARS:
+            return line
+        candidate = line or " ".join(cls.SPEAKER_MARKER.sub(" ", passage).split())
+        if len(candidate) <= cls.MAX_EXAMPLE_CHARS:
+            return candidate
+        return candidate[: cls.MAX_EXAMPLE_CHARS].rsplit(" ", 1)[0] + "…"
 
     HAN = re.compile(r"[\u4e00-\u9fff]")
 
@@ -1287,8 +1313,13 @@ class ImportPipeline:
                     # I I want to center myself..." — which shows the learner nothing about the
                     # expression's shape. Falls back to the model's text if extraction finds
                     # nothing, since an example is the one section a card cannot do without.
-                    "example": self._source_line(text, str(item.get("example") or ""))
-                                or item.get("example"),
+                    # No `or` fallback to the model's raw text. _source_line returning empty
+                    # means it could not find a sentence containing the expression, and the
+                    # fallback then stored the whole paragraph — 4699 characters on one real
+                    # card, after I had already "fixed" the 1590-character version. Fourth time
+                    # this session a tolerant fallback reinstated exactly what it was guarding
+                    # against.
+                    "example": self._example_line(text, item.get("example")),
                     "example_chinese": item.get("example_chinese") or "",
                     # Five fields, down from ten. Each answers a question the learner has:
                     # what it means, how it is used generally, what it means HERE, and what it
@@ -1372,7 +1403,18 @@ class ImportPipeline:
         # (`_is_grounded` rejects anything absent from it) and general usage must come from
         # outside it. One call cannot be asked for both.
         if found:
-            usages = self.ai.generic_usage(sorted({item["text"] for item in found}))
+            # Batched at USAGE_BATCH, and the size matters: asked about all 140 expressions of
+            # one episode in a single call the model answered 18 of them, and asked in batches
+            # of 20 it answered 79. Same model, same expressions, 4x the coverage — a long list
+            # gets skimmed. Concurrent, since the batches are independent.
+            unique = sorted({item["text"] for item in found})
+            usages: dict[str, str] = {}
+            groups = [unique[i:i + self.USAGE_BATCH]
+                      for i in range(0, len(unique), self.USAGE_BATCH)]
+            workers = max(1, min(self.settings.scan_concurrency, len(groups)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for result in executor.map(self._usage_batch, groups):
+                    usages.update(result)
             for item in found:
                 if usage := usages.get(item["text"]):
                     item["when_to_use"] = usage
@@ -1384,6 +1426,16 @@ class ImportPipeline:
             for item in found
             if not verdicts.get(item["_key"], False)
         ]
+
+    def _usage_batch(self, texts: list[str]) -> dict[str, str]:
+        """One general-usage call. Runs on a worker thread, so it touches no shared state."""
+        try:
+            return self.ai.generic_usage(texts)
+        except AttributeError:
+            raise
+        except Exception:
+            # A card without this section is still a card.
+            return {}
 
     def _verify_producible(self, text: str, meaning: str) -> bool:
         """Whether the learner would already say this. Runs on a worker thread.

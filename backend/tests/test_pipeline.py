@@ -1181,6 +1181,59 @@ def test_general_usage_is_a_separate_pass(repo, tmp_path):
     assert ai.asked == [["hello", "world"]], "one batched call, not one per card"
 
 
+class BatchSizeAI(FakeAI):
+    """Records the size of every general-usage call."""
+
+    def __init__(self):
+        self.sizes: list[int] = []
+        self.lock = threading.Lock()
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        # More expressions than one batch holds, all grounded in FakeMedia's transcript.
+        return [{"text": word, "kind": "set_phrase", "chinese": "x",
+                 "example": "hello world.", "example_chinese": "y", "sentence_position": 0}
+                for word in ("hello", "world", "goodbye")]
+
+    def generic_usage(self, texts):
+        with self.lock:
+            self.sizes.append(len(texts))
+        return {t: "\u7528\u6cd5\u8bf4\u660e" for t in texts}
+
+
+def test_general_usage_is_asked_in_small_batches(repo, tmp_path):
+    """Batch size decides whether this section exists at all. Measured on ep8: one call covering
+    all 140 expressions answered 18 of them; batches of 20 answered 79. Same model, same
+    expressions, four times the coverage — a long list gets skimmed, and the skipped ones look
+    exactly like "this expression has no general usage"."""
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = BatchSizeAI()
+    ImportPipeline(repo, settings, FakeMedia(tmp_path), ai).run(job_id)
+
+    assert ai.sizes, "the enrichment pass runs"
+    assert max(ai.sizes) <= ImportPipeline.USAGE_BATCH
+    assert ImportPipeline.USAGE_BATCH <= 40, "a long list gets skimmed"
+    stored = [e.when_to_use for e in repo.list_learning_expressions(episode_id)]
+    assert all(stored), "every card got its usage section"
+
+
+def test_an_example_is_never_a_paragraph():
+    """The example is the one section a card cannot do without, so it is capped rather than
+    dropped. A tolerant `or` fallback to the model's raw text stored 4699 characters on one real
+    card — after I had already "fixed" the 1590-character version of the same mistake."""
+    long_passage = "Nothing relevant here. " * 200
+    line = ImportPipeline._example_line("back channel", long_passage)
+    assert len(line) <= ImportPipeline.MAX_EXAMPLE_CHARS
+    assert line.endswith("…"), "truncation is visible, not silent"
+
+    # A real sentence is returned whole.
+    exact = ImportPipeline._example_line("back channel", "They used a back channel to settle it.")
+    assert exact == "They used a back channel to settle it."
+
+
 def test_a_chinese_field_holding_english_is_dropped():
     """One run produced 196 of 196 cards whose 这集里 was raw English transcript. The model had
     ignored the field name and a tolerant `or` fallback quietly substituted the old value, so
