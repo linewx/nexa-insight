@@ -42,8 +42,11 @@ struct InsightPage: View {
     /// Named so the drag reports coordinates against this page rather than whatever ancestor
     /// SwiftUI would otherwise pick.
     private static let pageSpace = "insightPage"
-    /// The strip at the bottom the exit swipe keeps out of: capsule, status line and padding.
-    private static let askBarZone: CGFloat = 120
+    /// The bar's height: x3 top + status line + x2 + capsule + x2 bottom, rounded up for the
+    /// home-indicator inset the panel chrome preserves. Derived rather than guessed — 120 was a
+    /// number picked when the bar floated, and it has to match what the panel actually occupies or
+    /// the page's last line hides under it.
+    private static let askBarZone: CGFloat = 12 + 18 + 8 + controlHeight + 8 + 24
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -62,7 +65,7 @@ struct InsightPage: View {
                 .padding(.horizontal, NXSpacing.x4)
                 .padding(.top, NXSpacing.x4)
                 // Clears the ask bar, so the last line is never stranded beneath it.
-                .padding(.bottom, 120)
+                .padding(.bottom, Self.askBarZone + NXSpacing.x4)
                 .frame(maxWidth: 680, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -271,8 +274,15 @@ struct InsightPage: View {
             statusLine
             capsule
         }
-        .padding(.horizontal, NXSpacing.x4)
-        .padding(.bottom, NXSpacing.x8)
+        // The dock's own geometry, by sharing its modifier rather than copying its numbers: 560pt
+        // readable width, x3 horizontal, x3 top, x2 bottom, and a surface that runs under the home
+        // indicator while the content keeps its safe-area inset.
+        //
+        // Floating on the page with my own padding is what made it read as a different control on
+        // the same screen — different width, different gap to the bottom, no ground under it.
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        .modifier(BottomPanelChrome())
     }
 
     /// A dot and one line: what was just said, or whose turn it is when nothing has been.
@@ -297,22 +307,32 @@ struct InsightPage: View {
         HStack(spacing: NXSpacing.x2) {
             Image(systemName: capsuleIcon)
                 .font(.system(size: 15, weight: .semibold))
+                // Also a fixed slot: waveform, ellipsis, hand.raised and mic.fill are all
+                // different widths, so pinning only the label would still let the pair shift.
+                .frame(width: 20)
             // One word. "按住提问" while idle is worth saying once; the rest are states, and the
             // glyph plus the line above carry those.
             Text(capsuleLabel)
                 .font(NXFont.control)
+                // A fixed slot, because the labels differ in width (按住提问 and 松开发送 are four
+                // characters, 取消 and 在想 are two) and a centred pair that changes width shifts
+                // the glyph beside it. Same reason the shadowing sheet's caption is pinned.
+                .frame(width: 72, alignment: .leading)
         }
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity)
         .frame(height: Self.controlHeight)
         .background(capsuleTint, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
-        .nxFloatingShadow(scheme)
         // The dock's own press feedback: a hair larger, not a lift.
         .scaleEffect(isRecording ? 1.01 : 1)
-        .offset(y: cancelArmed ? -8 : 0)
+        // No lift. The dock never moves: it recolours and scales a hair on press, and that is the
+        // whole vocabulary. Sliding the capsule up under the finger — while its label also changed
+        // width — is what made the button look like it was changing shape rather than state.
         .animation(.easeOut(duration: 0.14), value: isRecording)
-        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: cancelArmed)
+        // Colour only, at the dock's timing. No spring: springs overshoot, and an overshooting
+        // capsule reads as the control resizing.
+        .animation(.easeOut(duration: 0.14), value: cancelArmed)
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in

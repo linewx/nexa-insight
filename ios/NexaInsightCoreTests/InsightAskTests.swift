@@ -133,6 +133,39 @@ extension InsightAskTests {
         XCTAssertTrue(code.contains("UIImpactFeedbackGenerator(style: .rigid)"))
     }
 
+    func testTheBarUsesTheDocksOwnChromeRatherThanItsOwnNumbers() throws {
+        // "底面是留白的，宽度，字体大小，与底部的距离需要都保持一致": the bar floated on the page
+        // with its own padding, so it read as a different control on the same screen — narrower,
+        // a different gap to the bottom, and no surface under it.
+        let source = try String(contentsOfFile: "NexaInsight/Views/InsightView.swift", encoding: .utf8)
+        XCTAssertTrue(source.contains(".modifier(BottomPanelChrome())"),
+                      "share the dock's panel, do not restate its padding")
+        XCTAssertTrue(source.contains(".frame(maxWidth: 560)"), "and its readable width")
+        XCTAssertFalse(source.contains(".nxFloatingShadow(scheme)\n        .scaleEffect"),
+                       "the panel carries the shadow now, not the capsule")
+        // Same type scale as the dock's own status line and labels.
+        XCTAssertTrue(source.contains("Text(statusLineText)"))
+        XCTAssertTrue(source.contains(".font(NXFont.control)"))
+    }
+
+    func testTheCapsuleCannotChangeShape() throws {
+        // "取消的时候为什么感觉button在变化": the capsule lifted 8pt on a spring WHILE its label
+        // changed width (松开发送 is four characters, 取消 is two) and its glyph changed with it.
+        // Three simultaneous geometry changes read as the control resizing.
+        let source = try String(contentsOfFile: "NexaInsight/Views/InsightView.swift", encoding: .utf8)
+        let code = source.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+
+        XCTAssertFalse(code.contains("offset(y: cancelArmed"),
+                       "the dock never moves; it recolours")
+        XCTAssertFalse(code.contains("spring(response: 0.25, dampingFraction: 0.7), value: cancelArmed"),
+                       "and a spring overshoot reads as a resize")
+        // Fixed slots for both, or the centred pair shifts as the wording changes.
+        XCTAssertTrue(code.contains(".frame(width: 72, alignment: .leading)"), "label slot is fixed")
+        XCTAssertTrue(code.contains(".frame(width: 20)"), "and so is the glyph's")
+    }
+
     func testTheExitSwipeCannotFireFromTheCapsuleOrMidTurn() throws {
         let source = try String(contentsOfFile: "NexaInsight/Views/InsightView.swift", encoding: .utf8)
         // Any drag on the capsule starts recording, so a sideways flick off the button would send

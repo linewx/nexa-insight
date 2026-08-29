@@ -1536,7 +1536,9 @@ private struct DiscussionBar: View {
 // transcript by the same hairline the transcript uses between rows plus a soft
 // upward shadow. Content padding respects the horizontal margin and the home
 // indicator safe area.
-private struct BottomPanelChrome: ViewModifier {
+// Not private: the 洞察 page's ask bar is the same kind of panel, and duplicating these numbers
+// there is exactly how two controls drift apart.
+struct BottomPanelChrome: ViewModifier {
     @Environment(\.colorScheme) private var scheme
 
     func body(content: Content) -> some View {
