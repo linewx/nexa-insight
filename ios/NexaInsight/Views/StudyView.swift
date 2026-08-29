@@ -230,6 +230,17 @@ struct StudyView: View {
             if player.currentMs >= Resume.minimumMs {
                 store.savePlaybackPosition(player.currentMs, for: episodeId)
             }
+            // Stop the audio on the way out, not merely in the player's deinit.
+            //
+            // The player is a @StateObject owned by this view, and SwiftUI decides when
+            // to release it — which it may not do before the learner reopens the
+            // episode. Leaving with audio running then built a SECOND player over a
+            // still-audible first one: the controls drove the new instance while the
+            // sound came from the old, so play/pause and seeking appeared to do nothing.
+            //
+            // Pausing here means the position saved above is the position resumed from,
+            // and one player is ever audible.
+            player.pause()
             // Leaving closes the conversation, so returning does not find a stale panel
             // still showing turns from last time. Nothing is lost by closing now: cards
             // are written the moment you ask for one, not on the way out.

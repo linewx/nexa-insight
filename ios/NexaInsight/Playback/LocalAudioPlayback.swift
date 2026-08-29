@@ -40,7 +40,16 @@ final class LocalAudioPlayback: ObservableObject, Playback {
         }
     }
 
-    deinit { if let timeObserver { player.removeTimeObserver(timeObserver) } }
+    deinit {
+        if let timeObserver { player.removeTimeObserver(timeObserver) }
+        // Pause, and drop the item. An AVPlayer keeps playing for as long as anything
+        // retains it, and its own item retains it — so leaving Study left the audio
+        // running, and reopening the episode built a SECOND player over the top. The
+        // controls then drove the new one while the old one was the audible sound,
+        // which is what "playback becomes uncontrollable" was.
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+    }
 
     func seek(_ ms: Int) {
         let next = max(0, ms)
