@@ -1244,6 +1244,85 @@ class PlaceholderUsageAI(OpenAIAdapter):
         return self._payload
 
 
+class ChineseSourceAI(FakeAI):
+    """Transcribes Chinese, and records whether the skipped passes were asked for anyway."""
+
+    def __init__(self):
+        self.translate_calls = 0
+        self.trap_calls = 0
+        self.insight_calls = 0
+
+    def translate(self, items):
+        self.translate_calls += 1
+        return ["\u8bd1\u6587"] * len(items)
+
+    def classify_material(self, sentences):
+        return "native"
+
+    def hidden_traps(self, sentences):
+        self.trap_calls += 1
+        return [{"text": "x", "kind": "set_phrase", "chinese": "y",
+                 "example": "z", "example_chinese": "w", "sentence_position": 0}]
+
+    def insight_chunk(self, lines):
+        self.insight_calls += 1
+        return {"claims": [{"claim": "\u5f00\u6e90\u76d1\u7ba1\u662f\u6743\u529b\u4e4b\u4e89",
+                            "evidence": "\u4e3b\u64ad\u5f15\u7528\u4e86\u4e24\u4efd\u8349\u6848",
+                            "at_ms": 1000}],
+                "facts": []}
+
+    def insight_synthesis(self, claims, facts):
+        return {"thesis": "\u8fd9\u96c6\u5728\u8bb2\u5f00\u6e90 AI \u7684\u76d1\u7ba1\u4e4b\u4e89",
+                "claims": claims, "facts": facts, "takeaways": [], "anchors": []}
+
+
+def test_a_chinese_source_skips_translation_and_cards_but_keeps_insight(repo, tmp_path):
+    """Importing a Chinese video is about its CONTENT.
+
+    Translation and vocabulary cards both exist to close the gap between what was said and what the
+    listener understood. For a source in the listener's own language there is no gap, so both are
+    wasted calls and a shelf of words nobody needed. The 洞察 page is the opposite — it is why the
+    video was imported at all.
+    """
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    ai = ChineseSourceAI()
+    media = FakeMedia(tmp_path)
+    # Chinese captions, which is the realistic path: YouTube auto-captions Chinese, so this is
+    # what a real import of a Chinese video reads.
+    media.caption_texts = ["\u8fd9\u4e00\u96c6\u6211\u4eec\u804a\u5f00\u6e90 AI \u7684\u76d1\u7ba1\u4e4b\u4e89\u3002",
+                           "\u5b83\u5bf9\u521b\u4e1a\u516c\u53f8\u610f\u5473\u7740\u4ec0\u4e48\uff1f"]
+    ImportPipeline(repo, settings, media, ai).run(job_id)
+
+    assert ai.translate_calls == 0, "nothing to translate"
+    assert ai.trap_calls == 0, "and no cards to extract"
+    assert ai.insight_calls > 0, "but the insight page is the point"
+
+    sentences = repo.list_sentences(episode_id)
+    assert sentences, "the transcript is still stored"
+    # The view renders `chinese` and the app decodes it as non-optional, so it has to hold
+    # something — and for a Chinese source the source text IS that something.
+    assert sentences[0].chinese == sentences[0].source_text
+    assert not repo.list_learning_expressions(episode_id)
+
+
+def test_language_is_counted_not_asked():
+    """A language is visible in the characters. Spending a model call to learn what a regex can see
+    would add a failure mode for nothing — and this one has to be right, since it gates three
+    stages."""
+    seg = lambda text: TranscriptSegment(0, 1000, None, text)
+    assert not ImportPipeline._is_chinese_source([seg("The fight over open source AI regulation.")])
+    assert ImportPipeline._is_chinese_source([seg("这一集我们聊聊开源 AI 的监管之争。")])
+    # A Chinese talk quoting English terms heavily is still Chinese — common in tech podcasts, and
+    # a threshold tuned too high would send it down the translation path.
+    assert ImportPipeline._is_chinese_source(
+        [seg("我们聊 AI safety 和 alignment 的落地问题，还有 Anthropic 的立场。")])
+    # An English episode that mentions Chinese must not flip.
+    assert not ImportPipeline._is_chinese_source(
+        [seg("He said the word 中文 once, then went back to English for the rest of the hour.")])
+    assert not ImportPipeline._is_chinese_source([])
+
+
 def test_the_chunk_pass_may_answer_in_english():
     """The first real run produced NO page at all, silently. The chunk prompt said "IN CHINESE"
     and the model — reading an English transcript — answered in English, so `chinese_prose` dropped
@@ -1256,10 +1335,14 @@ def test_the_chunk_pass_may_answer_in_english():
     """
     chunk = OpenAIAdapter.INSIGHT_CHUNK
     assert "IN CHINESE" not in chunk, "the chunk pass must not be asked to translate"
-    assert "the synthesis pass translates" in chunk
+    assert "the language you are reading" in chunk
 
+    # And the synthesis pass must not claim to know which language it is handed. It said "in
+    # English … TRANSLATED INTO CHINESE", which is false for a Chinese source — telling a model to
+    # translate text that needs no translating invites it to rewrite what was already right.
     synthesis = OpenAIAdapter.INSIGHT_SYNTHESIS
-    assert "TRANSLATED INTO CHINESE" in synthesis, "and the synthesis pass must be told to"
+    assert "in order, in English" not in synthesis
+    assert "already Chinese" in synthesis, "both cases named explicitly"
 
 
 def test_a_takeaway_that_only_restates_is_dropped():

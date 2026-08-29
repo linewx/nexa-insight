@@ -507,7 +507,7 @@ class OpenAIAdapter:
     # where detail goes missing. Each chunk is small enough to be read closely.
     INSIGHT_CHUNK = (
         "This is part of a podcast transcript. Report what is ARGUED here — not a summary of what "
-        "was said. English is fine at this stage; the synthesis pass translates.\n"
+        "was said. Report in the language you are reading; the synthesis pass handles Chinese.\n"
         'Return JSON {"claims": [...], "facts": [...]}.\n'
         "Each claim: {\n"
         '  "claim": the position someone takes, one sentence;\n'
@@ -532,10 +532,11 @@ class OpenAIAdapter:
 
     # The whole episode's shape, from the per-chunk findings.
     INSIGHT_SYNTHESIS = (
-        "These are claims and facts extracted from one podcast, in order, in English. Produce the "
-        "page a listener reads INSTEAD of the hour, TRANSLATED INTO CHINESE — every field must be "
-        "Chinese prose, since the reader opened this page precisely to avoid working through "
-        "English.\n"
+        "These are claims and facts extracted from one podcast, in order. Produce the page a "
+        "listener reads INSTEAD of the hour. EVERY field must be Chinese prose — translate if the "
+        "material below is in another language, and keep it as it is if it is already Chinese. "
+        "Telling a model to translate text that needs no translating is how it starts rewriting "
+        "what was already right.\n"
         'Return JSON {"thesis", "claims", "facts", "takeaways", "anchors"}.\n'
         '  "thesis": one sentence, under 40 characters, naming what this episode is actually '
         "about. Not a topic label — what is at stake in it.\n"
@@ -813,7 +814,15 @@ class ImportPipeline:
             # fragment landed in several) and drifted (the two tracks' offsets
             # diverge over the episode). AI per-sentence translation is 1:1 by
             # construction — no duplication, no drift.
-            translations = self._translate(all_segments, root / "translations", job_id)
+            # A Chinese source is already understood, so there is nothing to translate. The
+            # sentences still get a `chinese` value — the transcript view renders it and the app
+            # decodes it as non-optional — and the source text IS that value here.
+            chinese_source = self._is_chinese_source(all_segments)
+            if chinese_source:
+                print(f"episode {episode.id}: Chinese source, skipping translation", flush=True)
+                translations = [segment.text for segment in all_segments]
+            else:
+                translations = self._translate(all_segments, root / "translations", job_id)
             self.repo.upsert_job(job_id, stage="indexing", progress=30)
             chapters = self._chapters(all_segments)
             # 36 between the two, because each of these is ONE model call and cannot report
@@ -831,13 +840,18 @@ class ImportPipeline:
             # material_kind decides which question gets asked: native speech is scanned for
             # senses that are wrong HERE, a lesson for expressions that would still stop the
             # learner once the explanation is gone.
-            traps = self._hidden_traps(all_segments, material_kind, job_id)
+            # No vocabulary cards for a Chinese source. Their whole purpose is the gap between
+            # what was said and what the listener understood, and for a native speaker of the
+            # source language there is no gap — cards would be a shelf of words nobody needed.
+            traps = [] if chinese_source else self._hidden_traps(all_segments, material_kind, job_id)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
             self.repo.replace_learning_content(episode.id, chapters, sentences, traps)
             # The 洞察 page: what an hour of native material argued, in five minutes of Chinese.
             # Native only — a lesson's content IS the language, so there is no separate argument
             # to extract from it.
-            if material_kind == "native":
+            # Chinese sources always get one: the 洞察 page is about the CONTENT, which is the
+            # only reason to import a video you can already understand.
+            if material_kind == "native" or chinese_source:
                 self.repo.upsert_job(job_id, stage="insight", progress=88)
                 insight = self._insight(all_segments, job_id)
                 if insight:
@@ -935,6 +949,28 @@ class ImportPipeline:
             raise ValueError("Translation API did not return exactly one item for one sentence")
         middle = len(texts) // 2
         return self._translate_exact(texts[:middle]) + self._translate_exact(texts[middle:])
+
+    # Above this share of Han characters the source IS Chinese. Measured across all 15 episodes
+    # here, every English one scores 0.000, so the gap is wide and the exact cut hardly matters —
+    # 0.15 leaves room for a Chinese talk that quotes English terms heavily, which is common in
+    # tech podcasts, without letting an English episode that mentions 中文 slip through.
+    CHINESE_SOURCE_RATIO = 0.15
+
+    @classmethod
+    def _is_chinese_source(cls, sentences: list[TranscriptSegment]) -> bool:
+        """Whether the transcript is already in Chinese.
+
+        Counted rather than asked: a language is visible in the characters, and spending a model
+        call to learn what a regex can see would add a failure mode for nothing.
+
+        A Chinese source needs neither translation nor vocabulary cards — there is no gap between
+        what was said and what the listener understands, which is the only thing those two exist to
+        close. The 洞察 page is the opposite: it is about the CONTENT, so it still applies.
+        """
+        text = "".join(segment.text for segment in sentences[:200])
+        if not text:
+            return False
+        return len(_HAN.findall(text)) / len(text) >= cls.CHINESE_SOURCE_RATIO
 
     def _material_kind(self, sentences: list[TranscriptSegment]) -> str:
         """Which kind of source this is, defaulting to native if unknowable.

@@ -2500,7 +2500,11 @@ private struct TranscriptRow: View, Equatable {
     }
 
     @ViewBuilder private var chineseText: some View {
-        if !sentence.chinese.isEmpty {
+        // Nothing when the "translation" IS the source. A Chinese video needs no translating, so
+        // the pipeline stores the source text in that field — the transcript view and the app's
+        // decoder both treat `chinese` as always present — and rendering it would print every
+        // line twice.
+        if !sentence.chinese.isEmpty, sentence.chinese != sentence.sourceText {
             Text(sentence.chinese).font(NXFont.body).foregroundStyle(NXColor.textSecondary(scheme)).lineSpacing(2)
         }
     }
