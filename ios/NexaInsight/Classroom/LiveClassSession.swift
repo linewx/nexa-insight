@@ -78,8 +78,18 @@ final class LiveClassSession: ObservableObject, Identifiable {
         return baseClassroomInstructions(material: material, materialKind: materialKind)
     }
 
+    /// Set while the 洞察 page is open, so a question asked there is answered about the PAGE.
+    ///
+    /// The context refresh is driven by a playback position, which is the right anchor on the
+    /// transcript and the wrong one here: the reader is looking at claims and figures, and "this
+    /// point" means something on screen rather than a moment in the audio.
+    var insightForContext: InsightDTO?
+
     func contextFor(_ positionMs: Int) -> String {
-        classroomContext(episodeTitle: episodeTitle, channel: channel, chapters: chapters, sentences: sentences, atMs: positionMs)
+        if let insightForContext {
+            return insightContext(episodeTitle: episodeTitle, channel: channel, insight: insightForContext)
+        }
+        return classroomContext(episodeTitle: episodeTitle, channel: channel, chapters: chapters, sentences: sentences, atMs: positionMs)
     }
 
 #if os(iOS)

@@ -392,7 +392,16 @@ struct StudyView: View {
                                 showingInsight = false
                                 playIntent(seekTo: ms)
                             },
-                            onClose: { showingInsight = false })
+                            onClose: {
+                                showingInsight = false
+                                // Back to transcript context, or the next hold on a paragraph
+                                // would still be answered about the page.
+                                liveSession?.insightForContext = nil
+                                finishConversation()
+                            },
+                            ask: readingAsk,
+                            onHoldStart: beginAskingAboutInsight,
+                            onHoldEnd: endAsking)
                     }
                 }
         }
@@ -545,6 +554,44 @@ struct StudyView: View {
             readingAsk = ReadingAsk(sentenceId: sentence.id, atMs: sentence.startMs)
         }
         controller.pressReadingAsk(atMs: sentence.startMs)
+    }
+
+    /// Hold-to-talk on the 洞察 page.
+    ///
+    /// Shares the transcript's machinery — same session, same ReadingAsk state, same turn
+    /// observer — with two differences that matter. The anchor is `insightPageId` rather than a
+    /// line, so every follow-up about the page continues one conversation instead of the
+    /// "different paragraph" rule closing it. And the context handed to the teacher is the PAGE:
+    /// asked about "this claim", a transcript window around some timestamp would answer a
+    /// different question.
+    private func beginAskingAboutInsight() {
+        guard let session = liveSession else {
+            noteError = "\u{8bfe}\u{5802}\u{8fd8}\u{6ca1}\u{8fde}\u{4e0a}\u{ff0c}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{63d0}\u{95ee}\u{3002}"
+            return
+        }
+        guard let controller = session.controller, session.canCarryATurn else {
+            noteError = "\u{8bfe}\u{5802}\u{8fde}\u{63a5}\u{5df2}\u{65ad}\u{5f00}\u{ff0c}\u{6b63}\u{5728}\u{91cd}\u{8fde}\u{ff0c}\u{7a0d}\u{540e}\u{518d}\u{957f}\u{6309}\u{3002}"
+            Task {
+                await session.reconnectIfNeeded()
+                if !session.canCarryATurn, let reason = session.error {
+                    noteError = reason
+                }
+            }
+            return
+        }
+        // A question about the page is not about a moment in the audio.
+        session.insightForContext = insight
+        if let existing = readingAsk, existing.sentenceId != ReadingAsk.insightPageId {
+            finishConversation()
+        }
+        if player.playbackState == .playing { player.pause() }
+        if readingAsk?.sentenceId == ReadingAsk.insightPageId {
+            guard readingAsk?.acceptsFollowUp == true else { return }
+            readingAsk?.held()
+        } else {
+            readingAsk = ReadingAsk(sentenceId: ReadingAsk.insightPageId, atMs: 0)
+        }
+        controller.pressReadingAsk(atMs: 0)
     }
 
     private func endAsking() {

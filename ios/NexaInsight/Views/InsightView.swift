@@ -24,6 +24,12 @@ struct InsightPage: View {
     /// reading first is knowing which three minutes to actually listen to.
     let onJump: (Int) -> Void
     let onClose: () -> Void
+    /// The conversation about this page, when one is in progress. Nil when nothing has been asked.
+    var ask: ReadingAsk? = nil
+    /// Hold-to-talk. Asks about the PAGE, not about a moment in the audio — "this claim" means
+    /// something on screen here.
+    var onHoldStart: () -> Void = {}
+    var onHoldEnd: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -36,14 +42,19 @@ struct InsightPage: View {
                     if !insight.facts.isEmpty { facts }
                     if !insight.takeaways.isEmpty { takeaways }
                     if !insight.anchors.isEmpty { anchors }
+                    // The exchange sits at the end of the page, under what it is about, rather
+                    // than in a sheet over it — the claim being discussed has to stay readable.
+                    conversation
                 }
                 .padding(.horizontal, NXSpacing.x4)
                 .padding(.top, NXSpacing.x4)
-                .padding(.bottom, NXSpacing.x12)
+                // Clears the ask bar, so the last line is never stranded beneath it.
+                .padding(.bottom, 120)
                 .frame(maxWidth: 680, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .overlay(alignment: .bottom) { askBar }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(NXColor.background(scheme))
     }
@@ -191,6 +202,69 @@ struct InsightPage: View {
                         }
                     }
                     .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    /// Hold-to-talk, as a capsule floating over the page.
+    ///
+    /// The same gesture as holding a paragraph in the transcript, and deliberately the same
+    /// shape — but what it asks about is this page. Reading a five-minute summary is exactly when
+    /// a question arrives ("who disputed that?", "is that figure real?"), and the answer should be
+    /// about the claim on screen rather than a moment in audio the reader may never have heard.
+    private var askBar: some View {
+        VStack(spacing: NXSpacing.x2) {
+            if let ask, ask.phase == .waiting {
+                Text("\u{5728}\u{60f3}\u{2026}")
+                    .font(NXFont.label)
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+            }
+            HStack(spacing: NXSpacing.x2) {
+                Image(systemName: isRecording ? "waveform" : "mic.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(isRecording ? "\u{677e}\u{5f00}\u{7ed3}\u{675f}" : "\u{6309}\u{4f4f}\u{63d0}\u{95ee}")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, NXSpacing.x6)
+            .frame(height: 44)
+            .background(isRecording ? NXColor.error : NXColor.primary, in: Capsule())
+            .nxFloatingShadow(scheme)
+            // A drag with no minimum distance, so recording begins the instant the finger lands.
+            // A LongPressGesture would put its own delay in front of the first word.
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in if !isRecording { onHoldStart() } }
+                    .onEnded { _ in onHoldEnd() }
+            )
+            .accessibilityLabel("\u{6309}\u{4f4f}\u{5c31}\u{6d1e}\u{5bdf}\u{63d0}\u{95ee}")
+        }
+        .padding(.bottom, NXSpacing.x8)
+    }
+
+    private var isRecording: Bool { ask?.phase == .recording }
+
+    /// What was asked and what came back, at the end of the page.
+    @ViewBuilder private var conversation: some View {
+        if let ask, !ask.turns.isEmpty {
+            VStack(alignment: .leading, spacing: NXSpacing.x3) {
+                Rectangle().fill(NXColor.border(scheme)).frame(height: 0.5)
+                ForEach(Array(ask.turns.enumerated()), id: \.offset) { _, turn in
+                    HStack(alignment: .top, spacing: NXSpacing.x2) {
+                        // The learner's turn is shown VERBATIM as the server heard it: without
+                        // it, an answer to a misheard question looks like a wrong answer.
+                        Image(systemName: turn.role == .user ? "person.fill" : "sparkles")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(turn.role == .user
+                                             ? NXColor.textTertiary(scheme) : NXColor.primary)
+                            .frame(width: 12)
+                        Text(turn.text)
+                            .font(NXFont.auxiliary)
+                            .foregroundStyle(turn.role == .user
+                                             ? NXColor.textSecondary(scheme) : NXColor.text(scheme))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }

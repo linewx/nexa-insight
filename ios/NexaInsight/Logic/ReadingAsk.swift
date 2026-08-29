@@ -29,6 +29,13 @@ struct ReadingAsk: Equatable {
 
     /// The paragraph this conversation is about. Every turn is drawn under it, and the
     /// extractor anchors whatever it keeps to this line.
+    /// The anchor for a question about the 洞察 PAGE rather than a transcript line.
+    ///
+    /// A real sentence id would be a lie: the reader is looking at claims and figures, and the
+    /// "different paragraph closes the previous conversation" rule keys off this value — so
+    /// page-level follow-ups must share one anchor and must not collide with any line.
+    static let insightPageId = -1
+
     let sentenceId: Int
     /// That paragraph's start, used to centre the teacher's context window.
     let atMs: Int
