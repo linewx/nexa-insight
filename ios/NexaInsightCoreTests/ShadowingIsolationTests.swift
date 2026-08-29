@@ -172,6 +172,43 @@ final class ShadowingIsolationTests: XCTestCase {
                       "re-arming happens off the release's run loop turn")
     }
 
+    func testTheRecordButtonDoesNotMove() throws {
+        // "按住之后按钮会飘，有了结果之后更加明显". Three separate movements read as one drift:
+        //
+        //   - the button shrank 88 -> 64 once a score existed, moving its own centre
+        //   - the sheet's top padding shrank 24 -> 16 at the same moment, sliding everything up
+        //   - the caption changes width (按住说话 / 松开结束 / 按住再说一遍, 4/4/6 characters)
+        //
+        // All three keyed off `score`, and the 0.2s animation on the container swept them
+        // together — which is why it was worst on the second press.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        let code = practice.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+
+        XCTAssertFalse(code.contains("score == nil ? 88 : 64"),
+                       "the button's size must not depend on whether a score exists")
+        XCTAssertFalse(code.contains("size: score == nil ? 30 : 22"),
+                       "nor the icon's")
+        XCTAssertFalse(code.contains("padding(.top, score == nil"),
+                       "nor the padding above it, which slid the whole column")
+        // The caption's height is pinned, so changing its wording cannot move the button.
+        XCTAssertTrue(code.contains(".frame(height: 18)"),
+                      "the caption occupies the same height whatever it says")
+    }
+
+    func testTheHaloCannotAffectLayout() throws {
+        // The halo scales with the live microphone level. Anything that pulses with your voice
+        // must be decoration: if it participated in layout the stack would breathe.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        guard let halo = practice.range(of: "scaleEffect(isSpeaking ? 1 + CGFloat(currentLevel)") else {
+            return XCTFail("the level-driven halo is gone; this test needs rewriting")
+        }
+        let after = String(practice[halo.upperBound...].prefix(400))
+        XCTAssertTrue(after.contains("allowsHitTesting(false)"),
+                      "the halo is decoration, and must not take the press either")
+    }
+
     func testTheSegmentPlayerIsInTheBuild() throws {
         // Created on disk and not added to the target, which failed the build loudly this time —
         // but a file that compiles nowhere is a class of mistake worth pinning.

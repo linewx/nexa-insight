@@ -110,10 +110,15 @@ struct PracticeView: View {
             recorder.prepare(to: nextRecordingURL())
         }
         .padding(.horizontal, NXSpacing.x4)
-        .padding(.top, score == nil ? NXSpacing.x6 : NXSpacing.x4)
+        // Fixed. This moved from 24 to 16 when a score arrived, so everything below it — the
+        // sentence, the button, the caption — slid up by 8pt at the same moment the button was
+        // resizing. Three separate movements reading as one drift.
+        .padding(.top, NXSpacing.x4)
         .padding(.bottom, NXSpacing.x4)
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Animates the SCORE CARD appearing, which is a genuine addition to the layout. Nothing
+        // above it changes size any more, so this no longer sweeps the button along with it.
         .animation(.easeInOut(duration: 0.2), value: score == nil)
         // Centred, not leading. The button is the focus of this screen and a left-aligned
         // stack hung it off to one side of its own sheet.
@@ -230,7 +235,10 @@ struct PracticeView: View {
     /// is over.
     /// Full size while it is the only thing to do; smaller once a score is showing, where it
     /// means "try again". This is what buys the score card its room without scrolling.
-    private var buttonDiameter: CGFloat { score == nil ? 88 : 64 }
+    // Fixed, both of them. These used to shrink from 88 to 64 once a score existed, which moved
+    // the button's centre and reflowed everything around it — "有了结果之后更加明显" was that.
+    // The score card below already signals the change of phase; the button does not need to.
+    private var buttonDiameter: CGFloat { 76 }
     private var haloDiameter: CGFloat { buttonDiameter + 30 }
 
     private var recordButton: some View {
@@ -239,6 +247,10 @@ struct PracticeView: View {
                 // A halo that only exists while recording, sized by how loudly you are
                 // speaking. A bare disc on a flat background was the crudest thing here — this
                 // gives the press somewhere to land and makes level visible at a glance.
+                // Decoration only: the halo pulses with your voice, and anything that pulses
+                // must not be able to affect layout. Its own frame is fixed and the scaling is
+                // applied inside a fixed-size container, so a loud syllable cannot nudge the
+                // button it surrounds.
                 Circle()
                     .fill((isSpeaking ? NXColor.error : NXColor.primary).opacity(0.14))
                     .frame(width: haloDiameter, height: haloDiameter)
@@ -246,6 +258,7 @@ struct PracticeView: View {
                     .opacity(isSpeaking ? 1 : 0)
                     .animation(.easeOut(duration: 0.12), value: currentLevel)
                     .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isSpeaking)
+                    .allowsHitTesting(false)
                 Circle()
                     .fill(
                         LinearGradient(
@@ -269,7 +282,7 @@ struct PracticeView: View {
                     Waveform(level: level, tint: .white)
                 } else {
                     Image(systemName: "mic.fill")
-                        .font(.system(size: score == nil ? 30 : 22, weight: .medium))
+                        .font(.system(size: 26, weight: .medium))
                         .foregroundStyle(.white)
                         .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
                 }
@@ -290,6 +303,11 @@ struct PracticeView: View {
                 .font(NXFont.label)
                 .foregroundStyle(isSpeaking ? NXColor.error : NXColor.textTertiary(scheme))
                 .animation(.easeInOut(duration: 0.15), value: isSpeaking)
+                // 按住说话 / 松开结束 / 按住再说一遍 are 4, 4 and 6 characters. A fixed height
+                // stops the row above from moving when the wording changes, and no transition
+                // on the text itself: cross-fading a label of a different width is the drift.
+                .frame(height: 18)
+                .animation(nil, value: score == nil)
         }
         .frame(maxWidth: .infinity)
     }
