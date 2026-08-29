@@ -209,6 +209,69 @@ struct LearningExpressionDTO: Codable, Identifiable, Equatable {
     }
 }
 
+/// What an episode argued, as the page read instead of the hour.
+///
+/// Native material only. A lesson's content IS its language, so there is no separate argument to
+/// extract from one.
+struct InsightDTO: Codable, Equatable {
+    let thesis: String
+    let claims: [InsightClaimDTO]
+    let facts: [InsightFactDTO]
+    /// May be empty on purpose. An inference that only restates a claim is dropped by the
+    /// backend rather than shown — a reader who finds restatement here stops trusting the section.
+    let takeaways: [String]
+    let anchors: [InsightAnchorDTO]
+
+    private enum CodingKeys: String, CodingKey {
+        case thesis, claims, facts, takeaways, anchors
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        thesis = try values.decode(String.self, forKey: .thesis)
+        claims = try values.decodeIfPresent([InsightClaimDTO].self, forKey: .claims) ?? []
+        facts = try values.decodeIfPresent([InsightFactDTO].self, forKey: .facts) ?? []
+        takeaways = try values.decodeIfPresent([String].self, forKey: .takeaways) ?? []
+        anchors = try values.decodeIfPresent([InsightAnchorDTO].self, forKey: .anchors) ?? []
+    }
+
+    init(thesis: String, claims: [InsightClaimDTO] = [], facts: [InsightFactDTO] = [],
+         takeaways: [String] = [], anchors: [InsightAnchorDTO] = []) {
+        self.thesis = thesis
+        self.claims = claims
+        self.facts = facts
+        self.takeaways = takeaways
+        self.anchors = anchors
+    }
+}
+
+struct InsightClaimDTO: Codable, Equatable, Identifiable {
+    var id: String { claim }
+    let claim: String
+    /// Nil is meaningful: it says nothing was offered in support, which is the difference between
+    /// reading an argument and taking a summary's word for it.
+    let evidence: String?
+    /// Who disagreed and on what. A podcast is a conversation, and flattening several people into
+    /// one agreeing voice is the most common way a summary misleads.
+    let dispute: String?
+    let atMs: Int?
+}
+
+struct InsightFactDTO: Codable, Equatable, Identifiable {
+    var id: String { fact }
+    let fact: String
+    /// False unless a source was actually named in the audio. An off-the-cuff figure shown as
+    /// established is the failure this prevents — you would go on to quote it.
+    let sourced: Bool
+    let atMs: Int?
+}
+
+struct InsightAnchorDTO: Codable, Equatable, Identifiable {
+    var id: Int { atMs }
+    let atMs: Int
+    let why: String
+}
+
 struct BundleDTO: Codable, Equatable {
     let episode: EpisodeDTO
     let chapters: [ChapterDTO]
@@ -216,6 +279,7 @@ struct BundleDTO: Codable, Equatable {
     let hasAudio: Bool
     let hasLearningPack: Bool
     let learningExpressions: [LearningExpressionDTO]
+    let insight: InsightDTO?
 
     init(
         episode: EpisodeDTO,
@@ -223,7 +287,8 @@ struct BundleDTO: Codable, Equatable {
         sentences: [SentenceDTO],
         hasAudio: Bool,
         hasLearningPack: Bool = false,
-        learningExpressions: [LearningExpressionDTO] = []
+        learningExpressions: [LearningExpressionDTO] = [],
+        insight: InsightDTO? = nil
     ) {
         self.episode = episode
         self.chapters = chapters
@@ -231,6 +296,7 @@ struct BundleDTO: Codable, Equatable {
         self.hasAudio = hasAudio
         self.hasLearningPack = hasLearningPack
         self.learningExpressions = learningExpressions
+        self.insight = insight
     }
 
     // Names must stay camelCase: the decoder applies .convertFromSnakeCase, so
@@ -238,7 +304,7 @@ struct BundleDTO: Codable, Equatable {
     // matches. Spelling them out as snake_case made every bundle fail with
     // "The data couldn't be read because it is missing".
     private enum CodingKeys: String, CodingKey {
-        case episode, chapters, sentences, hasAudio, hasLearningPack, learningExpressions
+        case episode, chapters, sentences, hasAudio, hasLearningPack, learningExpressions, insight
     }
 
     init(from decoder: Decoder) throws {
@@ -249,6 +315,7 @@ struct BundleDTO: Codable, Equatable {
         hasAudio = try values.decode(Bool.self, forKey: .hasAudio)
         hasLearningPack = try values.decodeIfPresent(Bool.self, forKey: .hasLearningPack) ?? false
         learningExpressions = try values.decodeIfPresent([LearningExpressionDTO].self, forKey: .learningExpressions) ?? []
+        insight = try values.decodeIfPresent(InsightDTO.self, forKey: .insight)
     }
 }
 

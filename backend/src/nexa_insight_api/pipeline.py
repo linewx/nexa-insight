@@ -506,21 +506,21 @@ class OpenAIAdapter:
     # tokens for a 102-minute episode) and would be flattened by it: the middle of a long text is
     # where detail goes missing. Each chunk is small enough to be read closely.
     INSIGHT_CHUNK = (
-        "This is part of a podcast transcript. Report, IN CHINESE, what is ARGUED here — not a "
-        "summary of what was said.\n"
+        "This is part of a podcast transcript. Report what is ARGUED here — not a summary of what "
+        "was said. English is fine at this stage; the synthesis pass translates.\n"
         'Return JSON {"claims": [...], "facts": [...]}.\n'
         "Each claim: {\n"
-        '  "claim": the position someone takes, in Chinese, one sentence;\n'
-        '  "evidence": in Chinese, what they offer in support — and if they offer nothing, say '
+        '  "claim": the position someone takes, one sentence;\n'
+        '  "evidence": what they offer in support — and if they offer nothing, say '
         "so plainly. A claim with no stated grounds is worth knowing about AS one with no "
         "grounds;\n"
-        '  "dispute": in Chinese, who disagrees and on what, or null if nobody does. This is a '
+        '  "dispute": who disagrees and on what, or null if nobody does. This is a '
         "CONVERSATION: flattening several people into one agreeing voice is the most common way "
         "a summary misleads;\n"
         '  "at_ms": the millisecond offset of the line where the claim is made.\n'
         "}\n"
         "Each fact: {\n"
-        '  "fact": in Chinese, a figure or concrete claim about the world;\n'
+        '  "fact": a figure or concrete claim about the world;\n'
         '  "sourced": true only if a source, study or method is actually named in the audio. A '
         "number said off the cuff is not sourced, and marking it so would let the learner quote "
         "it as established;\n"
@@ -532,8 +532,10 @@ class OpenAIAdapter:
 
     # The whole episode's shape, from the per-chunk findings.
     INSIGHT_SYNTHESIS = (
-        "These are claims and facts extracted from one podcast, in order. Produce the page a "
-        "listener reads INSTEAD of the hour, IN CHINESE.\n"
+        "These are claims and facts extracted from one podcast, in order, in English. Produce the "
+        "page a listener reads INSTEAD of the hour, TRANSLATED INTO CHINESE — every field must be "
+        "Chinese prose, since the reader opened this page precisely to avoid working through "
+        "English.\n"
         'Return JSON {"thesis", "claims", "facts", "takeaways", "anchors"}.\n'
         '  "thesis": one sentence, under 40 characters, naming what this episode is actually '
         "about. Not a topic label — what is at stake in it.\n"

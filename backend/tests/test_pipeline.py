@@ -1244,6 +1244,24 @@ class PlaceholderUsageAI(OpenAIAdapter):
         return self._payload
 
 
+def test_the_chunk_pass_may_answer_in_english():
+    """The first real run produced NO page at all, silently. The chunk prompt said "IN CHINESE"
+    and the model — reading an English transcript — answered in English, so `chinese_prose` dropped
+    every claim, both lists came back empty, `_clean_insight` returned None, and nothing was
+    logged. No page, no error.
+
+    Asking a pass that is reading English to answer in Chinese is fighting it. The chunk pass now
+    works in its own language and the synthesis pass translates, which is also where the length
+    and inference rules apply.
+    """
+    chunk = OpenAIAdapter.INSIGHT_CHUNK
+    assert "IN CHINESE" not in chunk, "the chunk pass must not be asked to translate"
+    assert "the synthesis pass translates" in chunk
+
+    synthesis = OpenAIAdapter.INSIGHT_SYNTHESIS
+    assert "TRANSLATED INTO CHINESE" in synthesis, "and the synthesis pass must be told to"
+
+
 def test_a_takeaway_that_only_restates_is_dropped():
     """The 洞察 page exists so an hour can be understood in five minutes, and its takeaways are the
     part that has to be an INFERENCE. "Do not restate" is exactly the instruction a model

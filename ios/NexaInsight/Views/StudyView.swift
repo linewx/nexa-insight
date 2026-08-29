@@ -158,18 +158,12 @@ struct StudyView: View {
             },
             mode: mode,
             annotated: annotated,
-            onToggleAnnotations: {
-                let next = mode.toggled
-                modeOverride = next
-                if next == .listening {
-                    // Leaving reading closes any open card: its controls are gone, and a
-                    // card with no way to practise from it is a dead end.
-                    expandedExpressionID = nil
-                    // And closes any open conversation. Listening has no per-paragraph
-                    // hold, so a panel left open would sit there with no way to follow up
-                    // — its own "继续长按追问" pointing at a gesture that is gone.
-                    finishConversation()
-                }
+            hasInsight: insight != nil,
+            onOpenInsight: {
+                // Reading the argument and hearing it are separate activities, so the audio
+                // stops on the way in. Coming back leaves you where you were.
+                player.pause()
+                showingInsight = true
             },
             learningExpressions: learningExpressions,
             expressionIndex: cachedIndex,
@@ -812,7 +806,8 @@ private struct StudyWorkspace: View {
     var onCycleSpeed: () -> Void = {}
     var mode: StudyMode = .listening
     let annotated: Bool
-    let onToggleAnnotations: () -> Void
+    let hasInsight: Bool
+    let onOpenInsight: () -> Void
     let learningExpressions: [LearningExpressionDTO]
     let expressionIndex: LearningExpressionLogic.Index
     let cardIndex: ParagraphCards.Index
@@ -849,7 +844,8 @@ private struct StudyWorkspace: View {
                 speed: speed,
                 mode: mode,
                 annotated: annotated,
-                onToggleAnnotations: onToggleAnnotations
+                hasInsight: hasInsight,
+                onOpenInsight: onOpenInsight
             )
             studySurface
         }
@@ -1069,7 +1065,8 @@ private struct WorkspaceTopBar: View {
     var speed: Double = 1
     var mode: StudyMode = .listening
     let annotated: Bool
-    let onToggleAnnotations: () -> Void
+    let hasInsight: Bool
+    let onOpenInsight: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -1130,25 +1127,28 @@ private struct WorkspaceTopBar: View {
                         .foregroundStyle(NXColor.primary)
                 }
 
-                // Names the mode you are IN, not the one you would switch to. The
-                // old capsule always read 精读 and used tint to say whether it was
-                // on, which meant reading the colour to know where you were.
-                Button(action: onToggleAnnotations) {
-                    HStack(spacing: 4) {
-                        Image(systemName: mode.icon)
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(mode.label)
-                            .font(.system(size: 12, weight: .semibold))
+                // 洞察, where the mode toggle was. The two modes differed only in which
+                // controls a sentence offered, which is a distinction the learner had to
+                // remember rather than see; this button opens something instead.
+                //
+                // Only for native material, and only once the page exists: an entry that
+                // opens an empty page teaches you not to press it.
+                if hasInsight {
+                    Button(action: onOpenInsight) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "lightbulb")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("\u{6d1e}\u{5bdf}")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(NXColor.primary)
+                        .padding(.horizontal, NXSpacing.x2)
+                        .frame(height: 28)
+                        .background(NXColor.primary.opacity(0.1), in: Capsule())
                     }
-                    .foregroundStyle(mode == .reading ? NXColor.primary : NXColor.textSecondary(scheme))
-                    .padding(.horizontal, NXSpacing.x2)
-                    .frame(height: 28)
-                    .background(
-                        mode == .reading ? NXColor.primary.opacity(0.1) : NXColor.surface2(scheme),
-                        in: Capsule())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\u{6253}\u{5f00}\u{6d1e}\u{5bdf}")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\u{5f53}\u{524d}\(mode.label)\u{ff0c}\u{5207}\u{6362}\u{5230}\(mode.toggled.label)")
 
             }
 
