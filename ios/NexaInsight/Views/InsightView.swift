@@ -292,7 +292,10 @@ struct InsightPage: View {
                 .fill(statusDotColor)
                 .frame(width: 6, height: 6)
             Text(statusLineText)
-                .font(NXFont.control)
+                // A step up from the dock's footnote. This line now carries EVERY state — the
+                // button says only 按住 说话 — so it has to be readable at a glance rather than
+                // squinted at.
+                .font(NXFont.bodyMedium)
                 .foregroundStyle(NXColor.textSecondary(scheme))
                 // One line, truncated. A long answer belongs in the page body, which already
                 // shows the full exchange — this is a status line, not a transcript.
@@ -303,65 +306,73 @@ struct InsightPage: View {
         .padding(.horizontal, NXSpacing.x2)
     }
 
+    /// The button, which has exactly three appearances: waiting to be held, being held, and armed
+    /// to cancel.
+    ///
+    /// Copied from the dock, whose own comment settles the question: "outside Live it is ALWAYS
+    /// hold-to-talk — including while the teacher is answering, because pressing to talk is itself
+    /// the interrupt. No separate interrupt button." So there is no 打断 label and no 在想 label.
+    /// Interrupting is what holding does, not a mode it enters, and a button that renames itself
+    /// mid-conversation is reporting state the line above already reports.
+    ///
+    /// Text only, no glyph. The dock has none, and a glyph that changes with state is one more
+    /// thing shifting inside a centred label.
     private var capsule: some View {
-        HStack(spacing: NXSpacing.x2) {
-            Image(systemName: capsuleIcon)
-                .font(.system(size: 15, weight: .semibold))
-                // Also a fixed slot: waveform, ellipsis, hand.raised and mic.fill are all
-                // different widths, so pinning only the label would still let the pair shift.
-                .frame(width: 20)
-            // One word. "按住提问" while idle is worth saying once; the rest are states, and the
-            // glyph plus the line above carry those.
-            Text(capsuleLabel)
-                .font(NXFont.control)
-                // A fixed slot, because the labels differ in width (按住提问 and 松开发送 are four
-                // characters, 取消 and 在想 are two) and a centred pair that changes width shifts
-                // the glyph beside it. Same reason the shadowing sheet's caption is pinned.
-                .frame(width: 72, alignment: .leading)
-        }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .frame(height: Self.controlHeight)
-        .background(capsuleTint, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
-        // The dock's own press feedback: a hair larger, not a lift.
-        .scaleEffect(isRecording ? 1.01 : 1)
-        // No lift. The dock never moves: it recolours and scales a hair on press, and that is the
-        // whole vocabulary. Sliding the capsule up under the finger — while its label also changed
-        // width — is what made the button look like it was changing shape rather than state.
-        .animation(.easeOut(duration: 0.14), value: isRecording)
-        // Colour only, at the dock's timing. No spring: springs overshoot, and an overshooting
-        // capsule reads as the control resizing.
-        .animation(.easeOut(duration: 0.14), value: cancelArmed)
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    if !isRecording {
-                        onHoldStart()
-                        // Felt before any pixel moves.
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Text(talkLabel)
+            .font(NXFont.controlEmphasis)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.controlHeight)
+            .background(talkFill, in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+            .contentShape(Capsule())
+            // Colour only. The dock never moves, and the earlier lift-plus-relabel read as the
+            // control changing shape.
+            .animation(.easeOut(duration: 0.14), value: isRecording)
+            .animation(.easeOut(duration: 0.14), value: cancelArmed)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !isRecording {
+                            onHoldStart()
+                            // Felt before any pixel moves.
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        }
+                        // Negative height is upward. A light tick each way, so arming and
+                        // disarming are both recognisable without looking.
+                        let armed = value.translation.height < -Self.cancelThreshold
+                        if armed != cancelArmed {
+                            cancelArmed = armed
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
                     }
-                    // Negative height is upward. A light tick on each crossing, both ways, so
-                    // arming and disarming are distinguishable without looking.
-                    let armed = value.translation.height < -Self.cancelThreshold
-                    if armed != cancelArmed {
-                        cancelArmed = armed
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    .onEnded { _ in
+                        if cancelArmed {
+                            onHoldCancel()
+                            // Rigid, distinctly unlike the send: abandoning a question must not
+                            // feel like asking one.
+                            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        } else {
+                            onHoldEnd()
+                        }
+                        cancelArmed = false
                     }
-                }
-                .onEnded { _ in
-                    if cancelArmed {
-                        onHoldCancel()
-                        // Rigid, distinctly unlike the send: cancelling must not feel like a
-                        // question went out.
-                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                    } else {
-                        onHoldEnd()
-                    }
-                    cancelArmed = false
-                }
-        )
-        .accessibilityLabel(cancelArmed ? "\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}" : "\u{6309}\u{4f4f}\u{5c31}\u{6d1e}\u{5bdf}\u{63d0}\u{95ee}")
+            )
+            .accessibilityLabel("\u{6309}\u{4f4f}\u{8bf4}\u{8bdd}")
+            .accessibilityHint("\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}\u{ff0c}\u{677e}\u{5f00}\u{53d1}\u{9001}")
+    }
+
+    /// Three labels, matching the dock's wording exactly.
+    private var talkLabel: String {
+        if isRecording { return cancelArmed ? "\u{677e}\u{5f00} \u{53d6}\u{6d88}" : "\u{4e0a}\u{6ed1}\u{53d6}\u{6d88} \u{00b7} \u{677e}\u{5f00}\u{53d1}\u{9001}" }
+        return "\u{6309}\u{4f4f} \u{8bf4}\u{8bdd}"
+    }
+
+    /// Lighter while held — the dock's own 0.85 — and red once cancelling is armed.
+    private var talkFill: Color {
+        if cancelArmed { return NXColor.error }
+        return isRecording ? NXColor.primary.opacity(0.85) : NXColor.primary
     }
 
     /// The last thing said, or whose turn it is. Content first — a line reading "老师正在回答"
@@ -390,32 +401,8 @@ struct InsightPage: View {
         }
     }
 
-    private var capsuleIcon: String {
-        if cancelArmed { return "xmark" }
-        switch ask?.phase {
-        case .recording: return "waveform"
-        case .waiting: return "ellipsis"
-        // Naming the interrupt on the button, since it is otherwise undiscoverable: a press
-        // during an answer takes the floor rather than doing nothing.
-        case .answering: return "hand.raised.fill"
-        default: return "mic.fill"
-        }
-    }
 
-    private var capsuleLabel: String {
-        if cancelArmed { return "\u{53d6}\u{6d88}" }
-        switch ask?.phase {
-        case .recording: return "\u{677e}\u{5f00}\u{53d1}\u{9001}"
-        case .waiting: return "\u{5728}\u{60f3}"
-        case .answering: return "\u{6253}\u{65ad}"
-        default: return "\u{6309}\u{4f4f}\u{63d0}\u{95ee}"
-        }
-    }
 
-    private var capsuleTint: Color {
-        if cancelArmed { return NXColor.error }
-        return isRecording ? NXColor.error : NXColor.primary
-    }
 
     private var isRecording: Bool { ask?.phase == .recording }
 

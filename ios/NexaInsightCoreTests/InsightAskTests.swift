@@ -117,14 +117,12 @@ extension InsightAskTests {
         // are describing what you just did.
         XCTAssertTrue(code.contains("ask?.turns.last"), "the last turn is what the line shows")
         XCTAssertTrue(code.contains("statusDotColor"), "and a dot carries what content cannot")
-        // The interrupt has to LOOK different from a fresh question, or the one thing the learner
-        // cannot discover — that pressing during an answer takes the floor — stays hidden. Deleting
-        // the glyph left every other assertion passing.
-        XCTAssertTrue(code.contains("hand.raised.fill"), "answering shows an interrupt glyph")
-        // Matched as the ESCAPE, because that is what the file contains: asserting on the
-        // characters compiles 打断 into the test and searches a source that spells it
-        // \u{6253}\u{65ad}, so it failed on correct code.
-        XCTAssertTrue(code.contains(#"\u{6253}\u{65ad}"#), "and the capsule says 打断")
+        // The BUTTON must not name the interrupt. The dock settles this: "pressing to talk is
+        // itself the interrupt. No separate interrupt button." Labelling it 打断 named a
+        // consequence as if it were a different action, and 在想 renamed the button while the
+        // learner was reading the line above that already said so.
+        XCTAssertFalse(code.contains(#"\u{6253}\u{65ad}"#), "no 打断 on the button")
+        XCTAssertFalse(code.contains("hand.raised.fill"), "and no glyph that changes with state")
         XCTAssertTrue(code.contains("cancelThreshold"), "upward drag arms cancelling")
         // Three weights, each meaning something: medium on press, light on arming or disarming,
         // rigid on cancel — so cancelling never feels like a question went out.
@@ -143,9 +141,13 @@ extension InsightAskTests {
         XCTAssertTrue(source.contains(".frame(maxWidth: 560)"), "and its readable width")
         XCTAssertFalse(source.contains(".nxFloatingShadow(scheme)\n        .scaleEffect"),
                        "the panel carries the shadow now, not the capsule")
-        // Same type scale as the dock's own status line and labels.
+        // The status line is deliberately LARGER than the dock's footnote. It now carries every
+        // state — the button says only 按住 说话 — and this page has no other chrome competing with
+        // it, so it has to be readable at a glance rather than squinted at.
         XCTAssertTrue(source.contains("Text(statusLineText)"))
-        XCTAssertTrue(source.contains(".font(NXFont.control)"))
+        XCTAssertTrue(source.contains(".font(NXFont.bodyMedium)"))
+        // The button keeps the dock's emphasis weight.
+        XCTAssertTrue(source.contains(".font(NXFont.controlEmphasis)"))
     }
 
     func testTheCapsuleCannotChangeShape() throws {
@@ -161,9 +163,12 @@ extension InsightAskTests {
                        "the dock never moves; it recolours")
         XCTAssertFalse(code.contains("spring(response: 0.25, dampingFraction: 0.7), value: cancelArmed"),
                        "and a spring overshoot reads as a resize")
-        // Fixed slots for both, or the centred pair shifts as the wording changes.
-        XCTAssertTrue(code.contains(".frame(width: 72, alignment: .leading)"), "label slot is fixed")
-        XCTAssertTrue(code.contains(".frame(width: 20)"), "and so is the glyph's")
+        // Three labels only, and the dock's own wording for them.
+        XCTAssertTrue(code.contains(#"\u{6309}\u{4f4f} \u{8bf4}\u{8bdd}"#), "idle reads 按住 说话")
+        XCTAssertTrue(code.contains(#"\u{4e0a}\u{6ed1}\u{53d6}\u{6d88} \u{00b7} \u{677e}\u{5f00}\u{53d1}\u{9001}"#),
+                      "held reads 上滑取消 · 松开发送")
+        // Lighter while held, the dock's 0.85 — the state is in the fill, not in a new name.
+        XCTAssertTrue(code.contains("NXColor.primary.opacity(0.85)"))
     }
 
     func testTheExitSwipeCannotFireFromTheCapsuleOrMidTurn() throws {
