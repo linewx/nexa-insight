@@ -1236,6 +1236,32 @@ class PlaceholderUsageAI(OpenAIAdapter):
         return self._payload
 
 
+def test_a_leading_context_qualifier_is_dropped():
+    """The model also writes the qualifier in FRONT: "（本语境中）一种刻意夸张的姿态". It sits at
+    position 1, so the clause-boundary search has nothing earlier to cut back to and kept the whole
+    string — 3 of 137 definitions still opened by announcing they were about this episode.
+    """
+    trim = ImportPipeline._general_definition
+    assert trim("（本语境中）一种刻意夸张的危机反应姿态，表现为反复强调风险") == "一种刻意夸张的危机反应姿态，表现为反复强调风险"
+    assert trim("（本语境特指）一种模糊泛化的政治标签，指代左翼倾向") == "一种模糊泛化的政治标签，指代左翼倾向"
+
+    # A parenthetical that is part of the definition stays: only ones announcing the episode go.
+    kept = "（构词：centi- + billionaire）非正式造词，指身家达百亿美元的富豪"
+    assert trim(kept) == kept
+    # And a short gloss is not mangled.
+    assert trim("科技寡头") == "科技寡头"
+
+
+def test_only_one_general_definition_exists():
+    """An earlier edit left TWO `_general_definition` methods in the class. Python keeps the last,
+    so the fixed copy was dead code and the leading-qualifier strip silently did nothing — the
+    tests passed, and `inspect.getsource` was what finally showed the version being run was not
+    the version I had edited.
+    """
+    source = Path("src/nexa_insight_api/pipeline.py").read_text()
+    assert source.count("def _general_definition(") == 1
+
+
 def test_the_prompt_reserves_null_for_real_coinages():
     """Three wrong diagnoses preceded this one: batch too large, batch dropped, batch too small.
     The log showed zero failures, and expressions declined a batch of 20 declined a group of 5 and

@@ -1129,7 +1129,14 @@ class ImportPipeline:
     # Words that mean the sentence is talking ABOUT this episode rather than defining the
     # expression: "此处…", "说话人用它表示…". A company name is NOT evidence — "frontier labs"
     # legitimately means OpenAI, Anthropic and DeepMind, so naming them is the definition.
-    EPISODE_DEICTIC = re.compile(r"此处|本集|这集里|说话人|主播|\bspeaker\b", re.IGNORECASE)
+    EPISODE_DEICTIC = re.compile(
+        r"此处|本集|这集里|本语境|该语境|说话人|主播|\bspeaker\b", re.IGNORECASE)
+
+    # A qualifier the model puts in FRONT of the definition — "（本语境中）一种刻意夸张的姿态"
+    # — where there is no earlier clause to cut back to. Dropping the bracket leaves the
+    # definition itself intact.
+    LEADING_QUALIFIER = re.compile(
+        r"^\s*[（(][^）)]{0,24}(?:此处|本集|这集里|本语境|该语境|说话人|主播)[^）)]{0,24}[）)]\s*")
 
     @classmethod
     def _general_definition(cls, value: object) -> str | None:
@@ -1146,6 +1153,9 @@ class ImportPipeline:
         text = chinese_prose(value)
         if not text:
             return None
+        # Strip a leading "（本语境中）" first: it sits at position 1, so the clause-boundary
+        # search below has nothing before it to cut back to and would keep the whole string.
+        text = cls.LEADING_QUALIFIER.sub("", text).strip()
         match = cls.EPISODE_DEICTIC.search(text)
         if not match:
             return text
@@ -1193,44 +1203,6 @@ class ImportPipeline:
     # expression: "此处…", "说话人用它表示…". A company name is NOT evidence — "frontier labs"
     # legitimately means OpenAI, Anthropic and DeepMind, so naming them is the definition.
     EPISODE_DEICTIC = re.compile(r"此处|本集|这集里|说话人|主播|\bspeaker\b", re.IGNORECASE)
-
-    @classmethod
-    def _general_definition(cls, value: object) -> str | None:
-        """The definition with this episode's argument cut off, or None.
-
-        The prompt forbids folding the speaker's argument into the gloss and 22 of 132 cards did
-        it anyway — "…夸张地做出惊恐姿态；此处被 speaker 用作批判性标签，特指 Anthropic 在 AI
-        风险叙事中…". The learner then meets the word elsewhere and the card teaches them the
-        accusation. 这集里 already holds that half, so this is duplication as well as pollution.
-
-        Cut at the clause boundary rather than rejected: the part BEFORE the deixis is a good
-        definition, and throwing it away would lose the only section every card needs.
-        """
-        text = chinese_prose(value)
-        if not text:
-            return None
-        match = cls.EPISODE_DEICTIC.search(text)
-        if not match:
-            return text
-        # Prefer cutting at the last clause break before the deixis, so the definition ends
-        # cleanly instead of mid-sentence.
-        head = text[: match.start()]
-        for sep in ("；", ";", "。", "，", ","):
-            if sep in head:
-                head = head.rsplit(sep, 1)[0]
-                break
-        head = head.strip(" ；;。，,、")
-        # The deixis can sit INSIDE a parenthetical — "（源自…操作'双击'，此处为比喻）" — and
-        # cutting there left an unclosed bracket on a real card. Drop the dangling opener.
-        if head.count("（") > head.count("）"):
-            head = head[: head.rindex("（")].strip(" ；;。，,、")
-        if head.count("(") > head.count(")"):
-            head = head[: head.rindex("(")].strip(" ；;。，,、")
-        # Too little left to be a definition — better the original than a fragment. This also
-        # covers a definition that OPENS with the deixis: "说话人临时创造的术语，指…" is not
-        # pollution, it is what a coined term's definition looks like.
-        return head if len(_HAN.findall(head)) >= 4 else text
-
     HAN = re.compile(r"[\u4e00-\u9fff]")
 
     @classmethod
