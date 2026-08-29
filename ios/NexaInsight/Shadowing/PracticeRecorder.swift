@@ -40,29 +40,57 @@ final class PracticeRecorder {
     /// Called when the practice sheet opens. The cost is that the sheet holds the session in
     /// `.playAndRecord` while it is up, which is what it needs anyway to alternate between
     /// hearing the line and speaking it.
-    func prepareSession() {
+    /// Builds a recorder and primes the audio hardware, ready for `start` to just begin.
+    ///
+    /// Arming the SESSION alone was not enough — that was my first attempt at this and the delay
+    /// stayed. `AVAudioRecorder(url:settings:)` and the first `record()` are the expensive part:
+    /// the initialiser opens the output file and `record()` allocates buffers and spins up the
+    /// input hardware. Both ran inside the press, so the finger was down and the first syllable
+    /// spoken before any audio was being captured.
+    ///
+    /// `prepareToRecord()` does the file and buffer work up front, so `record()` on a prepared
+    /// recorder starts capturing essentially immediately.
+    static let settings: [String: Any] = [
+        AVFormatIDKey: Int(kAudioFormatLinearPCM),
+        AVSampleRateKey: 16_000,
+        AVNumberOfChannelsKey: 1,
+        AVLinearPCMBitDepthKey: 16,
+        AVLinearPCMIsFloatKey: false,
+    ]
+
+    /// A recorder built and primed ahead of the press, with the file it will write.
+    private var armed: (recorder: AVAudioRecorder, url: URL)?
+
+    func prepare(to url: URL) {
         let session = AVAudioSession.sharedInstance()
-        // Best-effort: a failure here only means the press pays the cost as before.
+        // Best-effort throughout: a failure here only means the press pays the cost as before.
         try? session.setCategory(.playAndRecord, options: [.defaultToSpeaker])
         try? session.setActive(true)
+        guard let recorder = try? AVAudioRecorder(url: url, settings: Self.settings) else { return }
+        recorder.isMeteringEnabled = true
+        recorder.prepareToRecord()
+        armed = (recorder, url)
     }
 
+    /// Where the armed recorder will write, so the caller can track the take's file.
+    var armedURL: URL? { armed?.url }
+
     func start(to url: URL) throws {
-        let session = AVAudioSession.sharedInstance()
-        // Idempotent, and nearly free once `prepareSession` has run — AVAudioSession returns
-        // immediately when the category and active state already match.
-        try session.setCategory(.playAndRecord, options: [.defaultToSpeaker])
-        try session.setActive(true)
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatLinearPCM),
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-        ]
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        // Without this, averagePower returns 0 forever and every take looks like speech.
-        recorder.isMeteringEnabled = true
+        // The prepared recorder, when it is the one for this file: `record()` on it starts
+        // capturing at once, where building one here costs the first syllable.
+        let recorder: AVAudioRecorder
+        if let armed, armed.url == url {
+            recorder = armed.recorder
+        } else {
+            let session = AVAudioSession.sharedInstance()
+            // Idempotent, and nearly free once the session is already active.
+            try session.setCategory(.playAndRecord, options: [.defaultToSpeaker])
+            try session.setActive(true)
+            recorder = try AVAudioRecorder(url: url, settings: Self.settings)
+            // Without this, averagePower returns 0 forever and every take looks like speech.
+            recorder.isMeteringEnabled = true
+        }
+        armed = nil
         recorder.record()
         self.recorder = recorder
         self.url = url

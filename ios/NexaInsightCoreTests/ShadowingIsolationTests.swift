@@ -50,8 +50,29 @@ final class ShadowingIsolationTests: XCTestCase {
         // already spoken before recording started, and the button stayed un-lit throughout, so
         // the press read as ignored.
         let practice = try source("NexaInsight/Views/PracticeView.swift")
-        XCTAssertTrue(practice.contains("recorder.prepareSession()"),
-                      "the sheet arms the session on open")
+        // A prepared RECORDER, not just an active session. Arming the session alone was my first
+        // attempt and the delay stayed: AVAudioRecorder's initialiser opens the output file and
+        // the first record() allocates buffers and starts the input hardware, and both ran inside
+        // the press.
+        XCTAssertTrue(practice.contains("recorder.prepare(to: nextRecordingURL())"),
+                      "the sheet arms a real recorder on open")
+        XCTAssertTrue(practice.contains("recorder.armedURL"),
+                      "and the press uses the armed file, or the fast path is skipped")
+        // Twice more in endTake — both the scored and the silent outcome — because a take
+        // consumes the armed recorder and 按住再说一遍 is the common case here.
+        XCTAssertGreaterThanOrEqual(
+            practice.components(separatedBy: "recorder.prepare(to: nextRecordingURL())").count - 1, 3,
+            "re-armed after a take, on both the scored and the silent path")
+
+        let recorderSource = try source("NexaInsight/Shadowing/PracticeRecorder.swift")
+        // Code only. The doc comment above `prepare` explains why prepareToRecord matters, so
+        // matching raw source passed with the actual CALL deleted — the same comment-matching
+        // slip as the LongPressGesture assertion below.
+        let recorderCode = recorderSource.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        XCTAssertTrue(recorderCode.contains("recorder.prepareToRecord()"),
+                      "the expensive file and buffer work happens before the press")
         // The press itself must still be a plain drag with no minimum, or a long-press delay
         // reintroduces the same lost syllable by a different route.
         XCTAssertTrue(practice.contains("DragGesture(minimumDistance: 0)"))
@@ -63,8 +84,7 @@ final class ShadowingIsolationTests: XCTestCase {
         XCTAssertFalse(code.contains("LongPressGesture"),
                        "a long-press delay would lose the first syllable again")
 
-        let recorder = try source("NexaInsight/Shadowing/PracticeRecorder.swift")
-        XCTAssertTrue(recorder.contains("func prepareSession()"))
+        XCTAssertTrue(recorderSource.contains("func prepare(to url: URL)"))
     }
 
     func testASegmentPlayerStopsAtTheWindowEnd() throws {

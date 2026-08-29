@@ -102,7 +102,7 @@ struct PracticeView: View {
             // Ahead of the first press, not inside it: activating the audio session blocks the
             // main thread long enough to swallow the first syllable and to leave the button
             // looking unresponsive.
-            recorder.prepareSession()
+            recorder.prepare(to: nextRecordingURL())
         }
         .padding(.horizontal, NXSpacing.x4)
         .padding(.top, score == nil ? NXSpacing.x6 : NXSpacing.x4)
@@ -299,14 +299,21 @@ struct PracticeView: View {
     }
 
     /// Finger down.
+    /// Where the next take will be written. Computed up front so the recorder can be built and
+    /// primed against a real file before the finger lands.
+    private func nextRecordingURL() -> URL {
+        RecordingFiles.recordingURL(
+            episodeId: subject.episodeId,
+            sentenceId: subject.sentenceId ?? subject.expressionId ?? 0).url
+    }
+
     private func beginTake() {
         speaker.stop()
         segment.stop()
         score = nil
         flow.startTake()
-        let target = RecordingFiles.recordingURL(
-            episodeId: subject.episodeId,
-            sentenceId: subject.sentenceId ?? subject.expressionId ?? 0)
+        // The armed file when one is ready, so `start` takes the prepared-recorder path.
+        let targetURL = recorder.armedURL ?? nextRecordingURL()
         recorder.onLevel = { level in flow.heard(level: level) }
         recorder.onFinished = { url in
             // The silence gate. With hold-to-talk it only fires on the 30s ceiling — a finger
@@ -315,7 +322,7 @@ struct PracticeView: View {
             if let url { Task { await evaluate(url) } }
         }
         do {
-            try recorder.start(to: target.url)
+            try recorder.start(to: targetURL)
         } catch {
             flow.failed("\u{9ea6}\u{514b}\u{98ce}\u{6253}\u{4e0d}\u{5f00}：\(error.localizedDescription)")
         }
@@ -325,9 +332,14 @@ struct PracticeView: View {
     private func endTake() {
         guard let url = recorder.stop() else {
             flow.failed("\u{6ca1}\u{5f55}\u{5230}\u{58f0}\u{97f3}")
+            // Still re-arm: the next press must not pay the setup cost either.
+            recorder.prepare(to: nextRecordingURL())
             return
         }
         flow.takeFinished(recording: url)
+        // 按住再说一遍 is the common case on this sheet, and a take consumes the armed recorder —
+        // without this the second press is as slow as the first one used to be.
+        recorder.prepare(to: nextRecordingURL())
         Task { await evaluate(url) }
     }
 
