@@ -254,90 +254,120 @@ struct InsightPage: View {
     /// How far up the finger must travel to arm cancelling. Matches the dock's threshold: the
     /// gesture should mean the same thing everywhere it exists.
     private static let cancelThreshold: CGFloat = 60
+    /// The dock's height, for the same reason — a long calm control rather than a chunky button.
+    private static let controlHeight: CGFloat = 50
 
-    /// Hold-to-talk, as a capsule floating over the page.
+    /// Hold-to-talk, built like the dock rather than beside it.
     ///
-    /// The same gesture as holding a paragraph in the transcript, and deliberately the same
-    /// shape — but it asks about this PAGE. Reading a five-minute summary is exactly when a
-    /// question arrives ("who disputed that?", "is that figure real?"), and the answer should be
-    /// about the claim on screen rather than a moment in audio the reader may never have heard.
+    /// Two changes learned from that control. The button carries a GLYPH and one short word, not a
+    /// sentence — an instruction printed on a button you are already holding is telling you
+    /// something you have just done. And the line above shows the CONVERSATION: the last thing
+    /// said or heard, so the state is legible from content rather than from a label describing it.
+    ///
+    /// A dot carries the state that content cannot: whose turn it is, at a glance, in the same
+    /// four colours the dock uses.
     private var askBar: some View {
-        VStack(spacing: NXSpacing.x2) {
-            // Says which of four things is happening. Without it the button looked identical
-            // whether the mic was open, the question was in flight, or the teacher was mid-answer
-            // — and a control that looks the same in every state cannot tell you what to do next.
-            Text(statusText)
-                .font(NXFont.label)
-                .foregroundStyle(statusTint)
-                .animation(.easeInOut(duration: 0.15), value: statusText)
-
-            HStack(spacing: NXSpacing.x2) {
-                Image(systemName: capsuleIcon)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(capsuleLabel)
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, NXSpacing.x6)
-            .frame(height: 44)
-            .background(capsuleTint, in: Capsule())
-            .nxFloatingShadow(scheme)
-            // Lifts with the finger while cancelling is armed, so the drag has somewhere to go.
-            .offset(y: cancelArmed ? -8 : 0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: cancelArmed)
-            // A drag with no minimum distance: recording begins the instant the finger lands. A
-            // LongPressGesture would put its own delay in front of the first word.
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isRecording {
-                            onHoldStart()
-                            // Medium on the way in, so the press is felt before any pixel moves.
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        }
-                        // Negative height is upward. A light tick on each crossing, both ways, so
-                        // arming and disarming are distinguishable without looking.
-                        let armed = value.translation.height < -Self.cancelThreshold
-                        if armed != cancelArmed {
-                            cancelArmed = armed
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                    }
-                    .onEnded { _ in
-                        if cancelArmed {
-                            onHoldCancel()
-                            // Rigid, distinctly unlike the send: cancelling must not feel like a
-                            // question went out.
-                            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                        } else {
-                            onHoldEnd()
-                        }
-                        cancelArmed = false
-                    }
-            )
-            .accessibilityLabel(cancelArmed ? "\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}" : "\u{6309}\u{4f4f}\u{5c31}\u{6d1e}\u{5bdf}\u{63d0}\u{95ee}")
+        VStack(alignment: .leading, spacing: NXSpacing.x2) {
+            statusLine
+            capsule
         }
+        .padding(.horizontal, NXSpacing.x4)
         .padding(.bottom, NXSpacing.x8)
     }
 
-    /// What is happening, in the learner's words.
-    private var statusText: String {
+    /// A dot and one line: what was just said, or whose turn it is when nothing has been.
+    private var statusLine: some View {
+        HStack(spacing: NXSpacing.x2) {
+            Circle()
+                .fill(statusDotColor)
+                .frame(width: 6, height: 6)
+            Text(statusLineText)
+                .font(NXFont.control)
+                .foregroundStyle(NXColor.textSecondary(scheme))
+                // One line, truncated. A long answer belongs in the page body, which already
+                // shows the full exchange — this is a status line, not a transcript.
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, NXSpacing.x2)
+    }
+
+    private var capsule: some View {
+        HStack(spacing: NXSpacing.x2) {
+            Image(systemName: capsuleIcon)
+                .font(.system(size: 15, weight: .semibold))
+            // One word. "按住提问" while idle is worth saying once; the rest are states, and the
+            // glyph plus the line above carry those.
+            Text(capsuleLabel)
+                .font(NXFont.control)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.controlHeight)
+        .background(capsuleTint, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+        .nxFloatingShadow(scheme)
+        // The dock's own press feedback: a hair larger, not a lift.
+        .scaleEffect(isRecording ? 1.01 : 1)
+        .offset(y: cancelArmed ? -8 : 0)
+        .animation(.easeOut(duration: 0.14), value: isRecording)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: cancelArmed)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if !isRecording {
+                        onHoldStart()
+                        // Felt before any pixel moves.
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    // Negative height is upward. A light tick on each crossing, both ways, so
+                    // arming and disarming are distinguishable without looking.
+                    let armed = value.translation.height < -Self.cancelThreshold
+                    if armed != cancelArmed {
+                        cancelArmed = armed
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
+                }
+                .onEnded { _ in
+                    if cancelArmed {
+                        onHoldCancel()
+                        // Rigid, distinctly unlike the send: cancelling must not feel like a
+                        // question went out.
+                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    } else {
+                        onHoldEnd()
+                    }
+                    cancelArmed = false
+                }
+        )
+        .accessibilityLabel(cancelArmed ? "\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}" : "\u{6309}\u{4f4f}\u{5c31}\u{6d1e}\u{5bdf}\u{63d0}\u{95ee}")
+    }
+
+    /// The last thing said, or whose turn it is. Content first — a line reading "老师正在回答"
+    /// tells you less than the answer's own words do.
+    private var statusLineText: String {
         if cancelArmed { return "\u{677e}\u{5f00}\u{53d6}\u{6d88}" }
+        if let last = ask?.turns.last, !last.text.isEmpty { return last.text }
         switch ask?.phase {
-        case .recording: return "\u{6b63}\u{5728}\u{542c}\u{2026}\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}"
+        case .recording: return "\u{5728}\u{542c}\u{4f60}\u{8bf4}\u{2026}"
         case .waiting: return "\u{5728}\u{60f3}\u{2026}"
-        // Named, and it names what to DO about it: pressing during an answer interrupts, which is
-        // otherwise something the learner has no way to discover.
-        case .answering: return "\u{8001}\u{5e08}\u{6b63}\u{5728}\u{56de}\u{7b54}\u{ff0c}\u{6309}\u{4f4f}\u{53ef}\u{6253}\u{65ad}"
+        case .answering: return "\u{8001}\u{5e08}\u{5728}\u{8bf4}\u{2026}"
         case .misheard: return "\u{6ca1}\u{542c}\u{6e05}\u{ff0c}\u{518d}\u{8bf4}\u{4e00}\u{904d}"
-        case .idle: return "\u{7ee7}\u{7eed}\u{6309}\u{4f4f}\u{8ffd}\u{95ee}"
-        case nil: return "\u{6309}\u{4f4f}\u{5c31}\u{8fd9}\u{4e00}\u{9875}\u{63d0}\u{95ee}"
+        case .idle, nil: return "\u{5c31}\u{8fd9}\u{4e00}\u{9875}\u{63d0}\u{95ee}"
         }
     }
 
-    private var statusTint: Color {
+    /// The four states the content cannot show, in the dock's colours.
+    private var statusDotColor: Color {
         if cancelArmed { return NXColor.error }
-        return ask?.phase == .recording ? NXColor.primary : NXColor.textTertiary(scheme)
+        switch ask?.phase {
+        case .recording: return NXColor.primary
+        case .waiting: return .orange
+        case .answering: return .orange
+        case .misheard: return NXColor.error
+        case .idle, nil: return NXColor.textTertiary(scheme)
+        }
     }
 
     private var capsuleIcon: String {
@@ -345,6 +375,8 @@ struct InsightPage: View {
         switch ask?.phase {
         case .recording: return "waveform"
         case .waiting: return "ellipsis"
+        // Naming the interrupt on the button, since it is otherwise undiscoverable: a press
+        // during an answer takes the floor rather than doing nothing.
         case .answering: return "hand.raised.fill"
         default: return "mic.fill"
         }

@@ -107,9 +107,24 @@ extension InsightAskTests {
 
         // A control that looks identical in every state cannot tell you what to do next, and the
         // interrupt in particular is undiscoverable unless the bar says so.
-        for phase in ["case .recording:", "case .waiting:", "case .answering:", "case .misheard:", "case .idle:"] {
-            XCTAssertTrue(code.contains(phase), "status must cover \(phase)")
+        // `.idle` and `nil` share a branch — nothing asked yet and a finished turn both mean
+        // "ask about this page" — so match the state name rather than an exact case spelling.
+        for phase in [".recording", ".waiting", ".answering", ".misheard", ".idle"] {
+            XCTAssertTrue(code.contains("case \(phase)"), "status must cover \(phase)")
         }
+        // The line shows the CONVERSATION first: a label reading "老师正在回答" tells you less
+        // than the answer's own words. Instructions printed on a button you are already holding
+        // are describing what you just did.
+        XCTAssertTrue(code.contains("ask?.turns.last"), "the last turn is what the line shows")
+        XCTAssertTrue(code.contains("statusDotColor"), "and a dot carries what content cannot")
+        // The interrupt has to LOOK different from a fresh question, or the one thing the learner
+        // cannot discover — that pressing during an answer takes the floor — stays hidden. Deleting
+        // the glyph left every other assertion passing.
+        XCTAssertTrue(code.contains("hand.raised.fill"), "answering shows an interrupt glyph")
+        // Matched as the ESCAPE, because that is what the file contains: asserting on the
+        // characters compiles 打断 into the test and searches a source that spells it
+        // \u{6253}\u{65ad}, so it failed on correct code.
+        XCTAssertTrue(code.contains(#"\u{6253}\u{65ad}"#), "and the capsule says 打断")
         XCTAssertTrue(code.contains("cancelThreshold"), "upward drag arms cancelling")
         // Three weights, each meaning something: medium on press, light on arming or disarming,
         // rigid on cancel — so cancelling never feels like a question went out.
