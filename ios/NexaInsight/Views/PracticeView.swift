@@ -56,7 +56,11 @@ struct PracticeView: View {
     @State private var speaker = ModelSentence()
     @State private var recorder = PracticeRecorder()
     @State private var score: DashScopePracticeResult?
-    @State private var showChinese = false
+    // Shown by default. Collapsing it saved three lines on a paragraph, but the translation is
+    // how you check you understood the line you are about to say — hiding it made the sheet
+    // tidier and the practice worse. The height ceiling on the text block is what keeps the
+    // record button in place now, so the lines are affordable.
+    @State private var showChinese = true
     /// This sheet's own player. A dummy URL when there is no audio — the TTS path is used then,
     /// and an AVPlayer over a missing file simply never plays.
     @StateObject private var segment: SegmentPlayback
@@ -117,6 +121,10 @@ struct PracticeView: View {
         .onDisappear {
             speaker.stop()
             recorder.stop()
+            // The segment player too. It was added this round and missed here, so leaving the
+            // sheet mid-sentence left it playing — and once the main player resumed, both were
+            // audible over each other.
+            segment.stop()
         }
     }
 
@@ -163,25 +171,27 @@ struct PracticeView: View {
                 .disabled(isSpeaking)
                 .accessibilityLabel("听这句")
             }
-            // Collapsed. Shadowing means reading the English; the Chinese confirms you
-            // understood it, and on a paragraph it cost another three lines before the button
-            // came into view.
-            if showChinese {
-                Text(subject.chinese)
-                    .font(NXFont.auxiliary)
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Button { showChinese = true } label: {
+            // Shown, and tappable to hide. The toggle only ever set `true`, which was invisible
+            // while the default was collapsed and became a one-way door the moment the default
+            // changed — expanded with no way back.
+            Button {
+                showChinese.toggle()
+            } label: {
+                if showChinese {
+                    Text(subject.chinese)
+                        .font(NXFont.auxiliary)
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
                     Text("\u{4e2d}\u{6587}")
                         .font(NXFont.label)
                         .foregroundStyle(NXColor.textTertiary(scheme))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, NXSpacing.x4)
         .padding(.vertical, NXSpacing.x3)
@@ -364,17 +374,24 @@ struct PracticeView: View {
 
     /// Finger up.
     private func endTake() {
-        guard let url = recorder.stop() else {
+        // Nothing expensive on this path. Fixing the PRESS moved the cost here: `prepare` builds
+        // an AVAudioRecorder and primes the audio hardware, and calling it inline meant the
+        // finger lifted into that work — the release stuttered instead of the press.
+        //
+        // So the state change happens now and the re-arming happens after, off this run loop
+        // turn. The button returns to its resting look immediately.
+        let url = recorder.stop()
+        if let url {
+            flow.takeFinished(recording: url)
+        } else {
             flow.failed("\u{6ca1}\u{5f55}\u{5230}\u{58f0}\u{97f3}")
-            // Still re-arm: the next press must not pay the setup cost either.
-            recorder.prepare(to: nextRecordingURL())
-            return
         }
-        flow.takeFinished(recording: url)
-        // 按住再说一遍 is the common case on this sheet, and a take consumes the armed recorder —
-        // without this the second press is as slow as the first one used to be.
-        recorder.prepare(to: nextRecordingURL())
-        Task { await evaluate(url) }
+        Task {
+            // 按住再说一遍 is the common action here and a take consumes the armed recorder, so
+            // the next press would otherwise pay the full setup cost again.
+            recorder.prepare(to: nextRecordingURL())
+        }
+        if let url { Task { await evaluate(url) } }
     }
 
     private func evaluate(_ url: URL) async {

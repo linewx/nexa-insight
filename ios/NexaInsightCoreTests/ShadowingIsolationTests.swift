@@ -58,11 +58,11 @@ final class ShadowingIsolationTests: XCTestCase {
                       "the sheet arms a real recorder on open")
         XCTAssertTrue(practice.contains("recorder.armedURL"),
                       "and the press uses the armed file, or the fast path is skipped")
-        // Twice more in endTake — both the scored and the silent outcome — because a take
-        // consumes the armed recorder and 按住再说一遍 is the common case here.
-        XCTAssertGreaterThanOrEqual(
-            practice.components(separatedBy: "recorder.prepare(to: nextRecordingURL())").count - 1, 3,
-            "re-armed after a take, on both the scored and the silent path")
+        // Twice: once on open, once after a take. The scored and silent paths used to re-arm
+        // separately; they now share one call, which is why this is 2 and not 3.
+        XCTAssertEqual(
+            practice.components(separatedBy: "recorder.prepare(to: nextRecordingURL())").count - 1, 2,
+            "armed on open and re-armed after every take")
 
         let recorderSource = try source("NexaInsight/Shadowing/PracticeRecorder.swift")
         // Code only. The doc comment above `prepare` explains why prepareToRecord matters, so
@@ -119,17 +119,57 @@ final class ShadowingIsolationTests: XCTestCase {
                       "a long paragraph scrolls inside the ceiling instead of displacing the button")
     }
 
-    func testTheChineseIsCollapsedByDefault() throws {
-        // Shadowing means reading the English. The Chinese confirms understanding, and shown
-        // always it cost another three lines on a paragraph before the button came into view.
+    func testTheChineseIsShownAndCanBeHidden() throws {
+        // Collapsing it by default saved three lines but made the practice worse: the translation
+        // is how you check you understood the line before saying it. The height ceiling on the
+        // text block is what keeps the button in place, so the lines are affordable.
         let practice = try source("NexaInsight/Views/PracticeView.swift")
         let code = practice.split(separator: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
             .joined(separator: "\n")
-        XCTAssertTrue(code.contains("@State private var showChinese = false"),
-                      "hidden until asked for")
-        XCTAssertTrue(code.contains("if showChinese {"))
-        XCTAssertTrue(code.contains("showChinese = true"), "and there is a way to ask")
+        XCTAssertTrue(code.contains("@State private var showChinese = true"))
+        // Bidirectional. The toggle only ever assigned `true`, which was invisible while the
+        // default was collapsed and became a one-way door the moment the default flipped.
+        XCTAssertTrue(code.contains("showChinese.toggle()"),
+                      "tapping must hide it again, not only reveal it")
+        // The only `= true` left is the state declaration; a bare assignment inside the button
+        // body would be the one-way door. Checked by looking at the button, not the whole file —
+        // my first version matched the declaration itself and failed on correct code.
+        if let button = code.range(of: "showChinese.toggle()") {
+            let around = String(code[..<button.lowerBound].suffix(200))
+            XCTAssertFalse(around.contains("showChinese = true"),
+                           "the toggle is the only mutation in the button")
+        }
+    }
+
+    func testLeavingTheSheetStopsItsPlayer() throws {
+        // The segment player was added this round and missed in onDisappear, so leaving mid
+        // sentence left it playing — and once the main player resumed, both were audible.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        let disappear = practice.range(of: ".onDisappear {")
+        XCTAssertNotNil(disappear)
+        let body = String(practice[disappear!.upperBound...].prefix(500))
+        XCTAssertTrue(body.contains("segment.stop()"), "the sheet's own player stops on the way out")
+        XCTAssertTrue(body.contains("recorder.stop()"))
+        XCTAssertTrue(body.contains("speaker.stop()"))
+    }
+
+    func testReleasingTheButtonDoesNoExpensiveWork() throws {
+        // Fixing the press moved the cost to the release: `prepare` builds an AVAudioRecorder and
+        // primes the audio hardware, and calling it inline meant the finger lifted into that
+        // work. The stutter moved rather than went away.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        guard let endTake = practice.range(of: "private func endTake() {") else {
+            return XCTFail("endTake not found")
+        }
+        let body = String(practice[endTake.upperBound...].prefix(900))
+        guard let prepare = body.range(of: "recorder.prepare(to: nextRecordingURL())") else {
+            return XCTFail("re-arming is missing; the second press would be slow again")
+        }
+        // Whatever precedes the re-arm must have handed it to a Task, not run it inline.
+        let before = String(body[..<prepare.lowerBound])
+        XCTAssertTrue(before.contains("Task {"),
+                      "re-arming happens off the release's run loop turn")
     }
 
     func testTheSegmentPlayerIsInTheBuild() throws {
