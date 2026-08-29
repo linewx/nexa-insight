@@ -8,6 +8,11 @@ struct UploadsPage: Equatable {
     // for Lex Fridman, against RSS's hard cap of 15). Shown so the UI can say how
     // much is there instead of implying the first page is everything.
     let totalCount: Int?
+    // How many uploads were filtered out to produce `videos`, across however many
+    // playlist pages this took. Reported rather than absorbed: a channel that
+    // posts 50 Shorts in a row filtered an entire page to nothing and the screen
+    // said "No long-form videos found", which is false — they were on page 2.
+    var skippedShortCount: Int = 0
 
     static let empty = UploadsPage(videos: [], nextPageToken: nil, totalCount: nil)
 }

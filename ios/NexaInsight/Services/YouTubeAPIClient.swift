@@ -34,11 +34,47 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
         self.session = session
     }
 
+    // How many playlist pages one call will walk while every video on them is
+    // filtered out. The uploads playlist is ordered by upload time and includes
+    // Shorts, so a channel on a Shorts run buries its long-form videos: measured on
+    // Ariannita la Gringa, the first video over ten minutes sat at position 51 —
+    // one past the page boundary — and the screen said "No long-form videos found"
+    // while the channel had dozens of 11-22 minute lessons.
+    //
+    // Bounded, and cheap because playlistItems and videos cost 1 unit each: five
+    // pages is 10 units against a daily 10,000. search.list would let YouTube do the
+    // filtering, but it costs 100 units from a separate 100-per-day bucket — one
+    // channel visit would spend the whole day — and its "long" bucket means over 20
+    // minutes, which would hide the 12 of 15 videos here that run 11-20.
+    static let maxEmptyPageWalk = 5
+
     func fetchUploads(channelId: String, pageToken: String?) async throws -> UploadsPage {
         guard !apiKey.isEmpty else { throw YouTubeAPIError.missingKey }
         guard let playlistId = YouTubeAPIParser.uploadsPlaylistId(channelId: channelId) else {
             throw YouTubeAPIError.unreadable
         }
+
+        var token = pageToken
+        var skipped = 0
+        for _ in 0..<Self.maxEmptyPageWalk {
+            var page = try await fetchOneUploadsPage(playlistId: playlistId, pageToken: token)
+            skipped += page.skippedShortCount
+            page.skippedShortCount = skipped
+            // Stop on the first page with something to show, or when there is no
+            // next page to try. Otherwise keep walking: an empty page here means
+            // everything on it was a Short, not that the channel has no lectures.
+            if !page.videos.isEmpty || page.nextPageToken == nil {
+                return page
+            }
+            token = page.nextPageToken
+        }
+        // Walked the cap without finding one. Reporting the skipped count lets the
+        // screen say what happened instead of implying the channel is empty.
+        return UploadsPage(videos: [], nextPageToken: token, totalCount: nil,
+                           skippedShortCount: skipped)
+    }
+
+    private func fetchOneUploadsPage(playlistId: String, pageToken: String?) async throws -> UploadsPage {
 
         var items = [
             URLQueryItem(name: "part", value: "snippet,contentDetails"),
@@ -71,7 +107,8 @@ struct YouTubeAPIClient: YouTubeAPIFetching {
         return UploadsPage(
             videos: merged,
             nextPageToken: page.nextPageToken,
-            totalCount: page.totalCount)
+            totalCount: page.totalCount,
+            skippedShortCount: page.videos.count - merged.count)
     }
 
     // Batched: one request covers up to 50 ids for 1 unit, so this never scales

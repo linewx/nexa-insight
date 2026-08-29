@@ -227,7 +227,15 @@ struct ChannelDetailView: View {
     private var countText: String {
         let shown = vm.uploadCards.count
         if vm.catalog.isEmpty {
-            return vm.catalogError ?? "No long-form videos found."
+            if let error = vm.catalogError { return error }
+            // Naming the shorts matters: this screen said "No long-form videos
+            // found" for a channel with dozens of 11-22 minute lessons, because a
+            // run of Shorts filled the pages ahead of them. "Nothing here" and
+            // "nothing yet" are different facts.
+            if vm.skippedShortCount > 0 {
+                return "Skipped \(vm.skippedShortCount) shorts — no videos over 10 minutes yet. Pull to refresh for more."
+            }
+            return "No long-form videos found."
         }
         if let total = vm.catalogTotal, total > shown {
             return "Showing \(shown) of \(total) long-form videos."

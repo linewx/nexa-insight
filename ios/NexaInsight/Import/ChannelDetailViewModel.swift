@@ -26,6 +26,9 @@ final class ChannelDetailViewModel: ObservableObject {
     // The full long-form catalog, when an API key is configured.
     @Published var catalog: [ChannelVideo] = []
     @Published var catalogTotal: Int?
+    // Uploads filtered out to fill the list. Shown when nothing survived, so the
+    // screen can say "50 shorts skipped" instead of claiming the channel is empty.
+    @Published var skippedShortCount = 0
     @Published var loadingMore = false
     @Published var catalogError: String?
     private var nextPageToken: String?
@@ -106,6 +109,7 @@ final class ChannelDetailViewModel: ObservableObject {
         reachedEnd = false
         catalog = []
         catalogError = nil
+        skippedShortCount = 0
         await load()
     }
 
@@ -119,6 +123,7 @@ final class ChannelDetailViewModel: ObservableObject {
             let page = try await api.fetchUploads(channelId: channelId, pageToken: nil)
             catalog = page.videos
             catalogTotal = page.totalCount
+            skippedShortCount = page.skippedShortCount
             nextPageToken = page.nextPageToken
             reachedEnd = page.nextPageToken == nil
         } catch {
