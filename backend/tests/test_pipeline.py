@@ -1306,6 +1306,30 @@ def test_a_chinese_source_skips_translation_and_cards_but_keeps_insight(repo, tm
     assert not repo.list_learning_expressions(episode_id)
 
 
+def test_captions_are_requested_in_chinese_too():
+    """A Chinese video failed with "Error code: 404" and the 404 had nothing to do with Chinese.
+
+    The caption fetch asked only for `en-orig,en`. The video had zh auto-captions and no English
+    track, so the transcript came back empty, the pipeline fell back to audio transcription, and THAT
+    died: the fallback names an OpenAI model (`gpt-4o-transcribe`) against a DashScope endpoint,
+    which has no such model. Two layers away from the actual mistake, which was not asking for the
+    captions that existed.
+    """
+    langs = YtDlpMediaAdapter.CAPTION_LANGS
+    assert "zh" in langs and "zh-Hans" in langs, "ask for the captions a Chinese video has"
+    # English first: an English video with a Chinese TRANSLATION track must still be read from its
+    # own language rather than from the translation.
+    assert langs.index("en-orig") < langs.index("zh"), "English stays the preferred source"
+    assert langs.index("zh-Hans") < langs.index("zh-Hant"), "Simplified before Traditional"
+
+    # And the file-picking order must cover the same languages, including the "-zh" suffix yt-dlp
+    # writes on the from-Chinese tracks. Two separate lists is how the request and the pick drift
+    # apart — asking for a track and then never looking for it is exactly this bug again.
+    files = YtDlpMediaAdapter.CAPTION_FILE_ORDER
+    for lang in langs:
+        assert any(name.startswith(lang) for name in files), f"nothing picks up {lang}"
+
+
 def test_language_is_counted_not_asked():
     """A language is visible in the characters. Spending a model call to learn what a regex can see
     would add a failure mode for nothing — and this one has to be right, since it gates three

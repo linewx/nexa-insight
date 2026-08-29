@@ -63,12 +63,6 @@ def chinese_prose(value: object) -> str | None:
 class MediaAdapter(Protocol):
     def metadata(self, url: str) -> MediaMetadata: ...
     def stream(self, url: str) -> tuple[str | None, datetime | None]: ...
-    def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
-    def download_audio(self, url: str, destination: Path) -> Path: ...
-    def is_constant_bitrate(self, audio: Path) -> bool: ...
-    def split_audio(self, audio: Path, output_dir: Path) -> list[Path]: ...
-
-
 class AIAdapter(Protocol):
     def transcribe(self, path: Path, offset_ms: int) -> list[TranscriptSegment]: ...
     def translate(self, texts: list[str]) -> list[str]: ...
@@ -248,6 +242,23 @@ class YtDlpMediaAdapter:
         # An empty read means ffprobe found no audio packets at all.
         return 0 < len(sizes) <= 2
 
+    # Caption tracks to ask for, in preference order, and the order they are then picked in.
+    #
+    # English first: an English video with a Chinese translation track must still be read from its
+    # own language, not from the translation. `zh-Hans` before `zh` because the former is the
+    # "from Chinese" auto-track, and `zh-Hant` last since Simplified is what the reader wants.
+    #
+    # One list, used for both the request and the selection, because two lists drift.
+    CAPTION_LANGS = ("en-orig", "en", "zh-Hans", "zh", "zh-Hant")
+    # yt-dlp writes the "from Chinese" tracks with a suffix, so the same preference has to cover
+    # both spellings when looking for the file it wrote.
+    CAPTION_FILE_ORDER = ("en-orig", "en", "zh-Hans-zh", "zh-Hans", "zh", "zh-Hant-zh", "zh-Hant")
+
+    def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
+    def download_audio(self, url: str, destination: Path) -> Path: ...
+    def is_constant_bitrate(self, audio: Path) -> bool: ...
+    def split_audio(self, audio: Path, output_dir: Path) -> list[Path]: ...
+
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]:
         # Only the source-language track is fetched now. The zh-Hans auto-caption
         # track is no longer used — Chinese comes from per-sentence AI translation
@@ -257,7 +268,16 @@ class YtDlpMediaAdapter:
         template = str(destination / "captions.%(ext)s")
         command = self._yt_dlp_command(
             "--skip-download", "--write-subs", "--write-auto-subs",
-            "--sub-langs", "en-orig,en", "--sub-format", "json3",
+            # Chinese too, in preference order. Asking only for English meant a Chinese video —
+            # which has zh auto-captions and no en-orig — returned an empty transcript, fell back
+            # to audio transcription, and died there on a 404: that path names an OpenAI model
+            # against a DashScope endpoint. The fallback was never the problem; not asking for the
+            # captions that existed was.
+            #
+            # `zh-Hans` before `zh`: the former is the "from Chinese" auto-track, which is the
+            # verbatim one. `zh-Hant` last, since Simplified is what the reader wants and
+            # traditional characters would be a needless conversion.
+            "--sub-langs", ",".join(self.CAPTION_LANGS), "--sub-format", "json3",
             "-o", template, url,
         )
         try:
@@ -266,7 +286,14 @@ class YtDlpMediaAdapter:
             raise RuntimeError("yt-dlp is not installed or is not on the backend PATH") from exc
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Timed out while fetching YouTube captions. Check the backend server's network or proxy.") from exc
-        source_caption_path = next(iter(destination.glob("captions.en-orig.json3")), None) or next(iter(destination.glob("captions.en.json3")), None)
+        # In the same preference order the download asked for. `next(iter(glob))` per candidate
+        # rather than one broad glob, because glob order is filesystem order — it would pick
+        # whichever file the directory happened to list first.
+        source_caption_path = next(
+            (path for name in self.CAPTION_FILE_ORDER
+             for path in [next(iter(destination.glob(f"captions.{name}.json3")), None)]
+             if path is not None),
+            None)
         source_text = self._parse_json3(source_caption_path) if source_caption_path else []
         return source_text, None
 
