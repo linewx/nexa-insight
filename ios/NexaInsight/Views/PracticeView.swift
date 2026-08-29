@@ -56,6 +56,7 @@ struct PracticeView: View {
     @State private var speaker = ModelSentence()
     @State private var recorder = PracticeRecorder()
     @State private var score: DashScopePracticeResult?
+    @State private var showChinese = false
     /// This sheet's own player. A dummy URL when there is no audio — the TTS path is used then,
     /// and an AVPlayer over a missing file simply never plays.
     @StateObject private var segment: SegmentPlayback
@@ -127,20 +128,30 @@ struct PracticeView: View {
     /// Hearing it is support, not the task — it earned half the screen's primary controls in
     /// the previous round and did not deserve it. Speaking is the task.
     private var sentence: some View {
+        // Scrolls only when it must: a short line sits still, a long paragraph becomes scrollable
+        // inside a fixed frame instead of displacing the button below it.
+        ScrollView(.vertical, showsIndicators: false) {
         VStack(spacing: NXSpacing.x2) {
             // Listening is an icon in the corner, not a labelled control. It kept creeping back
             // up the hierarchy — half the primary buttons, then a captioned capsule — and it is
             // support for the task, not a step in it.
             HStack(alignment: .top, spacing: NXSpacing.x2) {
+                // Body weight, not title3 semibold. A transcript row is a PARAGRAPH — measured
+                // across ep8: 123 characters on average, 289 at the longest, 52% of rows over
+                // 120 — so heading type set 40 words across six lines and pushed the record
+                // button, the actual task, to the bottom of the sheet. This is text to read
+                // aloud, not a title to admire.
+                //
+                // Serif stays, being easier on a long stretch. Left-aligned rather than centred:
+                // centred prose makes the eye hunt for each line's start, which costs nothing at
+                // one line and a lot at six.
                 Text(subject.text)
-                    .font(.system(.title3, design: .serif, weight: .semibold))
+                    .font(.system(.callout, design: .serif))
                     .foregroundStyle(NXColor.text(scheme))
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity)
-                    // Keeps the sentence optically centred despite the icon on one side.
-                    .padding(.leading, 28)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Button(action: listen) {
                     Image(systemName: isListening ? "speaker.wave.2.fill" : "speaker.wave.2")
                         .font(.system(.footnote, weight: .medium))
@@ -152,15 +163,38 @@ struct PracticeView: View {
                 .disabled(isSpeaking)
                 .accessibilityLabel("听这句")
             }
-            Text(subject.chinese)
-                .font(NXFont.auxiliary)
-                .foregroundStyle(NXColor.textTertiary(scheme))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            // Collapsed. Shadowing means reading the English; the Chinese confirms you
+            // understood it, and on a paragraph it cost another three lines before the button
+            // came into view.
+            if showChinese {
+                Text(subject.chinese)
+                    .font(NXFont.auxiliary)
+                    .foregroundStyle(NXColor.textTertiary(scheme))
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Button { showChinese = true } label: {
+                    Text("\u{4e2d}\u{6587}")
+                        .font(NXFont.label)
+                        .foregroundStyle(NXColor.textTertiary(scheme))
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.horizontal, NXSpacing.x4)
-        .padding(.vertical, NXSpacing.x4)
+        .padding(.vertical, NXSpacing.x3)
         .frame(maxWidth: .infinity)
+        }
+        // A ceiling on the SCROLL VIEW, not on the text: even at callout size the longest
+        // paragraph in ep8 (289 characters) runs about six lines, and letting the block grow
+        // freely is what put the record button below the fold. The button's position must not
+        // depend on how long the paragraph happens to be.
+        //
+        // A short line still sits still — a ScrollView is only as tall as it needs to be until
+        // its content exceeds the ceiling.
+        .frame(maxHeight: 168)
         .background {
             // A flat grey rectangle was most of what read as crude. A soft gradient plus a
             // hairline border gives the card an edge and a light source.

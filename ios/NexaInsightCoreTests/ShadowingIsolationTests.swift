@@ -99,6 +99,39 @@ final class ShadowingIsolationTests: XCTestCase {
                        "a second session activation would undo the recording fix")
     }
 
+    func testTheSentenceBlockCannotPushTheButtonOffTheSheet() throws {
+        // The text handed to this sheet is a transcript ROW, and rows are paragraphs: measured
+        // across ep8's 761 rows, 123 characters on average, 289 at the longest, and 52% over 120.
+        // At title3 serif semibold that set 40 words over six lines and the record button — the
+        // only thing the sheet exists for — ended up at the bottom edge.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        let code = practice.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+
+        XCTAssertFalse(code.contains(".title3, design: .serif, weight: .semibold"),
+                       "heading type on a paragraph is what caused the overflow")
+        XCTAssertTrue(code.contains(".callout, design: .serif"),
+                      "reading size, serif retained")
+        // The ceiling is what makes the button's position independent of paragraph length.
+        XCTAssertTrue(code.contains("maxHeight: 168"))
+        XCTAssertTrue(code.contains("ScrollView(.vertical, showsIndicators: false)"),
+                      "a long paragraph scrolls inside the ceiling instead of displacing the button")
+    }
+
+    func testTheChineseIsCollapsedByDefault() throws {
+        // Shadowing means reading the English. The Chinese confirms understanding, and shown
+        // always it cost another three lines on a paragraph before the button came into view.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        let code = practice.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        XCTAssertTrue(code.contains("@State private var showChinese = false"),
+                      "hidden until asked for")
+        XCTAssertTrue(code.contains("if showChinese {"))
+        XCTAssertTrue(code.contains("showChinese = true"), "and there is a way to ask")
+    }
+
     func testTheSegmentPlayerIsInTheBuild() throws {
         // Created on disk and not added to the target, which failed the build loudly this time —
         // but a file that compiles nowhere is a class of mistake worth pinning.
