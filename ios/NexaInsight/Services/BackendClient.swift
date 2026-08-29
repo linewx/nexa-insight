@@ -2,7 +2,29 @@ import Foundation
 
 struct BackendClient {
     let baseURL: URL
-    var session: URLSession = .shared
+    /// Bounded, unlike `URLSession.shared`.
+    ///
+    /// The shared session's resource timeout is SEVEN DAYS. A half-open connection to the backend
+    /// therefore never fails — it just never returns — which is what left an import sitting on
+    /// "Saving to your library" until the app was killed. The work had already finished server
+    /// side, so reopening the app found the episode ready and the hang looked like a UI bug.
+    ///
+    /// The probe button was given its own short-timeout session for exactly this reason and this,
+    /// the path that actually moves data, was left on the default.
+    ///
+    /// Generous rather than short: an episode's audio is tens of megabytes over a home connection.
+    /// The point is that it CANNOT hang forever, not that it must be quick.
+    static func makeSession() -> URLSession {
+        let config = URLSessionConfiguration.default
+        // Per-hop silence, not total duration: a stalled transfer fails, a slow one continues.
+        config.timeoutIntervalForRequest = 30
+        // The whole transfer, including a large audio file.
+        config.timeoutIntervalForResource = 600
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config)
+    }
+
+    var session: URLSession = BackendClient.makeSession()
 
     static var jsonDecoder: JSONDecoder {
         let decoder = JSONDecoder()

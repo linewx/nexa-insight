@@ -112,23 +112,23 @@ final class ImportViewModel: ObservableObject {
         return nsError.domain == "Backend" ? nsError.code : nil
     }
 
+    /// Fetch the finished episode, pull its audio down, and store it.
+    ///
+    /// The step that used to hang. `BackendClient` ran on `URLSession.shared`, whose resource
+    /// timeout is seven days, so a half-open connection here never failed — it never returned, and
+    /// the card sat on "Saving to your library" until the app was killed. The server had already
+    /// finished, which is why reopening the app found the episode ready to study.
+    ///
+    /// The instrumentation that found it is gone: the session is bounded now, and a timeout takes
+    /// the retry path above like any other transport failure.
     private func finishDownload(episodeId: Int) async throws {
-        // TEMPORARY: which of the four steps the stuck "Saving to your library" is in.
-        NSLog("[import] finishDownload %d: fetching bundle", episodeId)
         let bundle = try await client.bundle(episodeId)
-        NSLog("[import] bundle ok: sentences=%d hasAudio=%@",
-              bundle.sentences.count, bundle.hasAudio ? "yes" : "no")
         var localPath: String? = nil
         if bundle.hasAudio {
-            let destination = AudioFiles.audioURL(forEpisode: episodeId)
-            NSLog("[import] downloading audio to %@", destination.path)
-            try await client.downloadAudio(episodeId, to: destination)
-            NSLog("[import] audio saved")
+            try await client.downloadAudio(episodeId, to: AudioFiles.audioURL(forEpisode: episodeId))
             localPath = AudioFiles.relativePath(forEpisode: episodeId)
         }
-        NSLog("[import] saving bundle to the store")
         _ = try store.saveBundle(bundle, localAudioPath: localPath)
-        NSLog("[import] finishDownload %d complete", episodeId)
         reload()
     }
 
