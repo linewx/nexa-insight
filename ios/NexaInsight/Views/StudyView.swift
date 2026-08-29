@@ -39,7 +39,9 @@ struct StudyView: View {
     @State private var savedPositionMs: Int?
     // Nil until the header capsule is used: the mode then follows the persisted
     // preference, and the capsule overrides it for this sitting only.
-    @State private var modeOverride: StudyMode?
+    @State private var showingInsight = false
+    /// The 洞察 page for this episode, when the backend produced one. Native material only.
+    @State private var insight: InsightDTO?
     @State private var expandedExpressionID: Int?
     // Which paragraphs have their card stack open. A set, not a single id: several
     // paragraphs can be open at once, and closing one should not close the rest.
@@ -91,6 +93,7 @@ struct StudyView: View {
         self.settings = settings
         self.sentences = store.sentences(for: episodeId)
         _learningExpressions = State(initialValue: store.learningExpressions(for: episodeId))
+        _insight = State(initialValue: store.insight(for: episodeId))
         self.episode = store.downloadedEpisodes().first { $0.id == episodeId }
         let relative = store.localAudioPath(for: episodeId) ?? "audio/\(episodeId).mp3"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -107,8 +110,14 @@ struct StudyView: View {
     }
 
     /// The mode in force: this sitting's override, else the persisted preference.
+    /// Always reading now. 精听 is gone: it differed only in which controls a sentence offered,
+    /// which was a distinction the learner had to remember rather than see, and its replacement
+    /// on the toolbar opens 洞察 instead.
+    ///
+    /// The transcript keeps every control — replay, loop, shadow, speed, stepping — because
+    /// dropping the mode should not drop the practice with it.
     private var mode: StudyMode {
-        modeOverride ?? (settings.opensInReading ? .reading : .listening)
+        .reading
     }
 
     /// Whether expressions are marked in the transcript. Both modes annotate — the
@@ -370,6 +379,23 @@ struct StudyView: View {
         // a card example — and only one presentation per view survives, so whichever lost would
         // simply never open. Found by grepping for the pattern after the ➕ bug rather than
         // by anyone reporting it, which is how this trap keeps hiding.
+        .background {
+            Color.clear
+                .fullScreenCover(isPresented: $showingInsight) {
+                    if let insight {
+                        InsightPage(
+                            insight: insight,
+                            durationMs: episode?.durationMs,
+                            onJump: { ms in
+                                // Reading tells you WHICH three minutes to hear. Closing the page
+                                // and seeking is the whole point of the timestamps.
+                                showingInsight = false
+                                playIntent(seekTo: ms)
+                            },
+                            onClose: { showingInsight = false })
+                    }
+                }
+        }
         .background {
             Color.clear
                 .sheet(item: $practiceExpression) { expression in

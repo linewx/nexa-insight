@@ -42,6 +42,12 @@ enum StudyMode: String, Hashable, CaseIterable {
     }
 
     /// Whether a selected sentence offers the full set of playback controls.
-    var showsPlaybackControls: Bool { self == .listening }
+    /// True everywhere now. With 精听 gone `mode` is always `.reading`, and leaving this as
+    /// `self == .listening` would have silently taken the dock, hold-to-talk, shadowing, looping
+    /// and speed with it — the practice, not just the mode.
+    ///
+    /// Kept as a property rather than deleted: it is read in six places, and removing the concept
+    /// is a separate change from removing the second mode.
+    var showsPlaybackControls: Bool { true }
 
 }

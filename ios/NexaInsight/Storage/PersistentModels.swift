@@ -20,6 +20,12 @@ import SwiftData
     /// "native" or "teaching". Optional for the same reason as the fields above,
     /// and on-demand extraction falls back to native when it is missing.
     var materialKind: String?
+    /// The 洞察 page as JSON, exactly as the backend produced it.
+    ///
+    /// Stored as a blob rather than decomposed into models: it is written whole, read whole, and
+    /// never queried by its parts. SwiftData migrations are the expensive kind of change here, and
+    /// four extra @Model types would buy nothing.
+    var insightJSON: String?
     @Relationship(deleteRule: .cascade) var chapters: [StoredChapter]
     @Relationship(deleteRule: .cascade) var sentences: [StoredSentence]
     @Relationship(deleteRule: .cascade) var recordings: [StoredRecording]

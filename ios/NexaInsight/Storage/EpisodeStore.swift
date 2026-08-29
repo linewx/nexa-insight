@@ -42,6 +42,9 @@ final class EpisodeStore {
             existing.sentences = []; existing.chapters = []; existing.learningExpressions = unsynced
             existing.title = e.title; existing.channel = e.channel; existing.status = e.status
             existing.materialKind = e.materialKind ?? existing.materialKind
+            // Only overwritten when the bundle HAS a page: a reprocess that produced none must
+            // not wipe the one already on the device.
+            if let json = Self.encodeInsight(bundle.insight) { existing.insightJSON = json }
             if let localAudioPath { existing.localAudioPath = localAudioPath }
             try attach(bundle, to: existing)
             try context.save()
@@ -49,6 +52,7 @@ final class EpisodeStore {
         }
         let stored = StoredEpisode(episodeId: e.id, sourceUrl: e.sourceUrl, youtubeId: e.youtubeId, title: e.title, channel: e.channel, durationMs: e.durationMs, thumbnailUrl: e.thumbnailUrl, localAudioPath: localAudioPath, status: e.status)
         stored.materialKind = e.materialKind
+        stored.insightJSON = Self.encodeInsight(bundle.insight)
         context.insert(stored)
         try attach(bundle, to: stored)
         try context.save()
@@ -108,6 +112,21 @@ final class EpisodeStore {
         return e.chapters.sorted { $0.startMs < $1.startMs }.map {
             ChapterDTO(id: $0.chapterId, title: $0.title, summary: $0.summary, startMs: $0.startMs, endMs: $0.endMs)
         }
+    }
+
+    private static func encodeInsight(_ insight: InsightDTO?) -> String? {
+        guard let insight else { return nil }
+        // Re-encoded rather than passing the raw response through: the DTO is what the view reads,
+        // so round-tripping it here means a shape the view cannot use fails now, not on open.
+        guard let data = try? JSONEncoder().encode(insight) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// The 洞察 page for an episode, if one was produced and stored.
+    func insight(for episodeId: Int) -> InsightDTO? {
+        guard let json = episode(episodeId)?.insightJSON, let data = json.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(InsightDTO.self, from: data)
     }
 
     func learningExpressions(for episodeId: Int) -> [LearningExpressionDTO] {

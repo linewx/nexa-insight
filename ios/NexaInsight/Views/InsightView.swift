@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 /// What an episode argued, as a page read INSTEAD of the hour.
@@ -238,3 +239,4 @@ struct InsightPage: View {
             : String(format: "%d:%02d", minutes, seconds)
     }
 }
+#endif
