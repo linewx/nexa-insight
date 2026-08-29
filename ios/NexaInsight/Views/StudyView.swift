@@ -32,6 +32,9 @@ struct StudyView: View {
     /// Where a practice preview should stop, and what to call then. A tuple rather than a
     /// dedicated type because it lives for one sentence and nothing else reads it.
     @State private var segmentEnd: (endMs: Int, done: () -> Void)?
+    /// The episode's audio file. Held so the practice sheet can play a sentence on its own
+    /// player instead of seeking this one.
+    private let audioFileURL: URL
     @State private var speed: Double = 1
     @State private var savedPositionMs: Int?
     // Nil until the header capsule is used: the mode then follows the persisted
@@ -96,8 +99,10 @@ struct StudyView: View {
         let resumeMs = Resume.startPosition(
             savedMs: store.playbackPosition(for: episodeId),
             durationMs: self.episode?.durationMs) ?? 0
+        let audioURL = base.appendingPathComponent(relative)
+        self.audioFileURL = audioURL
         _player = StateObject(wrappedValue: LocalAudioPlayback(
-            fileURL: base.appendingPathComponent(relative),
+            fileURL: audioURL,
             initialPositionMs: resumeMs))
     }
 
@@ -360,7 +365,11 @@ struct StudyView: View {
                                // shadowing that teaches the wrong intonation.
                                audio: .original(startMs: s.startMs, endMs: s.endMs)),
                 store: store,
-                onPlayOriginal: { start, end, done in playSegment(from: start, to: end, then: done) })
+                // Its own player over the same file, and the main one pauses while the sheet is
+                // up. Seeking the main player moved the transcript under the sheet and left the
+                // outer paragraph running from there.
+                audioFileURL: audioFileURL,
+                onSuspendMainPlayback: { player.pause() })
                 .presentationDetents([.medium])
         }
         // Its own layer. This screen carries two item-driven sheets — a transcript sentence and
@@ -374,7 +383,9 @@ struct StudyView: View {
                         subject: .init(episodeId: episodeId, text: expression.example,
                                        chinese: expression.exampleChinese,
                                        expressionId: expression.id, sentenceId: nil),
-                        store: store)
+                        store: store,
+                        audioFileURL: audioFileURL,
+                        onSuspendMainPlayback: { player.pause() })
                         .presentationDetents([.medium])
                 }
         }

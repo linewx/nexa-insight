@@ -1,0 +1,88 @@
+import XCTest
+@testable import NexaInsightCore
+
+// The shadowing sheet must not drive the transcript behind it.
+//
+// SegmentPlayback and PracticeRecorder both sit inside `#if os(iOS)`, so neither can be
+// instantiated here — swift test runs on macOS. What is checkable is the wiring, and the wiring
+// IS the bug in all three cases: which player the sheet uses, when the session is armed, and
+// whether the main player is paused. A behavioural test would be better; a source-level test
+// that catches the exact regression is better than none.
+final class ShadowingIsolationTests: XCTestCase {
+    private func source(_ path: String) throws -> String {
+        try String(contentsOfFile: path, encoding: .utf8)
+    }
+
+    func testThePracticeSheetDoesNotSeekTheMainPlayer() throws {
+        // Tapping 听这句 used to call back into StudyView and seek the MAIN player, so asking to
+        // hear one line moved the transcript underneath the sheet and left the outer paragraph
+        // playing from there — "会一直播放", because nothing in the sheet owned the stop.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        XCTAssertTrue(practice.contains("segment.play(fromMs:"),
+                      "listening plays on the sheet's own player")
+        XCTAssertFalse(practice.contains("onPlayOriginal"),
+                       "the callback that drove the main player is gone")
+
+        // BOTH sheets, counted. Asserting the string merely appears passed with one call site
+        // set to nil, because the other still had it — the same blind spot that let the card
+        // sheet ship without the audio callback at all.
+        let study = try source("NexaInsight/Views/StudyView.swift")
+        XCTAssertEqual(
+            study.components(separatedBy: "onSuspendMainPlayback: { player.pause() }").count - 1, 2,
+            "every practice sheet pauses the main player while it is up")
+    }
+
+    func testBothPracticeSheetsGetTheAudioFile() throws {
+        // Two sheets present PracticeView — a transcript sentence and a card example — and the
+        // card one was constructed without the player callback at all, so its 听这句 fell back to
+        // synthesised speech. Only one presentation per view survives in SwiftUI, which is how
+        // differences between these two call sites keep going unnoticed.
+        let study = try source("NexaInsight/Views/StudyView.swift")
+        XCTAssertEqual(study.components(separatedBy: "audioFileURL: audioFileURL").count - 1, 2,
+                       "both sheets pass the audio file")
+        XCTAssertEqual(study.components(separatedBy: "onSuspendMainPlayback:").count - 1, 2,
+                       "and both pause the main player")
+    }
+
+    func testTheAudioSessionIsArmedBeforeTheFirstPress() throws {
+        // "录音非常不灵敏": beginTake called setActive(true), which blocks the main thread for
+        // tens to hundreds of milliseconds. The finger was already down and the first syllable
+        // already spoken before recording started, and the button stayed un-lit throughout, so
+        // the press read as ignored.
+        let practice = try source("NexaInsight/Views/PracticeView.swift")
+        XCTAssertTrue(practice.contains("recorder.prepareSession()"),
+                      "the sheet arms the session on open")
+        // The press itself must still be a plain drag with no minimum, or a long-press delay
+        // reintroduces the same lost syllable by a different route.
+        XCTAssertTrue(practice.contains("DragGesture(minimumDistance: 0)"))
+        // Checked against code only: the comment above that gesture explains why LongPressGesture
+        // is wrong, and matching raw source flagged the explanation as the offence.
+        let code = practice.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        XCTAssertFalse(code.contains("LongPressGesture"),
+                       "a long-press delay would lose the first syllable again")
+
+        let recorder = try source("NexaInsight/Shadowing/PracticeRecorder.swift")
+        XCTAssertTrue(recorder.contains("func prepareSession()"))
+    }
+
+    func testASegmentPlayerStopsAtTheWindowEnd() throws {
+        // The stop has to live with the player. It used to be an onChange watcher in StudyView,
+        // which meant the sheet's playback depended on a view behind it still observing.
+        let segment = try source("NexaInsight/Playback/SegmentPlayback.swift")
+        XCTAssertTrue(segment.contains("ms >= pending.endMs"), "it bounds its own playback")
+        XCTAssertTrue(segment.contains("func stop()"), "and can be silenced when a take begins")
+        // It must NOT touch the audio session: the main player configured it, and re-activating
+        // mid-sheet is what makes the first syllable disappear.
+        XCTAssertFalse(segment.contains("setActive"),
+                       "a second session activation would undo the recording fix")
+    }
+
+    func testTheSegmentPlayerIsInTheBuild() throws {
+        // Created on disk and not added to the target, which failed the build loudly this time —
+        // but a file that compiles nowhere is a class of mistake worth pinning.
+        let project = try source("NexaInsight.xcodeproj/project.pbxproj")
+        XCTAssertTrue(project.contains("SegmentPlayback.swift in Sources"))
+    }
+}

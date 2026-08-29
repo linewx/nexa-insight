@@ -37,10 +37,18 @@ struct PracticeView: View {
 
     let subject: Subject
     let store: EpisodeStore
-    /// Plays the episode's own audio between two offsets and calls back when it passes the end.
-    /// Supplied by StudyView, which owns the player — this view must not hold a second one, or
-    /// two players would fight over the audio session.
-    var onPlayOriginal: ((Int, Int, @escaping () -> Void) -> Void)? = nil
+    /// The episode's audio file, so this sheet can play one sentence of it on its OWN player.
+    ///
+    /// It used to call back into StudyView to seek the MAIN player, which meant asking to hear
+    /// one line moved the transcript underneath the sheet and left it playing from there — the
+    /// outer paragraph carried on, because it was the same player at the same position.
+    ///
+    /// The earlier comment here warned that a second player would fight over the audio session.
+    /// SegmentPlayback does not touch the session at all: the main player has already configured
+    /// it, and this only needs to make sound.
+    var audioFileURL: URL? = nil
+    /// Pauses the main player while this sheet is open, so one sentence is the only thing heard.
+    var onSuspendMainPlayback: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
 
@@ -48,6 +56,19 @@ struct PracticeView: View {
     @State private var speaker = ModelSentence()
     @State private var recorder = PracticeRecorder()
     @State private var score: DashScopePracticeResult?
+    /// This sheet's own player. A dummy URL when there is no audio — the TTS path is used then,
+    /// and an AVPlayer over a missing file simply never plays.
+    @StateObject private var segment: SegmentPlayback
+
+    init(subject: Subject, store: EpisodeStore, audioFileURL: URL? = nil,
+         onSuspendMainPlayback: (() -> Void)? = nil) {
+        self.subject = subject
+        self.store = store
+        self.audioFileURL = audioFileURL
+        self.onSuspendMainPlayback = onSuspendMainPlayback
+        _segment = StateObject(wrappedValue: SegmentPlayback(
+            fileURL: audioFileURL ?? URL(fileURLWithPath: "/dev/null")))
+    }
 
     var body: some View {
         // No ScrollView. Everything fits a `.medium` sheet by construction — scrolling a
@@ -57,11 +78,31 @@ struct PracticeView: View {
         // The record button shrinks once a score exists: before it is the only thing to do, and
         // after it is "try again". Measured — 534pt of content in a 437pt sheet was the
         // overflow, and this is where the height comes from.
-        VStack(spacing: score == nil ? NXSpacing.x6 : NXSpacing.x4) {
+        //
+        // Spacing is no longer uniform. One gap for everything was set while the content
+        // OVERFLOWED, and once it fitted the same value left the sentence and the button
+        // stranded at opposite ends with a void between them. The sentence and its 听 button
+        // belong together, the record button is the thing you came to press, and the status line
+        // describes that button — so it sits close to it rather than floating midway.
+        VStack(spacing: 0) {
             sentence
+            Spacer(minLength: NXSpacing.x4)
             recordButton
-            status
-            if let score { ScoreCard(score: score) }
+            // Close to the button it describes: "按住说话" and the level readout are a caption,
+            // not a separate section.
+            status.padding(.top, NXSpacing.x2)
+            if let score {
+                Spacer(minLength: NXSpacing.x3)
+                ScoreCard(score: score)
+            }
+            // Absorbs whatever the sheet has left over, so nothing is stretched to fill it.
+            Spacer(minLength: 0)
+        }
+        .task {
+            // Ahead of the first press, not inside it: activating the audio session blocks the
+            // main thread long enough to swallow the first syllable and to leave the button
+            // looking unresponsive.
+            recorder.prepareSession()
         }
         .padding(.horizontal, NXSpacing.x4)
         .padding(.top, score == nil ? NXSpacing.x6 : NXSpacing.x4)
@@ -245,11 +286,13 @@ struct PracticeView: View {
     private func listen() {
         guard !isSpeaking else { return }  // never cut off a take in progress
         recorder.stop()
+        // The outer paragraph must not play under this sheet. Asked for once per listen rather
+        // than only on open, since the learner can start the transcript from the dock behind.
+        onSuspendMainPlayback?()
         flow.begin()
-        if let window = subject.audio.playbackWindow, let play = onPlayOriginal {
-            // The speaker's own voice, bounded to this sentence. Unbounded it would play the
-            // whole 33-second paragraph the segment belongs to.
-            play(window.start, window.end) { flow.listenFinished() }
+        if let window = subject.audio.playbackWindow, audioFileURL != nil {
+            // The speaker's own voice, bounded to this sentence, on this sheet's own player.
+            segment.play(fromMs: window.start, toMs: window.end) { flow.listenFinished() }
         } else {
             speaker.say(subject.text) { flow.listenFinished() }
         }
@@ -258,6 +301,7 @@ struct PracticeView: View {
     /// Finger down.
     private func beginTake() {
         speaker.stop()
+        segment.stop()
         score = nil
         flow.startTake()
         let target = RecordingFiles.recordingURL(
