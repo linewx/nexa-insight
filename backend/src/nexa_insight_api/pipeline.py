@@ -79,6 +79,8 @@ class AIAdapter(Protocol):
     def is_compositional(self, text: str, meaning: str) -> bool: ...
     def garbled(self, texts: list[str]) -> set[str]: ...
     def generic_usage(self, texts: list[str]) -> dict[str, str]: ...
+    def insight_chunk(self, lines: list[dict]) -> dict: ...
+    def insight_synthesis(self, claims: list[dict], facts: list[dict]) -> dict: ...
 
 
 class YtDlpMediaAdapter:
@@ -498,6 +500,59 @@ class OpenAIAdapter:
         'Return JSON {"garbled": [the items that are mis-transcriptions]}.'
     )
 
+    # One chunk of a native episode, read for what was ARGUED rather than what was said.
+    #
+    # Per-chunk rather than whole-transcript because the whole thing fits a single call (~26,500
+    # tokens for a 102-minute episode) and would be flattened by it: the middle of a long text is
+    # where detail goes missing. Each chunk is small enough to be read closely.
+    INSIGHT_CHUNK = (
+        "This is part of a podcast transcript. Report, IN CHINESE, what is ARGUED here — not a "
+        "summary of what was said.\n"
+        'Return JSON {"claims": [...], "facts": [...]}.\n'
+        "Each claim: {\n"
+        '  "claim": the position someone takes, in Chinese, one sentence;\n'
+        '  "evidence": in Chinese, what they offer in support — and if they offer nothing, say '
+        "so plainly. A claim with no stated grounds is worth knowing about AS one with no "
+        "grounds;\n"
+        '  "dispute": in Chinese, who disagrees and on what, or null if nobody does. This is a '
+        "CONVERSATION: flattening several people into one agreeing voice is the most common way "
+        "a summary misleads;\n"
+        '  "at_ms": the millisecond offset of the line where the claim is made.\n'
+        "}\n"
+        "Each fact: {\n"
+        '  "fact": in Chinese, a figure or concrete claim about the world;\n'
+        '  "sourced": true only if a source, study or method is actually named in the audio. A '
+        "number said off the cuff is not sourced, and marking it so would let the learner quote "
+        "it as established;\n"
+        '  "at_ms": millisecond offset.\n'
+        "}\n"
+        "Report only what is here. If this stretch is filler, advertising or small talk, return "
+        "empty lists — padding it out costs the reader their time."
+    )
+
+    # The whole episode's shape, from the per-chunk findings.
+    INSIGHT_SYNTHESIS = (
+        "These are claims and facts extracted from one podcast, in order. Produce the page a "
+        "listener reads INSTEAD of the hour, IN CHINESE.\n"
+        'Return JSON {"thesis", "claims", "facts", "takeaways", "anchors"}.\n'
+        '  "thesis": one sentence, under 40 characters, naming what this episode is actually '
+        "about. Not a topic label — what is at stake in it.\n"
+        '  "claims": the 3-5 that matter, each {"claim", "evidence", "dispute", "at_ms"}. Merge '
+        "duplicates from different chunks, keep the earliest at_ms. Drop the rest: a page with "
+        "everything on it is the transcript again.\n"
+        '  "facts": 5-8, each {"fact", "sourced", "at_ms"}. Prefer figures the reader might '
+        "repeat later.\n"
+        '  "takeaways": at most 3, each one sentence. These must be INFERENCES — what follows '
+        "from the episode that it does not itself say. Restating a claim in different words is "
+        "not a takeaway; return an empty list rather than padding, because a reader who finds "
+        "restatement here stops trusting the section.\n"
+        '  "anchors": 2-4, each {"at_ms", "why"}: the moments worth hearing in the speakers\' own '
+        "voices, for someone who has just read this in five minutes.\n"
+        "Everything in Chinese except proper nouns. The whole page must be readable in 5-10 "
+        "minutes — roughly 1500-2500 Chinese characters. Longer is not more useful; it is the "
+        "problem this page exists to solve."
+    )
+
     # Words a model writes when it means "nothing here". Stored verbatim they read as content.
     PLACEHOLDERS = frozenset({"null", "none", "nil", "n/a", "na", "-", "无", "暂无", "不适用"})
 
@@ -527,6 +582,27 @@ class OpenAIAdapter:
         "identical to the learner, so guessing null costs them a section they needed.\n"
         'Return JSON {"items": [{"text", "usage", "example"}]}.'
     )
+
+    def insight_chunk(self, lines: list[dict]) -> dict:
+        """Claims and facts argued in one stretch of transcript."""
+        try:
+            result = self._json(self.INSIGHT_CHUNK, {"lines": lines})
+        except Exception:
+            return {"claims": [], "facts": []}
+        if not isinstance(result, dict):
+            return {"claims": [], "facts": []}
+        return {
+            "claims": [c for c in (result.get("claims") or []) if isinstance(c, dict)],
+            "facts": [f for f in (result.get("facts") or []) if isinstance(f, dict)],
+        }
+
+    def insight_synthesis(self, claims: list[dict], facts: list[dict]) -> dict:
+        """The page itself, from every chunk's findings."""
+        try:
+            result = self._json(self.INSIGHT_SYNTHESIS, {"claims": claims, "facts": facts})
+        except Exception:
+            return {}
+        return result if isinstance(result, dict) else {}
 
     def generic_usage(self, texts: list[str]) -> dict[str, str]:
         """How each expression is used in general, keyed by expression.
@@ -756,6 +832,14 @@ class ImportPipeline:
             traps = self._hidden_traps(all_segments, material_kind, job_id)
             sentences = [{"start_ms": s.start_ms, "end_ms": s.end_ms, "speaker": s.speaker, "source_text": s.text, "chinese": cn} for s, cn in zip(all_segments, translations, strict=True)]
             self.repo.replace_learning_content(episode.id, chapters, sentences, traps)
+            # The 洞察 page: what an hour of native material argued, in five minutes of Chinese.
+            # Native only — a lesson's content IS the language, so there is no separate argument
+            # to extract from it.
+            if material_kind == "native":
+                self.repo.upsert_job(job_id, stage="insight", progress=88)
+                insight = self._insight(all_segments, job_id)
+                if insight:
+                    self.repo.set_insight(episode.id, json.dumps(insight, ensure_ascii=False))
             self.repo.upsert_job(job_id, stage="complete", progress=100, status="complete")
         except Exception as exc:
             self.repo.upsert_job(job_id, stage=self.repo.get_job(job_id).stage, progress=self.repo.get_job(job_id).progress, status="failed", error=str(exc))
@@ -1302,6 +1386,158 @@ class ImportPipeline:
         except Exception:
             # One failed pass costs a little coverage; the other passes still ran.
             return []
+
+    # Lines per insight chunk. The whole transcript fits one call (~26,500 tokens for the
+    # longest episode here), and that is exactly the temptation to avoid: the middle of a long
+    # text is where a model stops reading closely. Roughly ten minutes of speech per chunk.
+    INSIGHT_CHUNK_LINES = 80
+
+    def _insight(self, segments: list, job_id: int) -> dict | None:
+        """Read the episode for its argument, then shape it into one page.
+
+        Two passes for a reason. A chunk pass reads closely enough to catch who disagreed with
+        whom — the thing a single whole-transcript call flattens first. A synthesis pass then sees
+        the shape across chunks, which no chunk can.
+        """
+        chunks = [segments[i:i + self.INSIGHT_CHUNK_LINES]
+                  for i in range(0, len(segments), self.INSIGHT_CHUNK_LINES)]
+        if not chunks:
+            return None
+
+        def read(chunk: list) -> dict:
+            lines = [{"at_ms": seg.start_ms, "text": seg.text} for seg in chunk]
+            try:
+                return self.ai.insight_chunk(lines)
+            except AttributeError:
+                raise
+            except Exception as exc:
+                # One unreadable chunk costs its claims, not the page.
+                print(f"insight chunk of {len(lines)} lines failed: {exc!r}", flush=True)
+                return {"claims": [], "facts": []}
+
+        claims: list[dict] = []
+        facts: list[dict] = []
+        workers = max(1, min(self.settings.scan_concurrency, len(chunks)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for done, result in enumerate(executor.map(read, chunks), start=1):
+                claims.extend(result.get("claims", []))
+                facts.extend(result.get("facts", []))
+                self._report(job_id, "insight", 88 + int(8 * done / len(chunks)))
+
+        if not claims and not facts:
+            return None
+        page = self.ai.insight_synthesis(claims, facts)
+        return self._clean_insight(page, total_ms=segments[-1].end_ms if segments else 0)
+
+    # A page longer than this is the problem it exists to solve. 5-10 minutes of Chinese reading.
+    MAX_INSIGHT_CHARS = 2600
+
+    @staticmethod
+    def _overlap_ratio(text: str, others: list[str]) -> float:
+        """How much of `text` is already said in `others`, by character trigram."""
+        grams = {text[i:i + 3] for i in range(max(0, len(text) - 2))}
+        if not grams:
+            return 1.0
+        seen: set[str] = set()
+        for other in others:
+            seen |= {other[i:i + 3] for i in range(max(0, len(other) - 2))}
+        return len(grams & seen) / len(grams)
+
+    @classmethod
+    def _clean_insight(cls, page: object, total_ms: int) -> dict | None:
+        """The page, with the four rules enforced here rather than hoped for in the prompt.
+
+        Every one of them has failed a prompt-only instruction elsewhere this session: fields came
+        back in English, sections were padded, and a "don't restate" instruction is exactly the
+        kind a model satisfies by rewording.
+        """
+        if not isinstance(page, dict):
+            return None
+        thesis = chinese_prose(page.get("thesis"))
+        if not thesis:
+            return None
+
+        def offset(value: object) -> int | None:
+            if not isinstance(value, (int, float)):
+                return None
+            ms = int(value)
+            # A claim pointing outside the episode is worse than one with no anchor: tapping it
+            # would seek nowhere.
+            return ms if 0 <= ms <= max(total_ms, 0) else None
+
+        claims = []
+        for item in page.get("claims") or []:
+            if not isinstance(item, dict):
+                continue
+            claim = chinese_prose(item.get("claim"))
+            if not claim:
+                continue
+            claims.append({
+                "claim": claim,
+                # Kept even when absent — "they offer nothing" is itself worth knowing.
+                "evidence": chinese_prose(item.get("evidence")),
+                "dispute": chinese_prose(item.get("dispute")),
+                "at_ms": offset(item.get("at_ms")),
+            })
+        claims = claims[:5]
+
+        facts = []
+        for item in page.get("facts") or []:
+            if not isinstance(item, dict):
+                continue
+            fact = chinese_prose(item.get("fact"))
+            if not fact:
+                continue
+            facts.append({
+                "fact": fact,
+                # Default UNSOURCED. A number said off the cuff read as established is the
+                # failure that matters, so anything not explicitly true is treated as not sourced.
+                "sourced": item.get("sourced") is True,
+                "at_ms": offset(item.get("at_ms")),
+            })
+        facts = facts[:8]
+
+        # Takeaways must be inferences. Restatement is what a model produces when asked for
+        # insight and given none, and a reader who finds it here stops trusting the section — so
+        # anything mostly present in the thesis, claims or facts is dropped rather than shown.
+        said = [thesis] + [c["claim"] for c in claims] + [f["fact"] for f in facts]
+        takeaways = []
+        for item in page.get("takeaways") or []:
+            text = chinese_prose(item if isinstance(item, str) else (item or {}).get("takeaway"))
+            if text and cls._overlap_ratio(text, said) < 0.6:
+                takeaways.append(text)
+        takeaways = takeaways[:3]
+
+        anchors = []
+        for item in page.get("anchors") or []:
+            if not isinstance(item, dict):
+                continue
+            at_ms = offset(item.get("at_ms"))
+            why = chinese_prose(item.get("why"))
+            if at_ms is not None and why:
+                anchors.append({"at_ms": at_ms, "why": why})
+        anchors = anchors[:4]
+
+        if not claims and not facts:
+            return None
+        page = {"thesis": thesis, "claims": claims, "facts": facts,
+                "takeaways": takeaways, "anchors": anchors}
+        # Trim from the tail if it overran: claims carry the argument, so facts go first.
+        while cls._insight_length(page) > cls.MAX_INSIGHT_CHARS and len(page["facts"]) > 3:
+            page["facts"].pop()
+        while cls._insight_length(page) > cls.MAX_INSIGHT_CHARS and len(page["claims"]) > 3:
+            page["claims"].pop()
+        return page
+
+    @staticmethod
+    def _insight_length(page: dict) -> int:
+        parts = [page["thesis"]]
+        for claim in page["claims"]:
+            parts += [claim["claim"], claim.get("evidence") or "", claim.get("dispute") or ""]
+        parts += [f["fact"] for f in page["facts"]]
+        parts += page["takeaways"]
+        parts += [a["why"] for a in page["anchors"]]
+        return sum(len(p) for p in parts)
 
     def _hidden_traps(self, sentences: list[TranscriptSegment], material_kind: str,
                       job_id: int | None = None) -> list[dict]:

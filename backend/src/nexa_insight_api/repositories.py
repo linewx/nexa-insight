@@ -159,7 +159,7 @@ class Repository:
         if self.engine.dialect.name != "sqlite":
             return
         additions = {
-            "episodes": {"material_kind": "VARCHAR(16)"},
+            "episodes": {"material_kind": "VARCHAR(16)", "insight_json": "TEXT"},
             "learning_expressions": {
                 "type": "VARCHAR(32)",
                 "heard_as": "VARCHAR(500)",
@@ -180,6 +180,14 @@ class Repository:
                 for column, ddl in columns.items():
                     if column not in existing:
                         connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+    def set_insight(self, episode_id: int, insight_json: str) -> None:
+        with self.session() as session:
+            episode = session.get(Episode, episode_id)
+            if episode is None:
+                raise LookupError("Episode not found")
+            episode.insight_json = insight_json
+            session.commit()
 
     def set_material_kind(self, episode_id: int, material_kind: str) -> None:
         with self.session() as session:

@@ -91,6 +91,41 @@ class LearningExpressionView(ORMModel):
     occurrences: list[ExpressionOccurrenceView]
 
 
+class InsightClaimView(BaseModel):
+    claim: str
+    # Kept even when null — "they offered nothing in support" is itself worth knowing, and is the
+    # difference between reading an argument and taking a model's word for it.
+    evidence: str | None = None
+    # Who disagreed, and on what. A podcast is a conversation, and flattening several people into
+    # one agreeing voice is the most common way a summary misleads.
+    dispute: str | None = None
+    at_ms: int | None = None
+
+
+class InsightFactView(BaseModel):
+    fact: str
+    # False unless a source was actually named. A figure said off the cuff, presented as
+    # established, is the failure this flag exists to prevent.
+    sourced: bool = False
+    at_ms: int | None = None
+
+
+class InsightAnchorView(BaseModel):
+    at_ms: int
+    why: str
+
+
+class InsightView(BaseModel):
+    """What an hour of native material argued, as the page read instead of the hour."""
+    thesis: str
+    claims: list[InsightClaimView] = []
+    facts: list[InsightFactView] = []
+    # May be empty on purpose: an inference that only restates a claim is dropped rather than
+    # shown, because a reader who finds restatement here stops trusting the section.
+    takeaways: list[str] = []
+    anchors: list[InsightAnchorView] = []
+
+
 class EpisodeBundle(BaseModel):
     episode: EpisodeView
     chapters: list[ChapterView]
@@ -99,3 +134,6 @@ class EpisodeBundle(BaseModel):
     has_stream: bool
     has_learning_pack: bool = False
     learning_expressions: list[LearningExpressionView] = []
+    # Native episodes only: a lesson's content IS the language, so there is no separate argument
+    # to extract from one.
+    insight: InsightView | None = None

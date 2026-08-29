@@ -1,6 +1,8 @@
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import json
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -9,7 +11,7 @@ from sqlalchemy.orm import Session
 from .models import Episode, ImportJob
 from .pipeline import YtDlpMediaAdapter
 from .repositories import Repository
-from .schemas import ChapterView, EpisodeBundle, EpisodeView, ImportRequest, ImportView, JobView, LearningExpressionView, SentenceView
+from .schemas import ChapterView, EpisodeBundle, EpisodeView, ImportRequest, ImportView, InsightView, JobView, LearningExpressionView, SentenceView
 from .settings import Settings
 
 
@@ -23,6 +25,17 @@ def youtube_id(url: str) -> str | None:
     else:
         return None
     return value if value and len(value) == 11 else None
+
+
+def _insight_view(raw: str | None) -> InsightView | None:
+    """The stored 洞察 page, or nothing if it cannot be read."""
+    if not raw:
+        return None
+    try:
+        return InsightView.model_validate(json.loads(raw))
+    except Exception:
+        # An older or half-written page must not take the whole bundle down with it.
+        return None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -144,6 +157,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             has_stream=bool(episode.stream_url),
             has_learning_pack=bool(expressions),
             learning_expressions=[LearningExpressionView.model_validate(item) for item in expressions],
+            # Parsed here rather than stored typed: the page is written whole and read whole. A
+            # malformed blob yields no page instead of a 500 — the transcript is still usable
+            # without it.
+            insight=_insight_view(episode.insight_json),
         )
 
     @app.post("/api/episodes/{episode_id}/stream", response_model=EpisodeView)

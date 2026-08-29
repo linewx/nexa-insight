@@ -32,6 +32,10 @@ class Episode(Base):
     # "native" (made for native speakers) or "teaching" (an English lesson).
     # Decides which extraction strategy runs, since the two serve different goals.
     material_kind: Mapped[str | None] = mapped_column(String(16))
+    # The 洞察 page's content, as JSON. One column rather than five tables: it is written whole,
+    # read whole, and never queried by its parts — a thesis, its claims, the facts worth keeping,
+    # what follows from them, and where to listen.
+    insight_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(default=utc_now)
 
     chapters: Mapped[list[Chapter]] = relationship(cascade="all, delete-orphan")

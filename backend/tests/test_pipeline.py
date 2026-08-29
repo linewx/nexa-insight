@@ -66,6 +66,14 @@ class FakeAI:
         # pass is best-effort, so a card without it is still a card.
         return {}
 
+    def insight_chunk(self, lines):
+        # No argument extracted by default. The 洞察 page is native-only and absent is a valid
+        # outcome, so fixtures that do not care about it get no page.
+        return {"claims": [], "facts": []}
+
+    def insight_synthesis(self, claims, facts):
+        return {}
+
     def hidden_traps(self, sentences):
         # One shifted sense in the first line of every batch, so remapping is observable.
         return [{
@@ -1234,6 +1242,73 @@ class PlaceholderUsageAI(OpenAIAdapter):
 
     def _json(self, prompt, payload):
         return self._payload
+
+
+def test_a_takeaway_that_only_restates_is_dropped():
+    """The 洞察 page exists so an hour can be understood in five minutes, and its takeaways are the
+    part that has to be an INFERENCE. "Do not restate" is exactly the instruction a model
+    satisfies by rewording, so it is enforced here rather than hoped for in the prompt: a reader
+    who finds restatement in this section stops trusting it, and an empty section is honest.
+    """
+    page = ImportPipeline._clean_insight({
+        "thesis": "这集在争论 AI 监管是真安全还是商业策略",
+        "claims": [{"claim": "风险叙事服务于监管套利", "evidence": "没有方法论", "at_ms": 1000}],
+        "facts": [{"fact": "预测 50% 的知识工作岗位将消失", "sourced": False, "at_ms": 2000}],
+        "takeaways": [
+            "监管辩论的真实战场是标准制定权，而不是安全本身",
+            "这集在争论 AI 监管究竟是真安全还是商业策略",
+        ],
+    }, total_ms=60_000)
+    assert page["takeaways"] == ["监管辩论的真实战场是标准制定权，而不是安全本身"]
+
+
+def test_a_figure_is_unsourced_unless_it_says_otherwise():
+    """A number said off the cuff, shown as established, is what this flag prevents — the reader
+    would go on to quote it. So anything not explicitly `true` is treated as unsourced."""
+    page = ImportPipeline._clean_insight({
+        "thesis": "这集讨论前沿实验室的融资压力",
+        "claims": [{"claim": "融资环境正在收紧", "at_ms": 0}],
+        "facts": [
+            {"fact": "该研究发表在 Nature 上", "sourced": True},
+            {"fact": "预测 50% 岗位消失", "sourced": "yes"},   # not a bool
+            {"fact": "算力成本翻了三倍"},                        # absent
+        ],
+    }, total_ms=60_000)
+    assert [f["sourced"] for f in page["facts"]] == [True, False, False]
+
+
+def test_an_anchor_outside_the_episode_is_not_offered():
+    """Tapping a timestamp seeks the audio. One past the end would seek nowhere, which is worse
+    than a claim with no anchor at all."""
+    page = ImportPipeline._clean_insight({
+        "thesis": "这集讨论监管与竞争",
+        "claims": [{"claim": "标准制定权是真正的战场", "at_ms": 9_999_999}],
+        "facts": [{"fact": "两家公司主导了草案", "sourced": True, "at_ms": 30_000}],
+        "anchors": [{"at_ms": 30_000, "why": "交锋处"}, {"at_ms": 9_999_999, "why": "越界"}],
+    }, total_ms=60_000)
+    assert page["claims"][0]["at_ms"] is None, "out of range, so no offset offered"
+    assert [a["at_ms"] for a in page["anchors"]] == [30_000], "and the bad anchor is gone"
+
+
+def test_the_page_is_capped_to_a_five_minute_read():
+    """Length is the whole point: a page you cannot read in 5-10 minutes has not replaced the
+    hour. Facts are trimmed before claims, because the claims carry the argument."""
+    page = ImportPipeline._clean_insight({
+        "thesis": "这集讨论监管",
+        "claims": [{"claim": "论点" + "、内容详尽" * 60, "at_ms": 0} for _ in range(5)],
+        "facts": [{"fact": "事实" + "、数字若干" * 60, "sourced": True} for _ in range(8)],
+    }, total_ms=60_000)
+    assert ImportPipeline._insight_length(page) <= ImportPipeline.MAX_INSIGHT_CHARS
+    assert len(page["claims"]) >= 3, "the argument survives the trim"
+
+
+def test_an_english_page_is_no_page():
+    """Asked for Chinese and answered in English is a failure mode this session has seen on every
+    field it applied to — 196 of 196 cards once. The reader cannot use an English summary."""
+    assert ImportPipeline._clean_insight({
+        "thesis": "This episode argues about whether AI regulation is safety or strategy",
+        "claims": [{"claim": "The risk narrative serves regulatory capture"}],
+    }, total_ms=60_000) is None
 
 
 def test_a_leading_context_qualifier_is_dropped():
