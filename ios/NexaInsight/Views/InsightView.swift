@@ -30,7 +30,20 @@ struct InsightPage: View {
     /// something on screen here.
     var onHoldStart: () -> Void = {}
     var onHoldEnd: () -> Void = {}
+    /// Released after dragging up: abandon the question rather than send it.
+    var onHoldCancel: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
+    /// Whether an upward drag has passed the cancel threshold. Held here rather than derived from
+    /// the gesture so the label and colour can change the moment it arms, not on release.
+    @State private var cancelArmed = false
+    /// The page's own height, so the swipe can tell "near the bottom" from "on the capsule".
+    @State private var pageHeight: CGFloat = 0
+
+    /// Named so the drag reports coordinates against this page rather than whatever ancestor
+    /// SwiftUI would otherwise pick.
+    private static let pageSpace = "insightPage"
+    /// The strip at the bottom the exit swipe keeps out of: capsule, status line and padding.
+    private static let askBarZone: CGFloat = 120
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -55,8 +68,39 @@ struct InsightPage: View {
             }
         }
         .overlay(alignment: .bottom) { askBar }
+        // Right-swipe to leave, the mirror of the leftward swipe that opens the notes drawer,
+        // with the same thresholds so the gesture means one thing across the app.
+        //
+        // `.simultaneousGesture` so the page still scrolls: a swipe that consumed the drag would
+        // make a five-minute read unscrollable, which is worse than having no swipe at all.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 24, coordinateSpace: .named(Self.pageSpace))
+                .onEnded { value in
+                    // Not from the ask capsule. Any drag there starts recording, so a sideways
+                    // flick off the button would send a question AND leave the page — the notes
+                    // drawer guards its own top edge for the same reason.
+                    guard value.startLocation.y < pageHeight - Self.askBarZone else { return }
+                    // And never while a question is in flight: leaving mid-turn would strand the
+                    // answer on a page nobody is looking at.
+                    guard ask == nil || ask?.phase == .idle else { return }
+                    let rightwards = value.translation.width
+                    let vertical = abs(value.translation.height)
+                    // Twice as far sideways as up or down: a scroll that drifts is not a swipe.
+                    guard rightwards > vertical * 2 else { return }
+                    guard rightwards > 60 || value.predictedEndTranslation.width > 120 else { return }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onClose()
+                }
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(NXColor.background(scheme))
+        .coordinateSpace(name: Self.pageSpace)
+        .background {
+            GeometryReader { geo in
+                Color.clear.onAppear { pageHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { _, new in pageHeight = new }
+            }
+        }
     }
 
     private var header: some View {
@@ -207,40 +251,118 @@ struct InsightPage: View {
         }
     }
 
+    /// How far up the finger must travel to arm cancelling. Matches the dock's threshold: the
+    /// gesture should mean the same thing everywhere it exists.
+    private static let cancelThreshold: CGFloat = 60
+
     /// Hold-to-talk, as a capsule floating over the page.
     ///
     /// The same gesture as holding a paragraph in the transcript, and deliberately the same
-    /// shape — but what it asks about is this page. Reading a five-minute summary is exactly when
-    /// a question arrives ("who disputed that?", "is that figure real?"), and the answer should be
+    /// shape — but it asks about this PAGE. Reading a five-minute summary is exactly when a
+    /// question arrives ("who disputed that?", "is that figure real?"), and the answer should be
     /// about the claim on screen rather than a moment in audio the reader may never have heard.
     private var askBar: some View {
         VStack(spacing: NXSpacing.x2) {
-            if let ask, ask.phase == .waiting {
-                Text("\u{5728}\u{60f3}\u{2026}")
-                    .font(NXFont.label)
-                    .foregroundStyle(NXColor.textTertiary(scheme))
-            }
+            // Says which of four things is happening. Without it the button looked identical
+            // whether the mic was open, the question was in flight, or the teacher was mid-answer
+            // — and a control that looks the same in every state cannot tell you what to do next.
+            Text(statusText)
+                .font(NXFont.label)
+                .foregroundStyle(statusTint)
+                .animation(.easeInOut(duration: 0.15), value: statusText)
+
             HStack(spacing: NXSpacing.x2) {
-                Image(systemName: isRecording ? "waveform" : "mic.fill")
+                Image(systemName: capsuleIcon)
                     .font(.system(size: 13, weight: .semibold))
-                Text(isRecording ? "\u{677e}\u{5f00}\u{7ed3}\u{675f}" : "\u{6309}\u{4f4f}\u{63d0}\u{95ee}")
+                Text(capsuleLabel)
                     .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.white)
             .padding(.horizontal, NXSpacing.x6)
             .frame(height: 44)
-            .background(isRecording ? NXColor.error : NXColor.primary, in: Capsule())
+            .background(capsuleTint, in: Capsule())
             .nxFloatingShadow(scheme)
-            // A drag with no minimum distance, so recording begins the instant the finger lands.
-            // A LongPressGesture would put its own delay in front of the first word.
+            // Lifts with the finger while cancelling is armed, so the drag has somewhere to go.
+            .offset(y: cancelArmed ? -8 : 0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: cancelArmed)
+            // A drag with no minimum distance: recording begins the instant the finger lands. A
+            // LongPressGesture would put its own delay in front of the first word.
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { _ in if !isRecording { onHoldStart() } }
-                    .onEnded { _ in onHoldEnd() }
+                    .onChanged { value in
+                        if !isRecording {
+                            onHoldStart()
+                            // Medium on the way in, so the press is felt before any pixel moves.
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        }
+                        // Negative height is upward. A light tick on each crossing, both ways, so
+                        // arming and disarming are distinguishable without looking.
+                        let armed = value.translation.height < -Self.cancelThreshold
+                        if armed != cancelArmed {
+                            cancelArmed = armed
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
+                    }
+                    .onEnded { _ in
+                        if cancelArmed {
+                            onHoldCancel()
+                            // Rigid, distinctly unlike the send: cancelling must not feel like a
+                            // question went out.
+                            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        } else {
+                            onHoldEnd()
+                        }
+                        cancelArmed = false
+                    }
             )
-            .accessibilityLabel("\u{6309}\u{4f4f}\u{5c31}\u{6d1e}\u{5bdf}\u{63d0}\u{95ee}")
+            .accessibilityLabel(cancelArmed ? "\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}" : "\u{6309}\u{4f4f}\u{5c31}\u{6d1e}\u{5bdf}\u{63d0}\u{95ee}")
         }
         .padding(.bottom, NXSpacing.x8)
+    }
+
+    /// What is happening, in the learner's words.
+    private var statusText: String {
+        if cancelArmed { return "\u{677e}\u{5f00}\u{53d6}\u{6d88}" }
+        switch ask?.phase {
+        case .recording: return "\u{6b63}\u{5728}\u{542c}\u{2026}\u{4e0a}\u{6ed1}\u{53d6}\u{6d88}"
+        case .waiting: return "\u{5728}\u{60f3}\u{2026}"
+        // Named, and it names what to DO about it: pressing during an answer interrupts, which is
+        // otherwise something the learner has no way to discover.
+        case .answering: return "\u{8001}\u{5e08}\u{6b63}\u{5728}\u{56de}\u{7b54}\u{ff0c}\u{6309}\u{4f4f}\u{53ef}\u{6253}\u{65ad}"
+        case .misheard: return "\u{6ca1}\u{542c}\u{6e05}\u{ff0c}\u{518d}\u{8bf4}\u{4e00}\u{904d}"
+        case .idle: return "\u{7ee7}\u{7eed}\u{6309}\u{4f4f}\u{8ffd}\u{95ee}"
+        case nil: return "\u{6309}\u{4f4f}\u{5c31}\u{8fd9}\u{4e00}\u{9875}\u{63d0}\u{95ee}"
+        }
+    }
+
+    private var statusTint: Color {
+        if cancelArmed { return NXColor.error }
+        return ask?.phase == .recording ? NXColor.primary : NXColor.textTertiary(scheme)
+    }
+
+    private var capsuleIcon: String {
+        if cancelArmed { return "xmark" }
+        switch ask?.phase {
+        case .recording: return "waveform"
+        case .waiting: return "ellipsis"
+        case .answering: return "hand.raised.fill"
+        default: return "mic.fill"
+        }
+    }
+
+    private var capsuleLabel: String {
+        if cancelArmed { return "\u{53d6}\u{6d88}" }
+        switch ask?.phase {
+        case .recording: return "\u{677e}\u{5f00}\u{53d1}\u{9001}"
+        case .waiting: return "\u{5728}\u{60f3}"
+        case .answering: return "\u{6253}\u{65ad}"
+        default: return "\u{6309}\u{4f4f}\u{63d0}\u{95ee}"
+        }
+    }
+
+    private var capsuleTint: Color {
+        if cancelArmed { return NXColor.error }
+        return isRecording ? NXColor.error : NXColor.primary
     }
 
     private var isRecording: Bool { ask?.phase == .recording }

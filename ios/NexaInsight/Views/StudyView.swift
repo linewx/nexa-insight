@@ -401,7 +401,8 @@ struct StudyView: View {
                             },
                             ask: readingAsk,
                             onHoldStart: beginAskingAboutInsight,
-                            onHoldEnd: endAsking)
+                            onHoldEnd: endAsking,
+                            onHoldCancel: cancelAskingAboutInsight)
                     }
                 }
         }
@@ -586,12 +587,32 @@ struct StudyView: View {
         }
         if player.playbackState == .playing { player.pause() }
         if readingAsk?.sentenceId == ReadingAsk.insightPageId {
-            guard readingAsk?.acceptsFollowUp == true else { return }
-            readingAsk?.held()
+            // Pressing while the teacher is still answering is an INTERRUPT, not a no-op. The
+            // floor reducer already grants `.user` unconditionally on `.userTookFloor`, so the
+            // controller handles it; refusing here — which is what `acceptsFollowUp` does on the
+            // transcript — would make the press feel broken while a long answer played out.
+            if readingAsk?.interrupts == true {
+                readingAsk?.interrupted()
+            } else if readingAsk?.acceptsFollowUp == true {
+                readingAsk?.held()
+            } else {
+                return
+            }
         } else {
             readingAsk = ReadingAsk(sentenceId: ReadingAsk.insightPageId, atMs: 0)
         }
         controller.pressReadingAsk(atMs: 0)
+    }
+
+    /// Released after dragging up: the question is abandoned before it is sent.
+    ///
+    /// `cancelReadingAsk` deliberately does NOT resume the podcast — reading was not playing it,
+    /// and starting playback because a question was abandoned would be a surprise.
+    private func cancelAskingAboutInsight() {
+        guard let controller = liveSession?.controller,
+              readingAsk?.phase == .recording else { return }
+        readingAsk?.cancelled()
+        controller.cancelReadingAsk()
     }
 
     private func endAsking() {

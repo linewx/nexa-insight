@@ -70,3 +70,62 @@ final class InsightAskTests: XCTestCase {
         XCTAssertTrue(context.contains("INSIGHT PAGE"))
     }
 }
+
+// The ask bar's five behaviours. Phase transitions are testable directly; the gesture and haptic
+// wiring is checked against the source, since neither can be driven on macOS.
+extension InsightAskTests {
+    func testPressingWhileTheTeacherTalksIsAnInterrupt() {
+        // `acceptsFollowUp` is false during a turn, and on the transcript that is right — the
+        // session must not open a second conversation. But it made the button a no-op through a
+        // long answer, which reads as broken. The floor reducer already grants `.user`
+        // unconditionally, so the controller was always willing; only the view refused.
+        var ask = ReadingAsk(sentenceId: ReadingAsk.insightPageId, atMs: 0)
+        ask.heard("谁反驳了这个观点")
+        ask.answered("弗里伯格提出了钢人式辩护")
+        XCTAssertTrue(ask.interrupts, "an answer in progress can be interrupted")
+        XCTAssertFalse(ask.acceptsFollowUp, "which is NOT the same as accepting a follow-up")
+
+        ask.interrupted()
+        XCTAssertEqual(ask.phase, .recording, "the mic opens immediately")
+    }
+
+    func testCancellingLeavesNoTurnBehind() {
+        // Dragged up and released: nothing was asked, so the conversation must not gain a turn.
+        var ask = ReadingAsk(sentenceId: ReadingAsk.insightPageId, atMs: 0)
+        XCTAssertEqual(ask.phase, .recording)
+        ask.cancelled()
+        XCTAssertEqual(ask.phase, .idle)
+        XCTAssertTrue(ask.isEmpty, "an abandoned question is not a turn")
+        XCTAssertTrue(ask.acceptsFollowUp, "and the next press starts cleanly")
+    }
+
+    func testTheBarNamesEveryStateAndTheHapticsAreDistinct() throws {
+        let source = try String(contentsOfFile: "NexaInsight/Views/InsightView.swift", encoding: .utf8)
+        let code = source.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+
+        // A control that looks identical in every state cannot tell you what to do next, and the
+        // interrupt in particular is undiscoverable unless the bar says so.
+        for phase in ["case .recording:", "case .waiting:", "case .answering:", "case .misheard:", "case .idle:"] {
+            XCTAssertTrue(code.contains(phase), "status must cover \(phase)")
+        }
+        XCTAssertTrue(code.contains("cancelThreshold"), "upward drag arms cancelling")
+        // Three weights, each meaning something: medium on press, light on arming or disarming,
+        // rigid on cancel — so cancelling never feels like a question went out.
+        XCTAssertTrue(code.contains("UIImpactFeedbackGenerator(style: .medium)"))
+        XCTAssertTrue(code.contains("UIImpactFeedbackGenerator(style: .light)"))
+        XCTAssertTrue(code.contains("UIImpactFeedbackGenerator(style: .rigid)"))
+    }
+
+    func testTheExitSwipeCannotFireFromTheCapsuleOrMidTurn() throws {
+        let source = try String(contentsOfFile: "NexaInsight/Views/InsightView.swift", encoding: .utf8)
+        // Any drag on the capsule starts recording, so a sideways flick off the button would send
+        // a question AND leave the page.
+        XCTAssertTrue(source.contains("guard value.startLocation.y < pageHeight - Self.askBarZone"))
+        // And leaving mid-turn would strand the answer on a page nobody is looking at.
+        XCTAssertTrue(source.contains("guard ask == nil || ask?.phase == .idle else { return }"))
+        // Simultaneous, or a five-minute read would not scroll.
+        XCTAssertTrue(source.contains(".simultaneousGesture("))
+    }
+}

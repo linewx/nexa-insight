@@ -61,6 +61,22 @@ struct ReadingAsk: Equatable {
 
     mutating func held() { phase = .recording }
 
+    /// A press arriving while the teacher is still talking.
+    ///
+    /// The floor reducer grants `.user` unconditionally on `.userTookFloor`, so the controller
+    /// already treats this as an interrupt — this is only the visible half. Refusing it, which is
+    /// what `acceptsFollowUp` does, made the button feel broken through a long answer.
+    mutating func interrupted() { phase = .recording }
+
+    /// Dragged up and released: the question is abandoned before it is sent.
+    ///
+    /// Distinct from `finished()` — nothing was asked, so the conversation must not gain a turn,
+    /// and the phase returns to whatever a follow-up starts from.
+    mutating func cancelled() { phase = .idle }
+
+    /// Whether a press right now would interrupt rather than start something new.
+    var interrupts: Bool { phase == .waiting || phase == .answering }
+
     /// The finger lifted and something was actually said. From here the learner is
     /// waiting on the server, which is a state worth showing.
     mutating func released() { phase = .waiting }
