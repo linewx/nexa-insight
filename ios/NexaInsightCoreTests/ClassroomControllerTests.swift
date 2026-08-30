@@ -43,6 +43,14 @@ final class FakeTransport: ClassroomTransport {
     func requestResponse() { responseRequests += 1 }
     func setTurnMode(_ mode: TurnMode) { turnModes.append(mode) }
     func beginListening() { beganListening += 1 }
+    /// Whether WebRTC currently holds the VoIP audio unit. nil until first set, so a test can tell
+    /// "never touched" from "explicitly disabled".
+    var audioActive: Bool?
+    var audioActivations: [Bool] = []
+    func setAudioActive(_ active: Bool) {
+        audioActive = active
+        audioActivations.append(active)
+    }
     func stopListening() { stoppedListening += 1 }
     func endTurnAndRespond() { endedTurns += 1 }
     func cancelTurn() { cancelledTurns += 1 }
@@ -764,5 +772,47 @@ final class ClassroomControllerTests: XCTestCase {
             saveNote(c)
             XCTAssertEqual(box.saved.count, 1, "a note must be savable in scene \(c.scene)")
         }
+    }
+}
+
+// The volume problem: an episode nobody had spoken to could not be turned down to silence.
+//
+// Every episode opens a classroom, and WebRTC initialised its VoIP audio unit as soon as a track
+// existed. Its own header names the consequence — with the unit up while an AVPlayer plays, that
+// audio is "either cut off completely or played at a reduced volume" — and iOS treats the output as
+// a call, where the slider cannot reach zero.
+extension ClassroomControllerTests {
+    func testTheAudioUnitIsOffWhileNobodyIsSpeaking() {
+        let (controller, _, transport, _) = make()
+        // Self-study, floor on the player: the podcast is playing and no turn exists.
+        controller.userStartedPlayback()
+        XCTAssertEqual(transport.audioActive, false,
+                       "an unspoken-to episode keeps ordinary media volume")
+    }
+
+    func testHoldingToTalkTakesTheAudioUnit() {
+        let (controller, _, transport, _) = make()
+        controller.pressQuickAsk()
+        XCTAssertEqual(transport.audioActive, true, "the mic needs the unit")
+    }
+
+    func testTheTeacherKeepsTheAudioUnit() {
+        // The teacher's voice comes through the same unit, so committing a turn must not release
+        // it — that would answer in silence.
+        let (controller, _, transport, _) = make()
+        controller.pressQuickAsk()
+        controller.releaseQuickAsk()
+        controller.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertEqual(transport.audioActive, true, "an answer has to be audible")
+    }
+
+    func testTheUnitIsReleasedWhenTheTurnEnds() {
+        // And handed back afterwards, or the volume stays capped for the rest of the episode.
+        let (controller, _, transport, _) = make()
+        controller.pressQuickAsk()
+        controller.releaseQuickAsk()
+        controller.handleRealtimeEvent(.inputAudioCommitted)
+        controller.handleRealtimeEvent(.responseDone)
+        XCTAssertEqual(transport.audioActive, false, "give the volume slider back")
     }
 }

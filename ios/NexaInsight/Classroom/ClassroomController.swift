@@ -42,6 +42,12 @@ protocol ClassroomTransport: AnyObject {
     // Open the mic for a push-to-talk turn (enable the local track; clear any
     // stale input buffer so the turn starts clean).
     func beginListening()
+    /// Hand the VoIP audio unit to the transport, or take it back.
+    ///
+    /// Default no-op, so a transport with nothing to hand over — the stub, and the tests — needs no
+    /// change. Only the WebRTC one runs in manual-audio mode, where this is what keeps an
+    /// unspoken-to episode on ordinary media volume.
+    func setAudioActive(_ active: Bool)
     // Close the mic (disable the local track). Called whenever the podcast takes
     // the floor: a live mic + playing podcast means the podcast bleeds into the
     // mic and the server VAD self-triggers a phantom turn. Pressing to talk
@@ -53,6 +59,11 @@ protocol ClassroomTransport: AnyObject {
     // Abandon a push-to-talk turn: close the mic and drop the captured audio
     // without committing or requesting a response (slide-up-to-cancel).
     func cancelTurn()
+}
+
+extension ClassroomTransport {
+    // Transports that do not own an audio unit have nothing to switch.
+    func setAudioActive(_ active: Bool) {}
 }
 
 enum FreezeReason { case paused, speechStarted }
@@ -391,7 +402,18 @@ final class ClassroomController: ObservableObject {
     // grantFloor's side effects (see .inputAudioCommitted) can reuse the same rule
     // instead of poking the transport directly.
     private func applyMicGate() {
-        if scene.holdsMicOpen || floor == .user {
+        let wanted = scene.holdsMicOpen || floor == .user
+        // The VoIP audio unit follows the same rule, rather than being a second thing to keep in
+        // step. WebRTC runs in manual-audio mode now, and its own header says why: with the unit
+        // initialised while an AVPlayer is playing, that player's audio is "either cut off
+        // completely or played at a reduced volume" — which is why the volume slider could not
+        // reach silence on an episode nobody had spoken to yet.
+        //
+        // Enabled here rather than at connect time, so the unit exists exactly while a turn does.
+        // The teacher also needs it to be heard, and `.teacher` keeps it: the floor is only `.idle`
+        // or `.player` when neither party is speaking.
+        transport.setAudioActive(wanted || floor == .teacher)
+        if wanted {
             transport.beginListening()
         } else {
             transport.stopListening()

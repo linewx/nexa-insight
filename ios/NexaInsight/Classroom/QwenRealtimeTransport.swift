@@ -70,6 +70,18 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         // BOTH output and input to the built-in hardware even with a headset
         // attached, which is why audio came from the phone mic while wearing
         // headphones. Apply it only when nothing is plugged in.
+        // Do NOT let WebRTC start the VoIP audio unit merely because a track exists. Its own
+        // header documents the consequence: "if an AVPlayer is playing audio while the VoIP audio
+        // unit is initialized, its audio would be either cut off completely or PLAYED AT A REDUCED
+        // VOLUME." That is the bug — every episode opens a classroom, the unit initialises over the
+        // podcast, and the volume slider can no longer reach silence because iOS is treating the
+        // output as a call.
+        //
+        // With manual audio, the unit starts when the learner actually speaks (see setAudioActive)
+        // and stops when the exchange ends, so the podcast keeps ordinary media volume in between.
+        let rtcSession = RTCAudioSession.sharedInstance()
+        rtcSession.useManualAudio = true
+        rtcSession.isAudioEnabled = false
         Self.applyAudioSessionConfig()
         factory = RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(),
                                            decoderFactory: RTCDefaultVideoDecoderFactory())
@@ -114,6 +126,18 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         do { try rtcSession.setConfiguration(rtcConfig, active: true) }
         catch { NexaLog.log("RTC setConfiguration failed: \(error.localizedDescription)") }
         rtcSession.unlockForConfiguration()
+    }
+
+    /// Hand the audio unit to WebRTC, or take it back.
+    ///
+    /// Called when the floor moves. Enabling it is what makes the mic and the teacher's voice work
+    /// at all under `useManualAudio`; disabling it returns the output to ordinary media playback,
+    /// which is what lets the volume slider reach zero again.
+    func setAudioActive(_ active: Bool) {
+        let session = RTCAudioSession.sharedInstance()
+        guard session.isAudioEnabled != active else { return }
+        NexaLog.log("RTC audio unit \(active ? "enabled" : "disabled")")
+        session.isAudioEnabled = active
     }
 
     func connect(instructions: String, apiKey: String, workspaceId: String, region: String, model: String,
