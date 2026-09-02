@@ -1306,6 +1306,87 @@ def test_a_chinese_source_skips_translation_and_cards_but_keeps_insight(repo, tm
     assert not repo.list_learning_expressions(episode_id)
 
 
+def test_audio_is_apportioned_into_sentences_when_no_timings_come_back():
+    """The fallback used when YouTube rate-limits captions.
+
+    This DashScope deployment has no /audio/transcriptions route at all — measured: it 404s while
+    /chat/completions returns 400, and none of the ASR models it lists are reachable there either.
+    `gpt-4o-transcribe` was never one of its models. So audio goes through an audio-capable chat
+    model, which returns text and no timings.
+
+    Timings are therefore ESTIMATED, proportional to sentence length. Tapping a line lands near it
+    rather than on it, and the 洞察 page's anchors are approximate — worth stating plainly, since a
+    caption track gives real ones.
+    """
+    text = "SpaceX完成了最大的IPO。在这之前，你知道美股最大的IPO是谁吗？还是十二年前的阿里巴巴。"
+    segments = OpenAIAdapter._apportion(text, offset_ms=0, duration_ms=60_000)
+
+    # Split on sentence ENDS, not newlines: asked for one sentence per line, the model returned a
+    # single fifteen-minute paragraph. A transcript of one line has nothing to tap and renders as a
+    # wall of text.
+    assert len(segments) == 3
+    assert segments[0].text.endswith("。")
+    # Proportional, not equal — a three-word line and a forty-word line are not the same duration,
+    # and equal division drifts badly across a long chunk.
+    assert segments[1].end_ms - segments[1].start_ms > segments[2].end_ms - segments[2].start_ms
+    # Contiguous and inside the chunk.
+    assert segments[0].start_ms == 0
+    assert [s.start_ms for s in segments] == sorted(s.start_ms for s in segments)
+    assert segments[-1].end_ms <= 60_000
+
+    # An offset shifts the whole chunk, since chunks are transcribed independently.
+    shifted = OpenAIAdapter._apportion(text, offset_ms=900_000, duration_ms=60_000)
+    assert shifted[0].start_ms == 900_000
+    # Nothing said produces nothing, rather than a zero-length segment.
+    assert OpenAIAdapter._apportion("", offset_ms=0, duration_ms=60_000) == []
+
+
+def test_english_audio_splits_on_its_own_punctuation():
+    """Both punctuation families, since the fallback runs on whichever language the audio is."""
+    segments = OpenAIAdapter._apportion(
+        "The IPO was the largest ever. Do you know the previous record? It was Alibaba.",
+        offset_ms=0, duration_ms=30_000)
+    assert len(segments) == 3
+    assert segments[0].text == "The IPO was the largest ever."
+
+
+def test_the_caption_file_is_matched_by_prefix_not_by_an_enumerated_list(tmp_path):
+    """A second Chinese video failed with the same "Error code: 404" after the first was fixed.
+
+    yt-dlp appends the SOURCE language to an auto-translated track, and that suffix varies per
+    video: one episode's own language was "zh" and it wrote `captions.zh-Hans-zh.json3`, the next
+    was "zh-Hans" and wrote `captions.zh-Hans-zh-Hans.json3`. My picker held a hardcoded list of
+    filenames, so it could only ever contain combinations I had happened to see — the second video
+    matched nothing, fell through to audio transcription, and died there.
+    """
+    def pick(*names: str) -> str | None:
+        for directory in [tmp_path / str(hash(names))]:
+            directory.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (directory / name).write_text("{}")
+            found = YtDlpMediaAdapter._pick_caption_file(directory)
+            return found.name if found else None
+
+    # Both real shapes, from the two videos that produced them.
+    assert pick("captions.zh.json3", "captions.zh-Hans-zh.json3") == "captions.zh.json3"
+    assert pick("captions.zh-Hans-zh-Hans.json3") == "captions.zh-Hans-zh-Hans.json3"
+
+    # An ORIGINAL track beats a translated one even when the translation's language ranks higher.
+    # Checking exact-then-prefix per language got this wrong: with zh-Hans ahead of zh, a video whose
+    # own language is "zh" matched the zh-Hans TRANSLATION before reaching its native track.
+    assert pick("captions.zh.json3", "captions.zh-Hans-zh.json3") == "captions.zh.json3"
+    assert pick("captions.zh-Hans.json3", "captions.en-zh-Hans.json3") == "captions.zh-Hans.json3"
+
+    # English still wins when it is the video's own language.
+    assert pick("captions.en.json3", "captions.zh-Hans.json3") == "captions.en.json3"
+    assert pick("captions.en.json3", "captions.en-orig.json3") == "captions.en-orig.json3"
+
+    # A language nobody asked for still beats falling through: audio transcription names an OpenAI
+    # model against a DashScope endpoint, so that path 404s two layers from the real problem.
+    assert pick("captions.ja.json3") == "captions.ja.json3"
+    assert pick() is None
+
+
 def test_captions_are_requested_in_chinese_too():
     """A Chinese video failed with "Error code: 404" and the 404 had nothing to do with Chinese.
 
@@ -1325,9 +1406,7 @@ def test_captions_are_requested_in_chinese_too():
     # And the file-picking order must cover the same languages, including the "-zh" suffix yt-dlp
     # writes on the from-Chinese tracks. Two separate lists is how the request and the pick drift
     # apart — asking for a track and then never looking for it is exactly this bug again.
-    files = YtDlpMediaAdapter.CAPTION_FILE_ORDER
-    for lang in langs:
-        assert any(name.startswith(lang) for name in files), f"nothing picks up {lang}"
+    # Selection is by prefix now (see the test above), so there is no second list to keep in step.
 
 
 def test_language_is_counted_not_asked():

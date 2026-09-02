@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shutil
@@ -250,9 +251,33 @@ class YtDlpMediaAdapter:
     #
     # One list, used for both the request and the selection, because two lists drift.
     CAPTION_LANGS = ("en-orig", "en", "zh-Hans", "zh", "zh-Hant")
-    # yt-dlp writes the "from Chinese" tracks with a suffix, so the same preference has to cover
-    # both spellings when looking for the file it wrote.
-    CAPTION_FILE_ORDER = ("en-orig", "en", "zh-Hans-zh", "zh-Hans", "zh", "zh-Hant-zh", "zh-Hant")
+    @classmethod
+    def _pick_caption_file(cls, destination: Path) -> Path | None:
+        """The best caption file yt-dlp actually wrote, by preference.
+
+        Matched by PREFIX, not by exact name. yt-dlp appends the SOURCE language to an
+        auto-translated track, and that suffix varies per video — one Chinese episode had
+        `zh-Hans-zh` (from "zh") and the next had `zh-Hans-zh-Hans` (from "zh-Hans"). The second
+        404'd, because an enumerated list of filenames can only contain the combinations I happened
+        to have seen.
+        """
+        # Two passes, not one. Checking exact-then-prefix per language let a TRANSLATED track win
+        # over an original one: with `zh-Hans` ahead of `zh` in the preference list, a video whose
+        # own language is "zh" matched `captions.zh-Hans-zh.json3` — a translation — before reaching
+        # its native `captions.zh.json3`.
+        for lang in cls.CAPTION_LANGS:
+            exact = destination / f"captions.{lang}.json3"
+            if exact.exists():
+                return exact
+        for lang in cls.CAPTION_LANGS:
+            # Shortest name first: fewer suffixes means fewer translation hops from the original.
+            matches = sorted(destination.glob(f"captions.{lang}-*.json3"), key=lambda p: len(p.name))
+            if matches:
+                return matches[0]
+        # Nothing matched a preferred language. Rather than fall through to audio transcription —
+        # which names an OpenAI model against a DashScope endpoint and dies on a 404 two layers from
+        # the real problem — take any caption file that exists.
+        return next(iter(sorted(destination.glob("captions.*.json3"))), None)
 
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
     def download_audio(self, url: str, destination: Path) -> Path: ...
@@ -286,14 +311,7 @@ class YtDlpMediaAdapter:
             raise RuntimeError("yt-dlp is not installed or is not on the backend PATH") from exc
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Timed out while fetching YouTube captions. Check the backend server's network or proxy.") from exc
-        # In the same preference order the download asked for. `next(iter(glob))` per candidate
-        # rather than one broad glob, because glob order is filesystem order — it would pick
-        # whichever file the directory happened to list first.
-        source_caption_path = next(
-            (path for name in self.CAPTION_FILE_ORDER
-             for path in [next(iter(destination.glob(f"captions.{name}.json3")), None)]
-             if path is not None),
-            None)
+        source_caption_path = self._pick_caption_file(destination)
         source_text = self._parse_json3(source_caption_path) if source_caption_path else []
         return source_text, None
 
@@ -332,10 +350,98 @@ class OpenAIAdapter:
         self.transcription_model = settings.transcription_model
         self.text_model = settings.text_model
 
+    # An audio-capable chat model, for endpoints with no transcription route. Measured: this
+    # DashScope deployment answers 404 on POST /audio/transcriptions while /chat/completions works,
+    # and none of the ASR models it lists (qwen3-asr-flash, fun-asr-flash) are reachable there
+    # either. `gpt-4o-transcribe` was never one of its models at all.
+    AUDIO_CHAT_MODEL = "qwen3.5-omni-flash"
+    # Roughly how fast speech runs, for apportioning a chunk's duration across its sentences.
+    # Chinese and English differ, so it is derived per chunk from the text actually returned rather
+    # than assumed — this is only the floor for a sentence nobody could have said that fast.
+    MIN_SENTENCE_MS = 700
+
     def transcribe(self, path: Path, offset_ms: int) -> list[TranscriptSegment]:
-        with path.open("rb") as audio:
-            result = self.client.audio.transcriptions.create(model=self.transcription_model, file=audio, response_format="verbose_json", timestamp_granularities=["segment"])
-        return [TranscriptSegment(offset_ms + int(s.start * 1000), offset_ms + int(s.end * 1000), None, s.text.strip()) for s in result.segments]
+        """The audio path, used when captions are unavailable.
+
+        Tries the transcription endpoint first — it returns real per-segment timestamps, which is
+        what makes tap-to-seek land on the right line. When that route does not exist, falls back to
+        an audio-capable chat model and apportions timing across the sentences it returns.
+        """
+        try:
+            with path.open("rb") as audio:
+                result = self.client.audio.transcriptions.create(
+                    model=self.transcription_model, file=audio,
+                    response_format="verbose_json", timestamp_granularities=["segment"])
+            return [TranscriptSegment(offset_ms + int(s.start * 1000), offset_ms + int(s.end * 1000),
+                                      None, s.text.strip())
+                    for s in result.segments]
+        except Exception as exc:
+            print(f"transcriptions endpoint unusable ({exc!r}); using {self.AUDIO_CHAT_MODEL}",
+                  flush=True)
+            return self._transcribe_via_chat(path, offset_ms)
+
+    def _transcribe_via_chat(self, path: Path, offset_ms: int) -> list[TranscriptSegment]:
+        """Transcribe one chunk through the chat route, which returns text without timings."""
+        audio = base64.b64encode(path.read_bytes()).decode()
+        response = self.client.chat.completions.create(
+            model=self.AUDIO_CHAT_MODEL,
+            messages=[{"role": "user", "content": [
+                {"type": "text",
+                 "text": "Transcribe this audio verbatim, in its own language. Put each sentence on "
+                         "its own line. No commentary, no timestamps, no numbering."},
+                {"type": "input_audio",
+                 "input_audio": {"data": f"data:audio/mp3;base64,{audio}", "format": "mp3"}},
+            ]}])
+        text = response.choices[0].message.content or ""
+        # The chunk's OWN duration, measured. Using the pipeline's nominal chunk length would
+        # stretch the last chunk — usually a partial one — across time that is not there, so every
+        # line in it would sit later than it was said.
+        return self._apportion(text, offset_ms=offset_ms, duration_ms=self._duration_ms(path))
+
+    @staticmethod
+    def _duration_ms(path: Path) -> int:
+        """How long this audio actually is, via ffprobe.
+
+        Falls back to a 15-minute assumption only if ffprobe is unavailable: a wrong duration skews
+        every timestamp in the chunk, so it is worth measuring rather than assuming.
+        """
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                capture_output=True, text=True, timeout=30, check=True)
+            return max(1, int(float(result.stdout.strip()) * 1000))
+        except Exception as exc:
+            print(f"ffprobe failed on {path.name} ({exc!r}); assuming 15 minutes", flush=True)
+            return 900_000
+
+    @classmethod
+    def _apportion(cls, text: str, offset_ms: int, duration_ms: int) -> list[TranscriptSegment]:
+        """Spread a chunk's duration across its sentences, in proportion to their length.
+
+        Estimated, and worth being explicit about: this model returns no timings, so a long sentence
+        gets more of the chunk than a short one and that is the entire basis. Tapping a line lands
+        near it rather than on it, and the 洞察 page's anchors are approximate.
+
+        Proportional rather than equal because equal division puts a three-word line and a
+        forty-word line on the same footing, which drifts badly across a ten-minute chunk.
+        """
+        # Split on sentence ENDS, not on newlines. The model was asked for one sentence per line and
+        # returned a single 15-minute paragraph — a transcript of one line is unusable: nothing to
+        # tap, nothing to anchor, and the reading view would render one wall of text.
+        #
+        # Both punctuation families, since the audio may be either language.
+        lines = [part.strip() for part in re.split(r"(?<=[。！？.!?])\s*", text) if part.strip()]
+        if not lines:
+            return []
+        total = sum(len(line) for line in lines) or 1
+        segments: list[TranscriptSegment] = []
+        cursor = offset_ms
+        for line in lines:
+            span = max(cls.MIN_SENTENCE_MS, int(duration_ms * len(line) / total))
+            segments.append(TranscriptSegment(cursor, cursor + span, None, line))
+            cursor += span
+        return segments
 
     def _json(self, instruction: str, payload: object) -> object:
         response = self.client.chat.completions.create(
