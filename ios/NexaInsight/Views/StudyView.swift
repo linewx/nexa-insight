@@ -1882,7 +1882,11 @@ private struct ConnectedBarContent: View {
         case .user: return "在听你说…"
         case .teacher: return "老师在说…"
         case .player: return live ? "播客播放中" : "自学中 · 播客播放中"
-        case .idle: return "Live · 等你开口"
+        // `.idle` now covers two different situations. In Live it means the teacher is waiting for
+        // you to speak. In self-study it is where an answer LEAVES things — the podcast no longer
+        // resumes by itself, because `response.done` fires while the reply is still playing out —
+        // and there the learner needs to know the podcast is theirs to restart.
+        case .idle: return live ? "Live · 等你开口" : "\u{5df2}\u{6682}\u{505c}\u{ff0c}\u{6309}\u{64ad}\u{653e}\u{7ee7}\u{7eed}"
         }
     }
 

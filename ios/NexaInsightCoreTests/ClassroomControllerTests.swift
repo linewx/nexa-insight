@@ -164,7 +164,11 @@ final class ClassroomControllerTests: XCTestCase {
     // The core fix: when the teacher finishes, the floor hands off on its own.
     // Quick-ask resumes the podcast from where it was frozen; nothing used to do
     // this, so the floor stayed on .teacher and playback never came back.
-    func testResponseDoneResumesPodcastAfterQuickAsk() {
+    // The podcast no longer resumes when an answer ends. `response.done` means the SERVER finished
+    // GENERATING — the audio is still draining out of the WebRTC track — so resuming there started
+    // the podcast over the last seconds of every reply. WebRTC offers no playout-complete callback,
+    // so there is nothing exact to wait for instead, and pressing play is one tap.
+    func testResponseDoneLeavesThePodcastPausedSoTheAnswerCanFinish() {
         let (c, playback, _, _) = make()
         playback.currentMs = 2100
         c.pressQuickAsk()
@@ -173,9 +177,10 @@ final class ClassroomControllerTests: XCTestCase {
         c.handleRealtimeEvent(.inputAudioCommitted)   // server takes the turn
         XCTAssertEqual(c.floor, .teacher)
         c.handleRealtimeEvent(.responseDone)
-        XCTAssertEqual(c.floor, .player)
-        XCTAssertTrue(playback.didPlay)
-        XCTAssertEqual(playback.seeks.last, 2100)
+        XCTAssertEqual(c.floor, .idle, "nobody speaks over the tail of the answer")
+        XCTAssertFalse(playback.didPlay, "the learner presses play when they are ready")
+        // The position is still held, so pressing play lands where they left off.
+        XCTAssertEqual(c.frozenPositionMs, 2100)
     }
 
     // Tap-to-interrupt: cut the teacher off and return to normal without starting
@@ -514,7 +519,10 @@ final class ClassroomControllerTests: XCTestCase {
 
     // Self-study is the only scene that resumes, and this is the counterpart to the
     // test above: the same event sequence, the other scene, the opposite outcome.
-    func testSelfStudyStillResumesSoTheChangeDidNotLeak() {
+    // Renamed with the behaviour: self-study used to be the one scene that resumed, and now no
+    // scene does. Kept as a test that the floor still settles rather than sticking on .teacher —
+    // that was a real bug once, where the podcast never came back at all.
+    func testSelfStudyLeavesTheFloorIdleRatherThanStuckOnTheTeacher() {
         let (c, playback, _, _) = make()
         playback.currentMs = 2100
         c.pressQuickAsk()
@@ -522,8 +530,8 @@ final class ClassroomControllerTests: XCTestCase {
         c.releaseQuickAsk()
         c.handleRealtimeEvent(.inputAudioCommitted)
         c.handleRealtimeEvent(.responseDone)
-        XCTAssertTrue(playback.didPlay, "listening mode must keep resuming as before")
-        XCTAssertEqual(c.floor, .player)
+        XCTAssertFalse(playback.didPlay, "no scene resumes automatically any more")
+        XCTAssertEqual(c.floor, .idle, "but the floor must not stay on .teacher")
     }
 
     // The reading instructions are only worth anything if the scene reaches the
@@ -689,7 +697,10 @@ final class ClassroomControllerTests: XCTestCase {
     // The counterpart: an ordinary answer with no note still resumes, which is what
     // listening should do. Without this pair, holding could be made unconditional and
     // both tests would still pass individually.
-    func testAnOrdinaryAnswerStillResumes() {
+    // Was "an ordinary answer still resumes", from when saving a note was the only thing that held
+    // playback. Nothing resumes now, so what this checks is that an ordinary answer is not treated
+    // as a special case either.
+    func testAnOrdinaryAnswerAlsoLeavesThePodcastPaused() {
         let (c, playback, _, _) = make()
         playback.currentMs = 2100
         c.pressQuickAsk()
@@ -698,12 +709,30 @@ final class ClassroomControllerTests: XCTestCase {
         c.handleRealtimeEvent(.inputAudioCommitted)
         c.handleRealtimeEvent(.responseDone)
 
-        XCTAssertTrue(playback.didPlay)
-        XCTAssertEqual(c.floor, .player)
+        XCTAssertFalse(playback.didPlay)
+        XCTAssertEqual(c.floor, .idle)
     }
 
-    // The flag is per TURN, not sticky: the next answer resumes normally again.
-    func testTheHoldAppliesOnlyToTheTurnThatSaved() {
+    func testTheDockSaysThePodcastIsWaitingForYou() throws {
+        // `.idle` now means two different things. In Live the teacher is waiting for you to speak;
+        // in self-study it is where an answer leaves things, because the podcast no longer resumes
+        // on `response.done`. Reporting "Live · 等你开口" there would be simply false, and would
+        // leave the learner with a paused podcast and no idea it was theirs to restart.
+        let source = try String(contentsOfFile: "NexaInsight/Views/StudyView.swift", encoding: .utf8)
+        let code = source.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        // 已暂停，按播放继续
+        XCTAssertTrue(code.contains(#"\u{5df2}\u{6682}\u{505c}"#),
+                      "self-study idle must say the podcast is paused")
+        XCTAssertTrue(code.contains(#"case .idle: return live ?"#),
+                      "and it must distinguish Live from self-study")
+    }
+
+    // The saved-note hold is per TURN, not sticky. Nothing resumes automatically now, so what this
+    // pins is that `savedNoteThisTurn` is cleared — a flag left set would be invisible today and
+    // wrong the moment anything reads it again.
+    func testTheSavedNoteFlagIsClearedAfterTheTurn() {
         let (c, playback, _, _) = make()
         playback.currentMs = 2100
         c.pressQuickAsk()
@@ -720,7 +749,8 @@ final class ClassroomControllerTests: XCTestCase {
         c.releaseQuickAsk()
         c.handleRealtimeEvent(.inputAudioCommitted)
         c.handleRealtimeEvent(.responseDone)
-        XCTAssertTrue(playback.didPlay, "the next answer resumes as usual")
+        XCTAssertFalse(playback.didPlay, "no answer resumes, saved note or not")
+        XCTAssertEqual(c.floor, .idle, "and the floor settles either way")
     }
 
     // "Analyse this passage and keep what matters" is one request and several cards. Each

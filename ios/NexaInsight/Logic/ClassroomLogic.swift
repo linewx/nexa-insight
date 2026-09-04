@@ -334,7 +334,17 @@ enum ClassroomScene: Equatable {
     var holdsMicOpen: Bool { self == .live }
 
     /// Whether the podcast resumes by itself once the teacher stops talking.
-    var resumesPlaybackAfterAnswer: Bool { self == .selfStudy }
+    /// Never. The podcast waits for you to press play.
+    ///
+    /// It used to resume on `response.done`, which is the SERVER finishing GENERATION — not the
+    /// teacher finishing SPEAKING. The answer's audio arrives over a WebRTC track and plays out
+    /// afterwards, so the podcast started over the last seconds of the reply every time.
+    ///
+    /// There is no exact signal to wait for instead: WebRTC offers no playout-complete callback, so
+    /// any automatic resume is a guess at how long the tail is. A guess that fires early talks over
+    /// the answer, which is the complaint; a guess that fires late is a pause you did not ask for.
+    /// Pressing play is one tap and is never wrong.
+    var resumesPlaybackAfterAnswer: Bool { false }
 }
 
 enum FloorEvent {
