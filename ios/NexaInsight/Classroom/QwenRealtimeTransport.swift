@@ -213,10 +213,20 @@ final class QwenRealtimeTransport: NSObject, ClassroomTransport {
         send(["type": "response.cancel"])
     }
 
-    func sendToolResult(callId: String?, ok: Bool) {
+    /// Answer a tool call, optionally with something for the teacher to read.
+    ///
+    /// `find_in_episode` needs this: every other tool DOES something and `{"ok":true}` says it all,
+    /// but a search has to hand back where it found things or the teacher has nothing to seek to.
+    func sendToolResult(callId: String?, ok: Bool, text: String? = nil) {
+        var payload: [String: Any] = ["ok": ok]
+        if let text { payload["result"] = text }
+        let json = (try? JSONSerialization.data(withJSONObject: payload))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{\"ok\":\(ok)}"
         send(["type": "conversation.item.create",
-              "item": ["type": "function_call_output", "call_id": callId as Any,
-                       "output": "{\"ok\":\(ok)}"]])
+              "item": ["type": "function_call_output", "call_id": callId as Any, "output": json]])
+        // A search result is only useful if the teacher speaks after reading it. The other tools
+        // are actions the learner already sees happen, so they need no reply.
+        if text != nil { requestResponse() }
     }
 
     func updateContext(_ context: String, scene: ClassroomScene) {
@@ -417,7 +427,7 @@ final class QwenRealtimeTransport: ClassroomTransport {
     }
 
     func stopSpeaking() {}
-    func sendToolResult(callId: String?, ok: Bool) {}
+    func sendToolResult(callId: String?, ok: Bool, text: String? = nil) {}
     var isAlive: Bool { false }
     func updateContext(_ context: String, scene: ClassroomScene) {}
     func injectUserText(_ text: String) {}

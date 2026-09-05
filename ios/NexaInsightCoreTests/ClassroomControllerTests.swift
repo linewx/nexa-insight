@@ -21,7 +21,7 @@ final class FakePlayback: Playback {
 final class FakeTransport: ClassroomTransport {
     var isAlive = true
     private(set) var stoppedSpeaking = 0
-    private(set) var toolResults: [(String?, Bool)] = []
+    private(set) var toolResults: [(String?, Bool, String?)] = []
     private(set) var contextUpdates: [String] = []
     private(set) var contextScenes: [ClassroomScene] = []
     private(set) var injectedTexts: [String] = []
@@ -33,7 +33,9 @@ final class FakeTransport: ClassroomTransport {
     private(set) var endedTurns = 0
     private(set) var cancelledTurns = 0
     func stopSpeaking() { stoppedSpeaking += 1 }
-    func sendToolResult(callId: String?, ok: Bool) { toolResults.append((callId, ok)) }
+    func sendToolResult(callId: String?, ok: Bool, text: String?) {
+        toolResults.append((callId, ok, text))
+    }
     func updateContext(_ context: String, scene: ClassroomScene) {
         contextUpdates.append(context)
         contextScenes.append(scene)
@@ -711,6 +713,23 @@ final class ClassroomControllerTests: XCTestCase {
 
         XCTAssertFalse(playback.didPlay)
         XCTAssertEqual(c.floor, .idle)
+    }
+
+    func testFindInEpisodeAnswersWithoutMovingThePlayer() {
+        // A search ANSWERS; every other tool ACTS. Routing it through runPlaybackTool would put it
+        // through the floor machinery for an operation with no position — and it would fall into the
+        // seeking `default` branch, sending the learner to 0.
+        let (c, playback, transport, _) = make()
+        c.handleRealtimeEvent(.toolCall(name: .find_in_episode,
+                                        args: ToolArguments(texts: ["query": "hello"]),
+                                        callId: "find1"))
+
+        XCTAssertTrue(playback.seeks.isEmpty, "a search moves nothing")
+        XCTAssertFalse(playback.didPlay)
+        // And the result has to come BACK, or the teacher has nothing to seek to.
+        let last = try? XCTUnwrap(transport.toolResults.last)
+        XCTAssertEqual(last?.0, "find1")
+        XCTAssertNotNil(last?.2, "the hits are returned as text")
     }
 
     func testTheDockSaysThePodcastIsWaitingForYou() throws {

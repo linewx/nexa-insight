@@ -5,6 +5,10 @@ import Foundation
 enum PlaybackTool: String {
     case pause_playback, resume_playback, previous_sentence, next_sentence
     case repeat_current_sentence, seek_relative, seek_to_timestamp
+    /// Search the transcript. Answers "where is X discussed", which the ±6-sentence context window
+    /// cannot — and unlike the other tools this one MOVES NOTHING: it returns text for the teacher
+    /// to read, then it decides where to seek.
+    case find_in_episode
     case set_playback_speed, finish_discussion, exit_class
     /// Save a word or phrase as a highlighted card, when the learner ASKS for it.
     case save_note
@@ -263,6 +267,9 @@ func playbackNotice(_ name: PlaybackTool, _ positionMs: Int) -> String {
     case .resume_playback, .finish_discussion: return "Podcast playing"
     case .pause_playback: return "Paused at \(classroomTime(positionMs))"
     case .seek_to_timestamp, .seek_relative: return "Moved to \(classroomTime(positionMs)) · paused"
+    // No notice: a search moves nothing, so there is nothing for the dock to report. The teacher
+    // announces what it found by speaking, and a "searched" banner over that would be noise.
+    case .find_in_episode: return ""
     case .previous_sentence: return "Previous sentence · paused"
     case .next_sentence: return "Next sentence · paused"
     case .repeat_current_sentence: return "Repeating this sentence · paused"

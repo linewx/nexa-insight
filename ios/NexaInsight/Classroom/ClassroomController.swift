@@ -30,7 +30,8 @@ protocol ClassroomTransport: AnyObject {
     var isAlive: Bool { get }
 
     func stopSpeaking()
-    func sendToolResult(callId: String?, ok: Bool)
+    /// `text` carries a search result back; every other tool needs only the ok flag.
+    func sendToolResult(callId: String?, ok: Bool, text: String?)
     func updateContext(_ context: String, scene: ClassroomScene)
     func injectUserText(_ text: String)
     func speak(_ text: String)
@@ -220,6 +221,11 @@ final class ClassroomController: ObservableObject {
             playback.speed(args["rate"] ?? 1)
         case .exit_class:
             break
+        case .find_in_episode:
+            // Belt and braces. The tool-call path returns before reaching here, but `sendText`'s
+            // typed shortcuts also call this directly, and falling into `default` would seek the
+            // player to 0 — a search must never move anything.
+            break
         default:
             playback.seek(target)
             resume()
@@ -332,8 +338,17 @@ final class ClassroomController: ObservableObject {
                 handledToolCallIds.insert(callId)
             }
             NexaLog.log("TOOL \(name.rawValue) args=\(args) floor=\(self.floor) scene=\(self.scene)")
+            // A search ANSWERS; it does not move anything. Sending it through runPlaybackTool would
+            // put it through the floor machinery for an operation with no position to go to.
+            if name == .find_in_episode {
+                let hits = EpisodeSearch.find(args.text("query") ?? "", in: sentences)
+                NexaLog.log("find_in_episode '\(args.text("query") ?? "")' -> \(hits.count) hits")
+                transport.sendToolResult(callId: callId, ok: true,
+                                         text: EpisodeSearch.describe(hits))
+                return
+            }
             runPlaybackTool(name, args)
-            transport.sendToolResult(callId: callId, ok: true)
+            transport.sendToolResult(callId: callId, ok: true, text: nil)
         }
     }
 

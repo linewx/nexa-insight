@@ -181,6 +181,21 @@ let realtimePlaybackTools: [[String: Any]] = [
     ["type": "function", "name": "next_sentence", "description": "Go to the next transcript sentence.", "parameters": ["type": "object", "properties": [:]]],
     ["type": "function", "name": "seek_to_timestamp", "description": "Jump to an absolute position in the episode.",
      "parameters": ["type": "object", "properties": ["seconds": ["type": "number", "description": "Seconds from the episode start."]], "required": ["seconds"]]],
+    // Seeking by CONTENT, which is what a learner actually asks for: "jump to the part about
+    // Salesforce", not "seek to 12 minutes 1 second".
+    //
+    // Needed because the context window is ±6 sentences plus chapter titles, so the teacher cannot
+    // otherwise know where a topic is discussed. Measured on one episode: the chapter outline names
+    // Salesforce at 9m, but that chapter OPENS with Nvidia and the real discussion starts at 12m01s
+    // — so the outline alone sends the learner three minutes early.
+    //
+    // Search runs on device against the full transcript, which the app already holds. Sending 25k
+    // tokens of transcript to a realtime session on every context refresh is what this avoids.
+    ["type": "function", "name": "find_in_episode",
+     "description": "Find where something is discussed in this episode. Use this BEFORE seeking when the learner names a topic, person or company rather than a time — it returns candidate positions with surrounding text so you can pick the right one, then call seek_to_timestamp. Do not guess a timestamp from the chapter outline: a chapter titled for a topic often opens with something else.",
+     "parameters": ["type": "object", "properties": [
+        "query": ["type": "string", "description": "The topic, name or phrase to look for, in the episode's own language."],
+     ], "required": ["query"]]],
     // Two tools rather than one with a `kind`, because the required fields differ
     // completely. Asked for one shape, a model short of a field fills it with something
     // rather than leaving it out, and a card with an invented gloss is worse than none.

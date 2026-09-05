@@ -19,7 +19,7 @@ final class ClassroomInstructionsTests: XCTestCase {
     func testRealtimeToolsAdvertiseOmniDirectSet() {
         let names = realtimePlaybackTools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names), ["resume_playback", "pause_playback", "previous_sentence",
-                                    "next_sentence", "seek_to_timestamp",
+                                    "next_sentence", "seek_to_timestamp", "find_in_episode",
                                     "save_note", "save_answer"])
     }
 
