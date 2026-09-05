@@ -1306,6 +1306,71 @@ def test_a_chinese_source_skips_translation_and_cards_but_keeps_insight(repo, tm
     assert not repo.list_learning_expressions(episode_id)
 
 
+def test_a_url_does_not_fail_the_whole_episode():
+    """A 684-sentence import died on one line: 'creativeplanning.com/allin.'
+
+    The model returned 'creativeplanning.com/allin。' — correct, since a URL has nothing to
+    translate, and the only change is the full stop. But the guard requires CJK, '。' is not CJK, and
+    `_has_translatable_words` reads "creativeplanning" and "allin" as ordinary words. So it decided
+    the line was untranslated, bisected down to it, and failed the episode over a URL.
+    """
+    assert ImportPipeline._is_translated("creativeplanning.com/allin.",
+                                         "creativeplanning.com/allin。")
+    assert ImportPipeline._is_translated("@allin_pod", "@allin_pod")
+    assert ImportPipeline._is_translated("DEP40.", "DEP40.")
+
+
+def test_english_left_in_english_is_still_a_failure():
+    """The exemption has to be narrow, and my first two attempts were not.
+
+    Comparing the two with punctuation stripped passed 'Goodbye.' -> 'Goodbye.', which is exactly
+    the failure this guard exists for. Requiring "the source contains punctuation" passed it too,
+    because a sentence ends in a full stop. What distinguishes a URL is STRUCTURE: a separator with
+    word characters on both sides.
+    """
+    assert not ImportPipeline._is_translated("Goodbye.", "Goodbye.")
+    assert not ImportPipeline._is_translated("We have become a nation.", "We have become a nation.")
+    # An abbreviation is not a URL.
+    assert not ImportPipeline._is_translated("Mr. Smith.", "Mr. Smith.")
+    # A URL among prose is a sentence, and the prose still needs translating.
+    assert not ImportPipeline._is_translated("go to x.com/allin now", "go to x.com/allin now")
+    # And a real translation passes, which is the point of the whole thing.
+    assert ImportPipeline._is_translated("Goodbye.", "再见。")
+
+
+class SilentlyFailingMedia(FakeMedia):
+    """yt-dlp exits 0 and writes no mp3 — the real failure behind an ffmpeg 254."""
+
+    def download_audio(self, url, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # What actually happened: the intermediate .webm was left behind and no mp3 appeared.
+        (destination.parent / "source.webm").write_bytes(b"webm")
+        return destination
+
+
+def test_an_episode_cannot_claim_audio_it_does_not_have(repo, tmp_path):
+    """A newly imported episode reported "Command '[ffmpeg …]' returned non-zero exit status 254".
+
+    The mp3 was never written. yt-dlp had exited 0 leaving only its intermediate .webm, and every
+    step after that trusted the file to exist: the audio path was recorded regardless, ffmpeg was
+    handed a path to nothing, and the error named ffmpeg — three steps past the cause. The database
+    then said the episode had audio, so the app offered a source it could not play.
+    """
+    episode_id, job_id = _seed(repo)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    # `run` records the failure and re-raises, so the worker logs it — that is deliberate, and the
+    # point of this test is what it recorded on the way out.
+    with pytest.raises(RuntimeError, match="Audio was not downloaded"):
+        ImportPipeline(repo, settings, SilentlyFailingMedia(tmp_path), FakeAI()).run(job_id)
+
+    episode = repo.get_episode(episode_id)
+    assert episode.status == "failed", "a missing file is a failed import, not a ready one"
+    assert episode.audio_path is None, "and no path is recorded for a file that is not there"
+    # The message must name the audio, not a tool three steps downstream.
+    assert "udio" in (episode.error or ""), episode.error
+    assert "ffmpeg" not in (episode.error or "").lower()
+
+
 def test_audio_is_apportioned_into_sentences_when_no_timings_come_back():
     """The fallback used when YouTube rate-limits captions.
 

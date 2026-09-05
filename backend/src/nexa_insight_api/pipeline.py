@@ -218,6 +218,17 @@ class YtDlpMediaAdapter:
         cbr.replace(destination)
         if generated != destination:
             generated.unlink(missing_ok=True)
+        # Verify, rather than assume. yt-dlp can exit 0 having written no mp3 — it leaves the
+        # intermediate .webm behind instead — and every step after this one trusted the file to be
+        # there. The episode was recorded as having audio, ffmpeg was handed a path to nothing, and
+        # the error the learner saw named ffmpeg: three steps past the actual failure.
+        if not destination.exists() or destination.stat().st_size == 0:
+            leftovers = sorted(p.name for p in destination.parent.glob("source.*"))
+            raise RuntimeError(
+                f"Audio download produced no file at {destination.name}. "
+                f"yt-dlp reported success but left {leftovers or 'nothing'} — this usually means the "
+                "audio format could not be converted. Try the import again."
+            )
         return destination
 
     def is_constant_bitrate(self, audio: Path) -> bool:
@@ -911,6 +922,12 @@ class ImportPipeline:
             # import: 15 distinct packet sizes at 103kbps, against 128k CBR.
             if not audio.exists() or not self.media.is_constant_bitrate(audio):
                 self.media.download_audio(episode.source_url, audio)
+            # Recorded only if it is really there. Writing the path unconditionally is what let an
+            # episode claim audio it did not have — the app then offered a source it could not play.
+            if not audio.exists():
+                raise RuntimeError(
+                    "Audio was not downloaded, so this source has nothing to play. Try again."
+                )
             self.repo.set_audio_path(episode.id, str(audio.relative_to(self.settings.data_dir)))
             if job.stage == "audio_backfill":
                 with self.repo.session() as session:
@@ -1066,7 +1083,47 @@ class ImportPipeline:
         """
         if not isinstance(translated, str):
             return False
-        return cls._contains_cjk(translated) or not cls._has_translatable_words(source)
+        if cls._contains_cjk(translated) or not cls._has_translatable_words(source):
+            return True
+        # A line that is a URL, a handle or a bare identifier has nothing to translate, so the model
+        # correctly returns it almost unchanged — 'creativeplanning.com/allin.' came back with only
+        # its full stop converted to '。'. That has no CJK in it, and `_has_translatable_words` sees
+        # "creativeplanning" and "allin" as ordinary words, so the guard called it untranslated,
+        # bisected down to the single line, and failed the WHOLE 684-sentence episode over a URL.
+        #
+        # So: if the model returned essentially what it was given, that is a legitimate answer for
+        # text that needs no translating, not a refusal to translate.
+        return cls._same_but_punctuation(source, translated)
+
+    # A line whose words are all part of a URL, handle or filename. Returned unchanged, that is the
+    # right answer; returned unchanged for prose, it is a failed translation.
+    UNTRANSLATABLE_TOKEN = re.compile(r"^[\w.\-/@:+~%#?&=]+$")
+
+    @classmethod
+    def _same_but_punctuation(cls, source: str, translated: str) -> bool:
+        """Whether this is text the model had no way to translate, returned as-is.
+
+        My first attempt compared the two with punctuation stripped, which also passed 'Goodbye.'
+        coming back as 'Goodbye.' — an English sentence left in English, which is exactly the failure
+        this guard exists for. So the test is on the SOURCE: every token has to look like part of a
+        URL or identifier, with no prose among them.
+        """
+        def core(text: str) -> str:
+            return "".join(ch for ch in text.casefold() if ch.isalnum())
+        stripped = core(source)
+        if not stripped or stripped != core(translated):
+            return False
+        # Split on whitespace only: 'creativeplanning.com/allin.' is one token, 'Goodbye.' is one
+        # token too — the difference is whether it contains the punctuation a URL has.
+        # Requiring "contains punctuation" was not enough: 'Goodbye.' has a full stop, so English
+        # left in English passed. A URL or handle has STRUCTURE — an interior separator with word
+        # characters on both sides ('x.com', 'a/b', '@name', 'a-b') — which a sentence ending in a
+        # full stop does not.
+        tokens = source.split()
+        return bool(tokens) and all(
+            cls.UNTRANSLATABLE_TOKEN.match(token) and re.search(r"\w[./@:\-]\w|^@\w", token)
+            for token in tokens
+        )
 
     def _translate_exact(self, texts: list[str]) -> list[str]:
         try:
