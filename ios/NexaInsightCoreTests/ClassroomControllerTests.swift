@@ -715,6 +715,52 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertEqual(c.floor, .idle)
     }
 
+    func testATeacherToolMidAnswerDoesNotCutTheAnswerOff() {
+        // "老师的话还是被截断了" — and the truncation had nothing to do with resuming playback, which
+        // is what I changed first. `runPlaybackTool` called `stopSpeaking()` unconditionally, which
+        // mutes the remote audio track and cancels the in-flight response. Right for an interrupt;
+        // fatal for a tool the TEACHER called while explaining, because it silences its own voice.
+        //
+        // save_note was already exempted with a comment saying the teacher "is normally mid-sentence
+        // when asked to keep something". The exemption never covered the other tools.
+        let (c, playback, transport, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        XCTAssertEqual(c.floor, .teacher, "the teacher is speaking")
+        let stopsBefore = transport.stoppedSpeaking
+
+        // A seek the teacher decided on while answering.
+        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp,
+                                        args: ToolArguments(numbers: ["seconds": 30]),
+                                        callId: "seek1"))
+
+        XCTAssertEqual(transport.stoppedSpeaking, stopsBefore,
+                       "the teacher keeps speaking through its own tool call")
+        XCTAssertEqual(playback.seeks.last, 30_000, "but the position still moves")
+        // And it must not grab the player floor either: silenced(by: .player) is stopTeacher: true,
+        // so resuming would cut the answer by a different route.
+        XCTAssertEqual(c.floor, .teacher)
+        XCTAssertFalse(playback.didPlay, "the learner presses play, as after every answer")
+    }
+
+    func testTheLearnersOwnCommandStillCutsTheTeacherOff() {
+        // The other half. Typed and spoken commands from the learner must take effect at once — a
+        // "pause" while the teacher rambles is exactly a request to be interrupted.
+        let (c, _, transport, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        let stopsBefore = transport.stoppedSpeaking
+
+        c.runPlaybackTool(.pause_playback, ToolArguments())
+
+        XCTAssertGreaterThan(transport.stoppedSpeaking, stopsBefore,
+                             "the learner's own command silences the teacher")
+    }
+
     func testFindInEpisodeAnswersWithoutMovingThePlayer() {
         // A search ANSWERS; every other tool ACTS. Routing it through runPlaybackTool would put it
         // through the floor machinery for an operation with no position — and it would fall into the

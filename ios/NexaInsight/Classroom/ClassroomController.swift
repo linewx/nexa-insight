@@ -175,7 +175,13 @@ final class ClassroomController: ObservableObject {
         applyFloorEvent(.playbackHeld)
     }
 
-    func runPlaybackTool(_ name: PlaybackTool, _ args: ToolArguments) {
+    /// Run a playback tool.
+    ///
+    /// `fromTeacherMidAnswer` is true when the TEACHER called this while its own answer is still
+    /// playing. It then keeps speaking: silencing it would truncate the explanation the tool was
+    /// part of. False for the learner's own commands, which should take effect immediately.
+    func runPlaybackTool(_ name: PlaybackTool, _ args: ToolArguments,
+                         fromTeacherMidAnswer: Bool = false) {
         let positionMs = cursor()
         let at = activeSentence(sentences, positionMs) ?? sentences.first
 
@@ -203,7 +209,19 @@ final class ClassroomController: ObservableObject {
             return
         }
 
-        transport.stopSpeaking()
+        // Only when the LEARNER is taking over. `stopSpeaking` mutes the remote track and cancels
+        // the in-flight response, which is right for an interrupt and wrong for a tool the teacher
+        // called itself: it cuts its own voice off mid-sentence, so the answer arrives truncated.
+        //
+        // save_note was already exempted for exactly this reason, with a comment saying the teacher
+        // is "normally mid-sentence when asked to keep something". The exemption simply never
+        // covered the rest — and the teacher does call seeks and searches while explaining.
+        //
+        // The learner's own commands still cut it off, because that is the point of them: a typed
+        // or spoken "pause" while the teacher rambles should take effect at once.
+        if !fromTeacherMidAnswer {
+            transport.stopSpeaking()
+        }
         let index = max(0, sentences.firstIndex(where: { $0.id == at?.id }) ?? 0)
         let starts = sentences.map(\.startMs)
         let target = playbackTargetPosition(name, args.numbers, positionMs, index, starts)
@@ -228,7 +246,14 @@ final class ClassroomController: ObservableObject {
             break
         default:
             playback.seek(target)
-            resume()
+            // Move WITHOUT taking the floor when the teacher is mid-answer. `resume()` grants
+            // `.player`, and `silenced(by: .player)` is `stopTeacher: true` — so a seek the teacher
+            // decided on while explaining ("跳到讲 Salesforce 的地方，那里他说…") silenced the very
+            // sentence that announced it. The position moves; the answer finishes; the learner
+            // presses play, as they now do after every answer.
+            if !fromTeacherMidAnswer {
+                resume()
+            }
         }
         onNotice(playbackNotice(name, target))
         if Self.movers.contains(name) {
@@ -347,7 +372,10 @@ final class ClassroomController: ObservableObject {
                                          text: EpisodeSearch.describe(hits))
                 return
             }
-            runPlaybackTool(name, args)
+            // A tool arriving on this path was called by the TEACHER. If its answer is still
+            // playing, keep it playing — the tool is part of the explanation, not a replacement
+            // for it.
+            runPlaybackTool(name, args, fromTeacherMidAnswer: floor == .teacher)
             transport.sendToolResult(callId: callId, ok: true, text: nil)
         }
     }
