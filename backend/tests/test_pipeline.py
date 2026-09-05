@@ -1365,6 +1365,26 @@ def test_a_line_that_will_not_translate_keeps_its_source(repo, tmp_path):
     assert pipeline._untranslated_lines == 1, "and it is counted, so a broken translator is caught"
 
 
+def test_the_data_directory_does_not_depend_on_the_working_directory():
+    """An import failed with "Audio was not downloaded" for a file it had just written.
+
+    `data_dir` defaulted to the relative Path("backend/data"), which resolves differently for every
+    process that loads it. The worker runs from the repo root and got the right place; anything
+    started from `backend/` wrote to `backend/backend/data` instead — so the download succeeded into
+    a directory nobody reads, and the verification that followed correctly reported the file missing.
+
+    Absolute, derived from this file's location, so every process agrees.
+    """
+    from nexa_insight_api.settings import Settings
+    settings = Settings(_env_file=None)
+    assert settings.data_dir.is_absolute(), "a relative data_dir means one path per process"
+    assert settings.data_dir.name == "data"
+    assert settings.data_dir.parent.name == "backend"
+    # And the database has to live in the same place for the same reason: two processes with
+    # different cwds would otherwise open different SQLite files and see different episodes.
+    assert "sqlite:////" in settings.database_url, settings.database_url
+
+
 def test_a_url_does_not_fail_the_whole_episode():
     """A 684-sentence import died on one line: 'creativeplanning.com/allin.'
 
