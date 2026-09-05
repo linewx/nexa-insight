@@ -1306,6 +1306,52 @@ def test_a_chinese_source_skips_translation_and_cards_but_keeps_insight(repo, tm
     assert not repo.list_learning_expressions(episode_id)
 
 
+class SplittingTranslateAI(FakeAI):
+    """Answers a run-on caption with several items, as the real model did."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def translate(self, items):
+        self.calls.append(list(items))
+        if len(items) == 1 and "subgroup" in items[0]:
+            # The measured shape: four translations for one unpunctuated line.
+            return ["社区子群", "资产集合", "项目集合", "正在开展的项目"]
+        return ["译文"] * len(items)
+
+
+def test_a_run_on_caption_answered_as_a_list_is_joined(repo, tmp_path):
+    """A 684-line episode failed on one caption with no punctuation in it.
+
+    'community subgroup set of assets set of projects that are ha…' reads as a LIST, and the model
+    returned four translations for that single line. The bisect cannot help — the batch is already
+    one line — so it raised and lost the whole import.
+
+    Joining them is the sentence it meant. Losing an episode over one run-on caption is the worse
+    outcome by a wide margin.
+    """
+    ai = SplittingTranslateAI()
+    pipeline = ImportPipeline(repo, Settings(_env_file=None, data_dir=tmp_path),
+                             FakeMedia(tmp_path), ai)
+    result = pipeline._translate_exact(["community subgroup set of assets"])
+
+    assert len(result) == 1, "one line in, one line out"
+    assert result[0] == "社区子群资产集合项目集合正在开展的项目"
+
+
+def test_a_single_line_answered_with_junk_still_fails(repo, tmp_path):
+    """The salvage must not accept anything. Joining only helps when the result is a real
+    translation — if the pieces are not Chinese, the line genuinely was not translated."""
+    class EnglishPiecesAI(FakeAI):
+        def translate(self, items):
+            return ["community", "subgroup"] if len(items) == 1 else ["译文"] * len(items)
+
+    pipeline = ImportPipeline(repo, Settings(_env_file=None, data_dir=tmp_path),
+                             FakeMedia(tmp_path), EnglishPiecesAI())
+    with pytest.raises(ValueError):
+        pipeline._translate_exact(["community subgroup and more prose here"])
+
+
 def test_a_url_does_not_fail_the_whole_episode():
     """A 684-sentence import died on one line: 'creativeplanning.com/allin.'
 

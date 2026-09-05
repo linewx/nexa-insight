@@ -1130,6 +1130,16 @@ class ImportPipeline:
             batch = self.ai.translate(texts)
             if len(batch) == len(texts) and all(map(self._is_translated, texts, batch)):
                 return batch
+            # A single sentence answered with SEVERAL items. An unpunctuated caption line —
+            # "community subgroup set of assets set of projects that are ha…" — reads as a list, and
+            # the model returned four translations for it. Bisecting cannot help: the batch is
+            # already one line. Joining them is the sentence it meant, and losing a whole 684-line
+            # episode over one run-on caption is the worse outcome by far.
+            if len(texts) == 1 and len(batch) > 1:
+                joined = "".join(part for part in batch if isinstance(part, str))
+                if self._is_translated(texts[0], joined):
+                    print(f"translation returned {len(batch)} items for one line; joined", flush=True)
+                    return [joined]
             if len(texts) == 1:
                 raise ValueError("Translation API did not return Chinese translation")
         except Exception:
