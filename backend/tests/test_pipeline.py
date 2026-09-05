@@ -309,11 +309,17 @@ def test_pipeline_replaces_english_translation_cache(repo, tmp_path):
     assert [item.chinese for item in repo.list_sentences(episode_id)] == ["中文：Hello world.", "中文：Goodbye."]
 
 
-def test_pipeline_rejects_english_translation_response(repo, tmp_path):
+def test_an_entirely_english_response_still_fails_the_import(repo, tmp_path):
+    """A few untranslated lines are bad captions; ALL of them is a broken translator.
+
+    Now that a single line survives by keeping its source, nothing would otherwise notice a wrong
+    model name or a dead endpoint — the episode would ship an English "translation" in silence. So
+    the failure moved to the whole-episode level, where it can tell the two apart.
+    """
     episode_id, job_id = _seed(repo)
     settings = Settings(_env_file=None, data_dir=tmp_path)
 
-    with pytest.raises(ValueError, match="Chinese translation"):
+    with pytest.raises(ValueError, match="did not return Chinese"):
         ImportPipeline(repo, settings, FakeMedia(tmp_path), EnglishOnlyAI()).run(job_id)
 
     assert repo.get_job(job_id).status == "failed"
@@ -1339,17 +1345,24 @@ def test_a_run_on_caption_answered_as_a_list_is_joined(repo, tmp_path):
     assert result[0] == "社区子群资产集合项目集合正在开展的项目"
 
 
-def test_a_single_line_answered_with_junk_still_fails(repo, tmp_path):
-    """The salvage must not accept anything. Joining only helps when the result is a real
-    translation — if the pieces are not Chinese, the line genuinely was not translated."""
+def test_a_line_that_will_not_translate_keeps_its_source(repo, tmp_path):
+    """One bad line must not cost the episode.
+
+    Three separate lines did exactly that on one 684-sentence import, each visible only after the
+    previous was fixed: a URL, a run-on caption the model answered as a list, and a batch that came
+    back one item short. An episode with a few English lines is far better than one that will not
+    open, and the untranslated line is visible on screen, which is its own report.
+    """
     class EnglishPiecesAI(FakeAI):
         def translate(self, items):
             return ["community", "subgroup"] if len(items) == 1 else ["译文"] * len(items)
 
     pipeline = ImportPipeline(repo, Settings(_env_file=None, data_dir=tmp_path),
                              FakeMedia(tmp_path), EnglishPiecesAI())
-    with pytest.raises(ValueError):
-        pipeline._translate_exact(["community subgroup and more prose here"])
+    pipeline._untranslated_lines = 0
+    source = "community subgroup and more prose here"
+    assert pipeline._translate_exact([source]) == [source], "the source stands in for itself"
+    assert pipeline._untranslated_lines == 1, "and it is counted, so a broken translator is caught"
 
 
 def test_a_url_does_not_fail_the_whole_episode():

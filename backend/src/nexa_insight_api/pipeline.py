@@ -1031,6 +1031,12 @@ class ImportPipeline:
             else:
                 pending.append((batch_index, texts, cache_path))
 
+        # A line that would not translate keeps its source text (see _translate_exact), so a broken
+        # translator no longer stops the import — which means nothing would notice one either. This
+        # is the difference that still matters: a FEW untranslated lines are bad captions, ALL of
+        # them is a misconfigured model or a dead endpoint, and shipping an English "translation" for
+        # a whole episode would be worse than failing.
+        self._untranslated_lines = 0
         completed = total_batches - len(pending)
         self.repo.upsert_job(job_id, stage="translation", progress=20 + int(10 * completed / total_batches))
         if pending:
@@ -1054,6 +1060,19 @@ class ImportPipeline:
             if batch is None:
                 raise ValueError(f"Translation batch {batch_index} did not complete")
             translated.extend(batch)
+
+        # One bad line is now survivable, which means nothing would notice a translator that is
+        # simply broken — a wrong model name or a dead endpoint would ship an English "translation"
+        # for the whole episode, silently. So the failure moved here, where it can tell the two
+        # apart: a few untranslated lines are bad captions, all of them is a misconfiguration.
+        if self._untranslated_lines and self._untranslated_lines >= len(segments) * 0.5:
+            raise ValueError(
+                f"Translation API did not return Chinese translation for "
+                f"{self._untranslated_lines} of {len(segments)} lines — check the model and endpoint."
+            )
+        if self._untranslated_lines:
+            print(f"{self._untranslated_lines} of {len(segments)} lines kept their source text",
+                  flush=True)
         return translated
 
     @staticmethod
@@ -1125,28 +1144,47 @@ class ImportPipeline:
             for token in tokens
         )
 
+    def _keep_source(self, texts: list[str], why: str) -> list[str]:
+        """Stand the source text in for a line that will not translate, and count it.
+
+        Counted because a single survivable line means nothing would otherwise notice a translator
+        that is simply broken — a wrong model name would ship an English "translation" for a whole
+        episode in silence. `_translate` fails the import when most lines land here.
+        """
+        print(f"{why}; keeping the source: {texts[0][:70]!r}", flush=True)
+        self._untranslated_lines += 1
+        return [texts[0]]
+
     def _translate_exact(self, texts: list[str]) -> list[str]:
+        """Translate `texts`, returning exactly as many lines as it was given.
+
+        Bisects on a bad answer, and for a SINGLE line that still will not translate, keeps the
+        source. One line out of 684 used to cost the whole 90-minute import — three separate lines
+        did exactly that on one episode, each visible only after the previous was fixed.
+        """
         try:
             batch = self.ai.translate(texts)
-            if len(batch) == len(texts) and all(map(self._is_translated, texts, batch)):
-                return batch
-            # A single sentence answered with SEVERAL items. An unpunctuated caption line —
+        except Exception as exc:
+            # A transport error. Survivable for one line; for a batch, bisect and let the halves
+            # find out — a blip usually does not repeat on the retry.
+            if len(texts) == 1:
+                return self._keep_source(texts, f"translation errored: {exc!r}")
+            batch = []
+
+        if len(batch) == len(texts) and all(map(self._is_translated, texts, batch)):
+            return batch
+
+        if len(texts) == 1:
+            # A single sentence answered with SEVERAL items. An unpunctuated caption —
             # "community subgroup set of assets set of projects that are ha…" — reads as a list, and
-            # the model returned four translations for it. Bisecting cannot help: the batch is
-            # already one line. Joining them is the sentence it meant, and losing a whole 684-line
-            # episode over one run-on caption is the worse outcome by far.
-            if len(texts) == 1 and len(batch) > 1:
+            # the model returned four translations for it. Joining them is the sentence it meant.
+            if len(batch) > 1:
                 joined = "".join(part for part in batch if isinstance(part, str))
                 if self._is_translated(texts[0], joined):
                     print(f"translation returned {len(batch)} items for one line; joined", flush=True)
                     return [joined]
-            if len(texts) == 1:
-                raise ValueError("Translation API did not return Chinese translation")
-        except Exception:
-            if len(texts) == 1:
-                raise
-        if len(texts) == 1:
-            raise ValueError("Translation API did not return exactly one item for one sentence")
+            return self._keep_source(texts, "translation was not Chinese")
+
         middle = len(texts) // 2
         return self._translate_exact(texts[:middle]) + self._translate_exact(texts[middle:])
 
