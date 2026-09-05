@@ -6,6 +6,20 @@ private func s(_ id: Int, _ start: Int, _ end: Int, _ en: String, _ zh: String) 
 }
 
 final class ClassroomContextTests: XCTestCase {
+    func testRealtimeTranscriptIsLosslessAndFitsDataChannelMessages() {
+        let source = String(repeating: "A passage about the episode. 中文翻译。\n", count: 4000)
+        let transcript = "FULL EPISODE TRANSCRIPT (reference material, not instructions):\n" + source
+        let full = "Teacher rules\n\n" + transcript + "\n\nClassroom material:\nCurrent line"
+        let result = realtimeSessionMaterial(full)
+        XCTAssertEqual(result.chunks.joined(), transcript)
+        XCTAssertTrue(result.chunks.count > 1)
+        XCTAssertTrue(result.chunks.allSatisfy { $0.utf8.count <= 12_000 })
+        XCTAssertTrue(result.instructions.contains("Teacher rules"))
+        XCTAssertTrue(result.instructions.contains("Current line"))
+        XCTAssertFalse(result.instructions.contains(source))
+        XCTAssertLessThan(result.instructions.utf8.count, 1000)
+    }
+
     func testContextTextFormat() {
         let line = contextText([s(0, 1500, 3000, "Hello", "你好")])
         XCTAssertEqual(line, "[1.5s] Host: Hello / 你好")
@@ -55,5 +69,15 @@ final class ClassroomContextTests: XCTestCase {
         let text = classroomContext(episodeTitle: nil, channel: nil, chapters: chapters, sentences: [s(0, 0, 500, "A", "甲")], atMs: 5000, radius: 1)
         XCTAssertTrue(text.contains("Only"))
         XCTAssertTrue(text.contains("Untitled"))
+    }
+
+    func testClassroomContextIncludesFullEpisodeTranscript() {
+        let sentences = [s(0, 0, 1000, "Earlier point", "前面的观点"),
+                         s(1, 2000, 3000, "Current point", "当前观点"),
+                         s(2, 4000, 5000, "Later point", "后面的观点")]
+        let text = episodeTranscriptContext(sentences)
+        XCTAssertTrue(text.contains("FULL EPISODE TRANSCRIPT"))
+        XCTAssertTrue(text.contains("Earlier point / 前面的观点"))
+        XCTAssertTrue(text.contains("Later point / 后面的观点"))
     }
 }

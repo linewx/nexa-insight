@@ -2,7 +2,90 @@ import XCTest
 @testable import NexaInsightCore
 
 @MainActor
+private final class DelayedConnection: FakeTransport, ClassroomConnection {
+    var onFailure: ((String) -> Void)?
+    var completion: CheckedContinuation<Void, Never>?
+    var onEvent: ((RealtimeEvent) -> Void)?
+    var starts = 0
+    var disconnects = 0
+
+    func connect(instructions: String, apiKey: String, workspaceId: String, region: String, model: String,
+                 onEvent: @escaping (RealtimeEvent) -> Void) async throws {
+        starts += 1
+        self.onEvent = onEvent
+        await withCheckedContinuation { completion = $0 }
+    }
+
+    func complete() {
+        completion?.resume()
+        completion = nil
+    }
+
+    func disconnect() { disconnects += 1; isAlive = false }
+}
+
+@MainActor
 final class LiveClassSessionTests: XCTestCase {
+    func testConcurrentReconnectsShareOneConnection() async throws {
+        let connection = DelayedConnection()
+        let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
+            episodeId: 1, playback: FakePlayback(), makeTransport: { connection }, readCredential: { _ in "test" })
+        let first = Task { await session.start() }
+        while connection.completion == nil { await Task.yield() }
+        let second = Task { await session.reconnectIfNeeded() }
+        await Task.yield()
+        XCTAssertFalse(session.connected)
+        XCTAssertTrue(session.connecting)
+        XCTAssertEqual(connection.starts, 1)
+        connection.complete()
+        await first.value
+        await second.value
+        XCTAssertTrue(session.canCarryATurn)
+        session.end()
+        XCTAssertEqual(connection.disconnects, 1)
+    }
+
+    func testExitDuringConnectCannotReviveOldSessionAfterReentry() async throws {
+        let old = DelayedConnection()
+        let new = DelayedConnection()
+        var connections = [old, new]
+        let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
+            episodeId: 1, playback: FakePlayback(), makeTransport: { connections.removeFirst() },
+            readCredential: { _ in "test" })
+        let first = Task { await session.start() }
+        while old.completion == nil { await Task.yield() }
+        let oldController = session.controller
+        session.end()
+        let second = Task { await session.start() }
+        while new.completion == nil { await Task.yield() }
+        new.complete()
+        await second.value
+        old.complete()
+        await first.value
+        old.onEvent?(.responseCreated)
+        XCTAssertTrue(session.canCarryATurn)
+        XCTAssertFalse(session.controller === oldController)
+        XCTAssertEqual(session.controller?.floor, .player)
+        XCTAssertEqual(oldController?.floor, .idle)
+        session.end()
+    }
+
+    func testTransportFailureMakesSessionRetryable() async throws {
+        let connection = DelayedConnection()
+        let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
+            episodeId: 1, playback: FakePlayback(), makeTransport: { connection }, readCredential: { _ in "test" })
+        let start = Task { await session.start() }
+        while connection.completion == nil { await Task.yield() }
+        connection.complete()
+        await start.value
+        session.controller?.enterLive()
+        connection.onFailure?("Stream timeout")
+        XCTAssertFalse(session.canCarryATurn)
+        XCTAssertEqual(session.error, "Stream timeout")
+        XCTAssertEqual(session.controller?.scene, .selfStudy)
+        session.end()
+    }
+
     func testReadinessRequiresKeyAndWorkspace() {
         XCTAssertFalse(LiveClassSession.readiness(dashscopeKey: nil, workspaceId: "w").configured)
         XCTAssertFalse(LiveClassSession.readiness(dashscopeKey: "k", workspaceId: "").configured)
@@ -23,6 +106,27 @@ final class LiveClassSessionTests: XCTestCase {
             startMs: 0)
         XCTAssertTrue(text.contains("Episode: T · C"))
         XCTAssertTrue(text.contains("Classroom material:"))
+    }
+
+    func testWholeEpisodeSurvivesPositionAndInsightRefreshes() throws {
+        let session = LiveClassSession(store: try EpisodeStore(inMemory: true), keychain: KeychainStore(),
+                                       episodeId: 1, playback: FakePlayback())
+        let sentences = (0..<30).map { index in
+            SentenceDTO(id: index, episodeId: 1, chapterId: nil, position: index,
+                        startMs: index * 1000, endMs: index * 1000 + 900,
+                        speaker: nil, sourceText: "Unique passage \(index).", chinese: "")
+        }
+        let initial = session.buildInitialInstructions(episodeTitle: "T", channel: nil,
+                                                       chapters: [], sentences: sentences, startMs: 15000)
+        for focus in ["CURRENT LINE AT 25s", "INSIGHT PAGE"] {
+            let refreshed = composeInstructions(initial, freshContext: focus, scene: .reading)
+            XCTAssertTrue(refreshed.contains("Unique passage 0."))
+            XCTAssertTrue(refreshed.contains("Unique passage 29."))
+            XCTAssertTrue(refreshed.contains(focus))
+            XCTAssertFalse(refreshed.contains("<<< CURRENT LINE"))
+            XCTAssertEqual(refreshed.components(separatedBy: "FULL EPISODE TRANSCRIPT").count, 2)
+            XCTAssertTrue(refreshed.contains(omniDirectInstructions))
+        }
     }
 
     func testNoticeClearsItself() async throws {

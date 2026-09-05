@@ -56,6 +56,14 @@ protocol ClassroomTransport: AnyObject {
     func cancelTurn()
 }
 
+@MainActor
+protocol ClassroomConnection: ClassroomTransport {
+    var onFailure: ((String) -> Void)? { get set }
+    func connect(instructions: String, apiKey: String, workspaceId: String, region: String, model: String,
+                 onEvent: @escaping (RealtimeEvent) -> Void) async throws
+    func disconnect()
+}
+
 enum FreezeReason { case paused, speechStarted }
 
 enum RealtimeEvent {
@@ -85,7 +93,7 @@ final class ClassroomController: ObservableObject {
     // only express two of the three: it made "resume when the teacher finishes" mean
     // "not Live", so reading — where the podcast must stay put — had no way to say so
     // without also inheriting Live's open mic.
-    private(set) var scene: ClassroomScene = .selfStudy
+    @Published private(set) var scene: ClassroomScene = .selfStudy
     // Whether the server VAD actually heard speech during the current push-to-talk
     // hold. A press with nothing said must not hand the floor to the teacher —
     // there will be no response, so the floor would stick on .teacher forever.
@@ -110,6 +118,10 @@ final class ClassroomController: ObservableObject {
     /// than per-scene: self-study resumes after an ordinary answer, which is right, and
     /// this is the one kind of answer it must not resume after.
     private var savedNoteThisTurn = false
+    // ASR and model tool calls can describe the same command in either order.
+    private var handledDirectCommand = false
+    private var playbackToolsThisTurn: Set<PlaybackTool> = []
+    private var ended = false
 
     private let sentences: [SentenceDTO]
     private let playback: Playback
@@ -251,11 +263,13 @@ final class ClassroomController: ObservableObject {
             // decided on while explaining ("跳到讲 Salesforce 的地方，那里他说…") silenced the very
             // sentence that announced it. The position moves; the answer finishes; the learner
             // presses play, as they now do after every answer.
-            if !fromTeacherMidAnswer {
+            if !fromTeacherMidAnswer || (Self.movers.contains(name) && args["play"] != 0) {
                 resume()
             }
         }
-        onNotice(playbackNotice(name, target))
+        let notice = playbackNotice(name, target)
+        onNotice(playback.playbackState == .playing
+                 ? notice.replacingOccurrences(of: " · paused", with: " · playing") : notice)
         if Self.movers.contains(name) {
             let subtitleAt = activeSentence(sentences, target)
             NexaLog.log("SYNC target=\(target)ms playerNow=\(playback.currentMs)ms subtitle#\(subtitleAt?.position ?? -1)@\(subtitleAt?.startMs ?? -1)ms ctxPos=\(target)ms")
@@ -264,8 +278,13 @@ final class ClassroomController: ObservableObject {
     }
 
     func handleRealtimeEvent(_ event: RealtimeEvent) {
+        guard !ended else { return }
         switch event {
         case .speechStarted:
+            if !holdingQuickAsk {
+                handledDirectCommand = false
+                playbackToolsThisTurn.removeAll()
+            }
             // Real speech was detected, so a response is coming — release may hand
             // the floor to the teacher.
             heardSpeechThisTurn = true
@@ -277,6 +296,7 @@ final class ClassroomController: ObservableObject {
             // (quick-ask, reading) already took the floor on press.
             if scene == .live { grantFloor(to: .user, resumeAtMs: nil) }
         case .inputAudioCommitted:
+            guard !handledDirectCommand else { break }
             // The server took the turn, so any pending "nothing was said" verdict is wrong.
             noSpeechGrace?.cancel()
             // The server has taken this turn, so the mic has done its job. In
@@ -317,9 +337,31 @@ final class ClassroomController: ObservableObject {
             }
         case let .inputTranscriptionCompleted(text) where !text.trimmingCharacters(in: .whitespaces).isEmpty:
             transcript.append(TutorTurn(role: .user, text: text))
+            NexaLog.log("ASR command=\(matchDirectCommand(text)?.name.rawValue ?? "discussion") characters=\(text.count)")
+            // Realtime VAD transcription is also a command surface. Short Chinese
+            // commands such as "继续" are intentionally filtered from discussion,
+            // so recognize them here before the model can treat them as filler.
+            if let direct = matchDirectCommand(text) {
+                guard !handledDirectCommand else { break }
+                handledDirectCommand = true
+                noSpeechGrace?.cancel()
+                if playbackToolsThisTurn.contains(direct.name) {
+                    // A model seek already moved the cursor while keeping its voice.
+                    // The learner's pure command must now give playback the floor.
+                    if Self.movers.contains(direct.name) { resume() }
+                } else {
+                    runPlaybackTool(direct.name, ToolArguments(numbers: direct.args))
+                }
+            }
         case .inputTranscriptionCompleted:
             break
         case .responseCreated:
+            noSpeechGrace?.cancel()
+            heardSpeechThisTurn = true
+            guard !handledDirectCommand else {
+                transport.stopSpeaking()
+                break
+            }
             // The teacher is starting to answer, so the floor is theirs. Going
             // through grantFloor applies the mic gate for the current mode: shut in
             // quick-ask (one turn at a time; an open mic would let the teacher's own
@@ -333,9 +375,11 @@ final class ClassroomController: ObservableObject {
             // returned to .idle and playback state after an answer was undefined.
             applyFloorEvent(.turnCommitted)
         case let .responseAudioTranscriptDone(text):
+            guard !handledDirectCommand else { break }
             transcript.append(TutorTurn(role: .assistant, text: text))
             state = classroomReducer(state, .teacherStarted)
         case .responseDone:
+            guard !handledDirectCommand else { break }
             state = classroomReducer(state, .teacherFinished)
             // Teacher finished. Hand the floor on automatically — the earlier bug
             // was that nothing did, so the floor stayed on .teacher and the
@@ -355,6 +399,11 @@ final class ClassroomController: ObservableObject {
             applyFloorEvent(.teacherFinished(resumePlayback: resumes),
                             resumeAtMs: resumes ? frozenPositionMs : nil)
         case let .toolCall(name, args, callId):
+            if handledDirectCommand {
+                transport.sendToolResult(callId: callId, ok: false,
+                                         text: nil)
+                return
+            }
             // Dedupe by call_id so a call echoed in both the dedicated event and
             // response.done runs once. A nil call_id can't be tracked, so it runs
             // (rare, and better than dropping a real command).
@@ -376,22 +425,28 @@ final class ClassroomController: ObservableObject {
             // playing, keep it playing — the tool is part of the explanation, not a replacement
             // for it.
             runPlaybackTool(name, args, fromTeacherMidAnswer: floor == .teacher)
+            if !name.savesANote { playbackToolsThisTurn.insert(name) }
             transport.sendToolResult(callId: callId, ok: true, text: nil)
         }
     }
 
     func sendText(_ message: String) {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isActionableTranscript(trimmed) else { return }
         if let direct = matchDirectCommand(trimmed) {
+            handledDirectCommand = true
+            noSpeechGrace?.cancel()
             transcript.append(TutorTurn(role: .user, text: trimmed))
             // Typed shortcuts only ever carry numbers, so the text half stays empty.
             runPlaybackTool(direct.name, ToolArguments(numbers: direct.args))
             return
         }
+        guard isActionableTranscript(trimmed) else { return }
+        handledDirectCommand = false
+        playbackToolsThisTurn.removeAll()
         // Discussion on the Omni-direct path: freeze if needed, inject the learner
         // turn, and let the spoken model respond.
         if frozenPositionMs == nil { freeze(cursor(), reason: .paused) }
+        onContextRefresh(cursor(), scene)
         state = classroomReducer(state, .discussionStarted)
         transcript.append(TutorTurn(role: .user, text: trimmed))
         transport.injectUserText(trimmed)
@@ -473,8 +528,11 @@ final class ClassroomController: ObservableObject {
     // podcast and the teacher (see silenced(by:)), so a press mid-answer cuts the
     // teacher off and starts listening. There is no separate interrupt button.
     func pressQuickAsk() {
+        noSpeechGrace?.cancel()
         NexaLog.log("pressQuickAsk cursor=\(self.cursor())")
         scene = .selfStudy
+        handledDirectCommand = false
+        playbackToolsThisTurn.removeAll()
         heardSpeechThisTurn = false
         committedThisTurn = false
         savedNoteThisTurn = false
@@ -493,6 +551,7 @@ final class ClassroomController: ObservableObject {
     func releaseQuickAsk() {
         let alreadyCommitted = committedThisTurn
         holdingQuickAsk = false
+        guard !handledDirectCommand else { return }
         // Nothing was said during the hold: there will be no response, so handing
         // the floor to the teacher would strand it there (the .responseDone that
         // normally hands it back never arrives). Just stop where we are — podcast
@@ -550,6 +609,7 @@ final class ClassroomController: ObservableObject {
     // floor back to the podcast, resuming from where it was interrupted — as if
     // the learner never pressed. No teacher turn, no transcript entry.
     func cancelQuickAsk() {
+        noSpeechGrace?.cancel()
         holdingQuickAsk = false
         heardSpeechThisTurn = false
         committedThisTurn = false
@@ -570,8 +630,11 @@ final class ClassroomController: ObservableObject {
     /// centred on. Anchoring to the cursor would answer about a line you are not
     /// looking at.
     func pressReadingAsk(atMs: Int) {
+        noSpeechGrace?.cancel()
         NexaLog.log("pressReadingAsk atMs=\(atMs)")
         scene = .reading
+        handledDirectCommand = false
+        playbackToolsThisTurn.removeAll()
         heardSpeechThisTurn = false
         committedThisTurn = false
         savedNoteThisTurn = false
@@ -592,6 +655,7 @@ final class ClassroomController: ObservableObject {
     /// podcast: reading was not playing it in the first place, and starting playback
     /// because a question was abandoned would be a surprise.
     func cancelReadingAsk() {
+        noSpeechGrace?.cancel()
         holdingQuickAsk = false
         heardSpeechThisTurn = false
         committedThisTurn = false
@@ -607,9 +671,17 @@ final class ClassroomController: ObservableObject {
     // always-on-mic scene, so open the mic explicitly — it's disabled by default
     // (self-study keeps it closed so the podcast can't self-trigger the VAD).
     func enterLive() {
+        noSpeechGrace?.cancel()
+        holdingQuickAsk = false
+        heardSpeechThisTurn = false
+        committedThisTurn = false
+        savedNoteThisTurn = false
         scene = .live
+        handledDirectCommand = false
+        playbackToolsThisTurn.removeAll()
         transport.setTurnMode(.continuous)
         freeze(cursor(), reason: .paused)
+        onContextRefresh(cursor(), scene)
         // The scene is already .live, so grantFloor opens the mic for us — Live keeps
         // it open in every floor state. Entering Live holds playback: nobody has
         // the floor until the learner speaks.
@@ -619,9 +691,23 @@ final class ClassroomController: ObservableObject {
     // Exit: back to self-study — resume the podcast from where it was held and
     // return the transport to push-to-talk (the default outside Live).
     func exitLive() {
+        noSpeechGrace?.cancel()
+        holdingQuickAsk = false
+        heardSpeechThisTurn = false
+        committedThisTurn = false
+        savedNoteThisTurn = false
         let resumeAt = frozenPositionMs
         scene = .selfStudy
         transport.setTurnMode(.pushToTalk)
         applyFloorEvent(.playbackRequested, resumeAtMs: resumeAt)
+    }
+
+    func end() {
+        ended = true
+        noSpeechGrace?.cancel()
+        holdingQuickAsk = false
+        scene = .selfStudy
+        transport.cancelTurn()
+        floor = .idle
     }
 }

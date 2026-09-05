@@ -1,5 +1,26 @@
 import Foundation
 
+/// Cancellation belongs to a response ID: an older response can finish after
+/// the next response has already started.
+struct ResponseLifecycle {
+    private(set) var activeID: String?
+    private var cancelledIDs: Set<String> = []
+
+    mutating func started(_ id: String) { activeID = id }
+
+    mutating func cancel() -> String? {
+        guard let id = activeID else { return nil }
+        cancelledIDs.insert(id)
+        activeID = nil
+        return id
+    }
+
+    mutating func finished(_ id: String, serverCancelled: Bool = false) -> Bool {
+        if activeID == id { activeID = nil }
+        return cancelledIDs.remove(id) != nil || serverCancelled
+    }
+}
+
 /// Which events survive from a response the app cancelled.
 ///
 /// The server reports `response.done` for a cancelled response exactly as it does for one that

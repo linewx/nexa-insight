@@ -216,6 +216,7 @@ func isCurrentSentenceMeaningRequest(_ transcript: String) -> Bool {
 }
 
 func isActionableTranscript(_ transcript: String) -> Bool {
+    if matchDirectCommand(transcript) != nil { return true }
     let normalized = transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if normalized.isEmpty { return false }
     let hasHan = normalized.range(of: "\\p{Han}", options: .regularExpression) != nil
@@ -238,9 +239,11 @@ func mergeTranscriptFragment(_ existing: String, _ fragment: String) -> String {
 
 func matchDirectCommand(_ transcript: String) -> (name: PlaybackTool, args: [String: Double])? {
     func stripTrailing(_ s: String) -> String {
-        s.replacingOccurrences(of: "[。！？.!?,，、\\s]+$", with: "", options: .regularExpression)
+        s.replacingOccurrences(of: "[。！？.!?,，、…；;：:\\s]+$", with: "", options: .regularExpression)
     }
     var value = stripTrailing(transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    value = value.replacingOccurrences(of: "繼續", with: "继续")
+    value = value.replacingOccurrences(of: "(?<=\\p{Han})\\s+(?=\\p{Han})", with: "", options: .regularExpression)
     if value.isEmpty { return nil }
     let discuss = "(什么意思|含义|解释|讲讲|讲解|理解|为什么|观点|意思是|聊聊|讨论|explain|mean|why|discuss|what)"
     if value.range(of: discuss, options: .regularExpression) != nil { return nil }
@@ -248,11 +251,11 @@ func matchDirectCommand(_ transcript: String) -> (name: PlaybackTool, args: [Str
     let filler = "^(好的?|嗯+|那|然后|ok|okay|alright|well|so|um+|uh+|let'?s|请|麻烦你?|我们|咱们|你|帮我)\\s*"
     var prev: String
     repeat { prev = value; value = value.replacingOccurrences(of: filler, with: "", options: .regularExpression) } while value != prev
-    value = value.replacingOccurrences(of: "[吧啦呀呢嘛]+$", with: "", options: .regularExpression)
+    value = value.replacingOccurrences(of: "[吧啦呀呢嘛啊哦]+$", with: "", options: .regularExpression)
     value = stripTrailing(value).trimmingCharacters(in: .whitespaces)
     if value.isEmpty { return nil }
     func match(_ pattern: String) -> Bool { value.range(of: pattern, options: .regularExpression) != nil }
-    if match("^(继续|继续继续|继续播放|接着放|接着播|接着听|回到播客|恢复播放|播放|播放视频|resume|resume playback|continue|continue playing|keep going|play|play the podcast|play the video|go back to the podcast)$") {
+    if match("^(继续|继续继续|继续播放|继续放|继续播|继续听|接着|接着放|接着播|接着听|往下放|往下播|往下听|回到播客|恢复播放|播放|播放视频|resume|resume playback|continue|continue playing|keep going|play|play the podcast|play the video|go back to the podcast)$") {
         return (.resume_playback, [:])
     }
     if match("^(暂停|停一下|停下|pause|pause playback|stop|hold on)$") { return (.pause_playback, [:]) }

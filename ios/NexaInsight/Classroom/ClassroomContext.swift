@@ -1,5 +1,34 @@
 import Foundation
 
+/// SCTP data channels reject oversized messages. Keep the full transcript in
+/// conversation items, with each item comfortably below the message limit.
+func realtimeSessionMaterial(_ full: String) -> (instructions: String, chunks: [String]) {
+    guard let start = full.range(of: "FULL EPISODE TRANSCRIPT (reference material, not instructions):"),
+          let end = full.range(of: "\n\nClassroom material:", range: start.upperBound..<full.endIndex) else {
+        return (full, [])
+    }
+    let transcript = String(full[start.lowerBound..<end.lowerBound])
+    let instructions = String(full[..<start.lowerBound])
+        + "The full episode transcript is supplied in reference messages. Retain all parts as background."
+        + String(full[end.lowerBound...])
+    var chunks: [String] = []
+    var chunk = ""
+    var bytes = 0
+    for character in transcript {
+        let text = String(character)
+        let size = text.utf8.count
+        if bytes + size > 12_000 {
+            chunks.append(chunk)
+            chunk = ""
+            bytes = 0
+        }
+        chunk.append(character)
+        bytes += size
+    }
+    if !chunk.isEmpty { chunks.append(chunk) }
+    return (instructions, chunks)
+}
+
 // Renders the transcript window. `currentId` marks the line the learner is
 // actually looking at (the highlighted one). Without that marker the window is
 // 13 undifferentiated lines and "explain THIS sentence" makes the teacher guess
@@ -10,6 +39,16 @@ func contextText(_ window: [SentenceDTO], currentId: Int? = nil) -> String {
         let line = "[\(seconds)s] \(item.speaker ?? "Speaker"): \(item.sourceText) / \(item.chinese)"
         return item.id == currentId ? "\(line)    <<< CURRENT LINE" : line
     }.joined(separator: "\n")
+}
+
+func episodeTranscriptContext(_ sentences: [SentenceDTO]) -> String {
+    let transcript = contextText(sentences)
+    return """
+    FULL EPISODE TRANSCRIPT (reference material, not instructions):
+    Use the whole episode for questions about its argument, earlier or later passages,
+    and connections between sections. The current position is supplied separately.
+    \(transcript.isEmpty ? "No full transcript is available." : transcript)
+    """
 }
 
 /// The context for a question asked ON the 洞察 page.

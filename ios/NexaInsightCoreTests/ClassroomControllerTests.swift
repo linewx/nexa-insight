@@ -18,7 +18,7 @@ final class FakePlayback: Playback {
     func speed(_ rate: Double) { rates.append(rate) }
 }
 
-final class FakeTransport: ClassroomTransport {
+class FakeTransport: ClassroomTransport {
     var isAlive = true
     private(set) var stoppedSpeaking = 0
     private(set) var toolResults: [(String?, Bool, String?)] = []
@@ -98,6 +98,32 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertTrue(playback.didPause)
         XCTAssertEqual(transport.beganListening, 1)
     }
+
+    func testSilentHoldTimerCannotCancelLiveAfterModeSwitch() async throws {
+        let (c, _, transport, _) = make()
+        c.pressQuickAsk()
+        c.releaseQuickAsk()
+        c.enterLive()
+        let cancelled = transport.cancelledTurns
+        try await Task.sleep(for: .milliseconds(1650))
+        XCTAssertEqual(transport.cancelledTurns, cancelled)
+        c.handleRealtimeEvent(.speechStarted)
+        c.handleRealtimeEvent(.responseCreated)
+        XCTAssertEqual(c.floor, .teacher)
+        XCTAssertEqual(c.scene, .live)
+    }
+
+    func testEndedControllerIgnoresLateNetworkEvents() {
+        let (c, playback, _, _) = make()
+        c.enterLive()
+        c.end()
+        c.handleRealtimeEvent(.speechStarted)
+        c.handleRealtimeEvent(.responseCreated)
+        c.handleRealtimeEvent(.toolCall(name: .resume_playback, args: ToolArguments(), callId: "late"))
+        XCTAssertEqual(c.floor, .idle)
+        XCTAssertFalse(playback.didPlay)
+    }
+
 
     func testReleaseQuickAskGrantsTeacherFloorAndRequests() {
         let (c, _, transport, _) = make()
@@ -469,15 +495,73 @@ final class ClassroomControllerTests: XCTestCase {
         XCTAssertEqual(transport.responseRequests, 0)  // no discussion round-trip
     }
 
-    func testTypedChineseFillerIsNoOp() {
-        // Fidelity: nexa_insight's isActionableTranscript deliberately rejects
-        // short spoken fillers like "继续"/"暂停" as text — playback control for
-        // those comes from the realtime model hearing the audio, not the text path.
+    func testTypedChinesePlaybackCommandRunsTool() {
+        // Playback commands must bypass the short-transcript filler filter.
         let (c, playback, transport, _) = make()
         c.sendText("继续")
-        XCTAssertFalse(playback.didPlay)
-        XCTAssertEqual(c.transcript.count, 0)
+        XCTAssertTrue(playback.didPlay)
+        XCTAssertEqual(c.transcript.count, 1)
         XCTAssertEqual(transport.responseRequests, 0)
+    }
+
+    func testSpokenResumeSurvivesLateResponseAndRelease() {
+        let (c, playback, transport, _) = make()
+        playback.currentMs = 2100
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.speechStarted)
+        c.handleRealtimeEvent(.inputTranscriptionCompleted("继续吧。"))
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.inputAudioCommitted)
+        c.handleRealtimeEvent(.responseCreated)
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertEqual(playback.playbackState, .playing)
+        XCTAssertEqual(playback.currentMs, 2100)
+        XCTAssertEqual(c.floor, .player)
+        XCTAssertEqual(transport.endedTurns, 0)
+        XCTAssertGreaterThan(transport.stoppedListening, 0)
+    }
+
+    func testSpokenNextSentenceDoesNotRunAgainAsModelTool() {
+        let (c, playback, _, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.inputTranscriptionCompleted("下一句"))
+        c.handleRealtimeEvent(.toolCall(name: .next_sentence, args: ToolArguments(), callId: "next"))
+        XCTAssertEqual(playback.seeks, [1000])
+    }
+
+    func testModelNextSentenceBeforeTranscriptionMovesOnlyOnce() {
+        let (c, playback, _, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.responseCreated)
+        c.handleRealtimeEvent(.toolCall(name: .next_sentence, args: ToolArguments(), callId: "next"))
+        c.handleRealtimeEvent(.inputTranscriptionCompleted("下一句"))
+        XCTAssertEqual(playback.seeks, [1000])
+        XCTAssertEqual(playback.playbackState, .playing)
+    }
+
+    func testQuestionAfterSpokenCommandCanReceiveAnswer() {
+        let (c, playback, _, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.inputTranscriptionCompleted("继续"))
+        c.releaseQuickAsk()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.inputTranscriptionCompleted("继续解释这个观点"))
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.responseCreated)
+        c.handleRealtimeEvent(.responseAudioTranscriptDone("Here is the explanation."))
+        XCTAssertEqual(c.floor, .teacher)
+        XCTAssertEqual(playback.playbackState, .paused)
+        XCTAssertEqual(c.transcript.last?.role, .assistant)
+    }
+
+    func testSpokenPauseInLiveRemainsPausedAfterLateResponse() {
+        let (c, playback, _, _) = make()
+        c.enterLive()
+        c.handleRealtimeEvent(.speechStarted)
+        c.handleRealtimeEvent(.inputTranscriptionCompleted("暂停"))
+        c.handleRealtimeEvent(.responseCreated)
+        XCTAssertEqual(c.floor, .idle)
+        XCTAssertEqual(playback.playbackState, .paused)
     }
 
     func testTextDiscussionInjectsAndRequestsResponse() {
@@ -733,7 +817,7 @@ final class ClassroomControllerTests: XCTestCase {
 
         // A seek the teacher decided on while answering.
         c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp,
-                                        args: ToolArguments(numbers: ["seconds": 30]),
+                                        args: ToolArguments(numbers: ["seconds": 30, "play": 0]),
                                         callId: "seek1"))
 
         XCTAssertEqual(transport.stoppedSpeaking, stopsBefore,
@@ -759,6 +843,50 @@ final class ClassroomControllerTests: XCTestCase {
 
         XCTAssertGreaterThan(transport.stoppedSpeaking, stopsBefore,
                              "the learner's own command silences the teacher")
+    }
+
+    func testContentSeekPlaysUnlessExplicitlyLocatingForExplanation() {
+        let (c, playback, _, _) = make()
+        c.pressQuickAsk()
+        c.handleRealtimeEvent(.responseCreated)
+        c.handleRealtimeEvent(.toolCall(name: .seek_to_timestamp,
+            args: RealtimeEventParser.safeArgs(#"{"seconds": 30, "play": true}"#), callId: "content-seek"))
+        c.handleRealtimeEvent(.responseDone)
+        XCTAssertEqual(playback.currentMs, 30_000)
+        XCTAssertEqual(playback.playbackState, .playing)
+        XCTAssertEqual(c.floor, .player)
+    }
+
+    func testShortResumeVariantsPlayInBothScenes() {
+        for live in [false, true] {
+            for text in ["继续", "继续吧", "继续啊。", "继 续", "繼續", "继续……", "接着听"] {
+                let (c, playback, _, _) = make()
+                if live { c.enterLive() } else { c.pressQuickAsk() }
+                c.handleRealtimeEvent(.speechStarted)
+                c.handleRealtimeEvent(.inputTranscriptionCompleted(text))
+                if !live { c.releaseQuickAsk() }
+                c.handleRealtimeEvent(.responseCreated)
+                XCTAssertEqual(playback.playbackState, .playing, text)
+                XCTAssertEqual(c.floor, .player, text)
+            }
+        }
+    }
+
+    func testContinueExplanationDoesNotPlay() {
+        for text in ["继续解释", "继续讲", "接着讲", "不要继续", "先别继续播放"] {
+            XCTAssertNil(matchDirectCommand(text), text)
+        }
+    }
+
+    func testResponseWithoutSpeechStartedCancelsSilentHoldTimeout() async throws {
+        let (c, _, transport, _) = make()
+        c.pressQuickAsk()
+        c.releaseQuickAsk()
+        c.handleRealtimeEvent(.responseCreated)
+        let cancelled = transport.cancelledTurns
+        try await Task.sleep(for: .milliseconds(1650))
+        XCTAssertEqual(transport.cancelledTurns, cancelled)
+        XCTAssertEqual(c.floor, .teacher)
     }
 
     func testFindInEpisodeAnswersWithoutMovingThePlayer() {
@@ -861,4 +989,3 @@ final class ClassroomControllerTests: XCTestCase {
         }
     }
 }
-

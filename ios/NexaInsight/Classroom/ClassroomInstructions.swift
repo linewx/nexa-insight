@@ -12,6 +12,7 @@ let omniDirectInstructions = [
     "You hear the learner's real voice, so you may comment on pronunciation, intonation, and fluency when they ask (e.g. '我发音怎么样', 'how's my accent') — give concrete, specific notes, not just praise.",
     "You control the podcast player with the provided tools. Call resume_playback / pause_playback / previous_sentence / next_sentence / seek_to_timestamp when the learner asks, in any language. Do NOT narrate the action; just call the tool.",
     "The learner controls the pace: do not resume playback on your own unless the learner asks. When they interrupt or speak, stop talking and listen.",
+    "A standalone '继续', '继续吧', '接着听', 'continue', or 'resume' means resume_playback. '继续解释' or 'continue explaining' asks you to continue the explanation instead. The full episode transcript remains background when the current position changes; use it to connect passages and answer whole-episode questions.",
 ].joined(separator: " ")
 
 // The playback-ownership + disambiguation rules the backend baked into the class
@@ -126,13 +127,13 @@ is boilerplate, not the content being taught.
 """
 
 
-func baseClassroomInstructions(material: String, materialKind: String = "native") -> String {
+func baseClassroomInstructions(material: String, materialKind: String = "native", episodeMaterial: String = "") -> String {
     // Classified at import from the first 60 lines (see the backend's classify_material) and
     // until now used by nothing: batch extraction was its only consumer and that is gone.
     // It decides what a SAVED CARD should contain, which is the one place the two material
     // types genuinely need different instructions.
     let cardRules = materialKind == "teaching" ? teachingCardRules : nativeCardRules
-    return "\(teacherStyle)\n\(playbackDisambiguationRules)\n\n\(noteTakingRules)\n\n\(cardRules)\n\nClassroom material:\n\(material)"
+    return "\(teacherStyle)\n\(playbackDisambiguationRules)\n\n\(omniDirectInstructions)\n\n\(noteTakingRules)\n\n\(cardRules)\n\n\(episodeMaterial)\n\nClassroom material:\n\(material)"
 }
 
 // Port of classroomConfig.ts BAKED_CONTEXT_MARKER + stableInstructions.
@@ -149,7 +150,7 @@ func stableInstructions(_ full: String) -> String {
 }
 
 func composeInstructions(_ full: String, freshContext: String, scene: ClassroomScene = .selfStudy) -> String {
-    let base = "\(stableInstructions(full))\n\nCURRENT podcast position (this is the ONLY current context; ignore any earlier transcript window):\n\(freshContext)"
+    let base = "\(stableInstructions(full))\n\nCURRENT podcast position (this is the ONLY current context for the learner's focus; replace earlier position windows, but retain the full episode transcript and our conversation):\n\(freshContext)"
     guard scene == .reading else { return base }
     return "\(base)\n\n\(readingDirectness)"
 }
@@ -180,17 +181,18 @@ let realtimePlaybackTools: [[String: Any]] = [
     ["type": "function", "name": "previous_sentence", "description": "Go to the previous transcript sentence.", "parameters": ["type": "object", "properties": [:]]],
     ["type": "function", "name": "next_sentence", "description": "Go to the next transcript sentence.", "parameters": ["type": "object", "properties": [:]]],
     ["type": "function", "name": "seek_to_timestamp", "description": "Jump to an absolute position in the episode.",
-     "parameters": ["type": "object", "properties": ["seconds": ["type": "number", "description": "Seconds from the episode start."]], "required": ["seconds"]]],
+     "parameters": ["type": "object", "properties": [
+        "seconds": ["type": "number", "description": "Seconds from the episode start."],
+        "play": ["type": "boolean", "description": "True for a request to jump and listen (default). False only if the learner wants to stay paused, or you are locating a passage while continuing an explanation."],
+     ], "required": ["seconds", "play"]]],
     // Seeking by CONTENT, which is what a learner actually asks for: "jump to the part about
     // Salesforce", not "seek to 12 minutes 1 second".
     //
-    // Needed because the context window is ±6 sentences plus chapter titles, so the teacher cannot
-    // otherwise know where a topic is discussed. Measured on one episode: the chapter outline names
+    // Search verifies a precise location in the full transcript. Measured on one episode: the chapter outline names
     // Salesforce at 9m, but that chapter OPENS with Nvidia and the real discussion starts at 12m01s
     // — so the outline alone sends the learner three minutes early.
     //
-    // Search runs on device against the full transcript, which the app already holds. Sending 25k
-    // tokens of transcript to a realtime session on every context refresh is what this avoids.
+    // Search runs on device and returns a compact set of candidate passages with timestamps.
     ["type": "function", "name": "find_in_episode",
      "description": "Find where something is discussed in this episode. Use this BEFORE seeking when the learner names a topic, person or company rather than a time — it returns candidate positions with surrounding text so you can pick the right one, then call seek_to_timestamp. Do not guess a timestamp from the chapter outline: a chapter titled for a topic often opens with something else.",
      "parameters": ["type": "object", "properties": [

@@ -2,6 +2,26 @@ import XCTest
 @testable import NexaInsightCore
 
 final class CancelledResponseTests: XCTestCase {
+    func testOldCancelledResponseDoesNotClearNewActiveResponse() {
+        var lifecycle = ResponseLifecycle()
+        lifecycle.started("old")
+        XCTAssertEqual(lifecycle.cancel(), "old")
+        lifecycle.started("new")
+        XCTAssertTrue(lifecycle.finished("old"))
+        XCTAssertEqual(lifecycle.activeID, "new")
+        XCTAssertFalse(lifecycle.finished("new"))
+        XCTAssertNil(lifecycle.activeID)
+    }
+
+    func testNewResponseCanFinishBeforeCancelledResponse() {
+        var lifecycle = ResponseLifecycle()
+        lifecycle.started("old")
+        _ = lifecycle.cancel()
+        lifecycle.started("new")
+        XCTAssertFalse(lifecycle.finished("new"))
+        XCTAssertTrue(lifecycle.finished("old"))
+    }
+
     func testATurnNobodyIsWaitingForDoesNotEndTheTurn() {
         // Observed on device: pressQuickAsk at 95800ms, then response.cancel, then the
         // cancelled turn's response.done four events later — closing out the hold that had

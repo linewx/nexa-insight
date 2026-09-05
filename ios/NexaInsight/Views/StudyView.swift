@@ -16,6 +16,7 @@ struct StudyView: View {
     /// Incremented by "Back to current" so the transcript scrolls on the press itself.
     @State private var syncRequest = 0
     @State private var liveSession: LiveClassSession?
+    @State private var sessionStartTask: Task<Void, Never>?
     // How far the screen is dragged during a back-swipe. Drives the follow-the-finger
     // offset so the gesture has the visual feedback the system one would give.
     @State private var backSwipeOffset: CGFloat = 0
@@ -253,6 +254,7 @@ struct StudyView: View {
             // still showing turns from last time. Nothing is lost by closing now: cards
             // are written the moment you ask for one, not on the way out.
             finishConversation()
+            endDiscussion()
         }
         .onChange(of: annotated) { _, showing in
             // A card left open with no highlight to anchor it would float free.
@@ -750,7 +752,7 @@ struct StudyView: View {
         let session = LiveClassSession(
             store: store, keychain: KeychainStore(), episodeId: episodeId, playback: player)
         liveSession = session
-        Task { await session.start() }
+        sessionStartTask = Task { await session.start() }
     }
 
     // Playback driven by the learner (play button, scrubber, tapping a line).
@@ -782,6 +784,8 @@ struct StudyView: View {
     }
 
     private func endDiscussion() {
+        sessionStartTask?.cancel()
+        sessionStartTask = nil
         liveSession?.end()
         liveSession = nil
     }
@@ -1495,7 +1499,7 @@ private struct DiscussionBar: View {
             if let controller = session.controller {
                 ConnectedBarContent(
                     controller: controller,
-                    notice: session.notice,
+                    notice: session.error ?? session.notice,
                     connected: session.connected,
                     livePositionMs: player.currentMs,
                     // Live is gated on headphones; read the route at tap time
@@ -1519,8 +1523,11 @@ private struct DiscussionBar: View {
                     onPlayIntent: { controller.userStartedPlayback() },
                     onPauseIntent: { controller.userPausedPlayback() }
                 )
+                .id(ObjectIdentifier(controller))
             } else {
-                ConnectingBar(error: session.error)
+                ConnectingBar(error: session.error, onRetry: {
+                    Task { await session.reconnectIfNeeded() }
+                })
             }
         }
         // Content stays readable-width and centered on wide screens, but the
@@ -1587,7 +1594,7 @@ private struct ConnectedBarContent: View {
     // `live` = in continuous Live mode; the big button becomes a passive
     // indicator and the Live pill is the way back out. `talking` = a
     // hold-to-talk press is in progress.
-    @State private var live = false
+    private var live: Bool { controller.scene == .live }
     @State private var talking = false
     // Unplugging headphones mid-Live would drop straight into the feedback loop
     // (teacher's voice → mic → VAD → another answer), so leaving the headphone
@@ -1615,7 +1622,6 @@ private struct ConnectedBarContent: View {
         .onReceive(routeChanged) { _ in
             guard live, !liveAvailable() else { return }
             controller.exitLive()
-            live = false
             onLiveUnavailable()
         }
     }
@@ -1826,7 +1832,10 @@ private struct ConnectedBarContent: View {
         if live {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             controller.exitLive()
-            live = false
+            return
+        }
+        guard canCarryATurn() else {
+            onCannotCarry()
             return
         }
         guard liveAvailable() else {
@@ -1836,7 +1845,6 @@ private struct ConnectedBarContent: View {
         }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         controller.enterLive()
-        live = true
     }
 
     private var statusDotColor: Color {
@@ -1906,6 +1914,7 @@ private struct ConnectedBarContent: View {
 // persistent and retries on the next screen visit.
 private struct ConnectingBar: View {
     let error: String?
+    var onRetry: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -1919,6 +1928,12 @@ private struct ConnectingBar: View {
                 .foregroundStyle(error == nil ? NXColor.textSecondary(scheme) : NXColor.error)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
+            if error != nil {
+                Button(action: onRetry) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("重新连接老师")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 58)

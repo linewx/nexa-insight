@@ -8,6 +8,12 @@ final class LiveClassSession: ObservableObject, Identifiable {
     @Published var notice = ""
     @Published var error: String?
     @Published var connected = false
+    @Published private(set) var connecting = false
+    private var connectionTask: Task<Void, Never>?
+    private var connectionGeneration = UUID()
+    private var transport: (any ClassroomConnection)?
+    private let makeTransport: @MainActor () -> any ClassroomConnection
+    private let readCredential: (SecretKey) -> String?
     /// Bumped on every saved note. The study screen watches it to rebuild the card
     /// indexes: a card written to the database that the rows never re-read stays
     /// invisible until the episode is reopened, which is exactly how the delete bug
@@ -22,7 +28,6 @@ final class LiveClassSession: ObservableObject, Identifiable {
     private var noticeExpiry: Task<Void, Never>?
 
     private let store: EpisodeStore
-    private let keychain: KeychainStore
     private let episodeId: Int
     private let playback: Playback
 
@@ -40,8 +45,12 @@ final class LiveClassSession: ObservableObject, Identifiable {
     var region = "cn-beijing"
     var model = "qwen3.5-omni-plus-realtime"
 
-    init(store: EpisodeStore, keychain: KeychainStore, episodeId: Int, playback: Playback) {
-        self.store = store; self.keychain = keychain; self.episodeId = episodeId; self.playback = playback
+    init(store: EpisodeStore, keychain: KeychainStore, episodeId: Int, playback: Playback,
+         makeTransport: @escaping @MainActor () -> any ClassroomConnection = { QwenRealtimeTransport() },
+         readCredential: ((SecretKey) -> String?)? = nil) {
+        self.store = store; self.episodeId = episodeId; self.playback = playback
+        self.makeTransport = makeTransport
+        self.readCredential = readCredential ?? { keychain.get($0) }
     }
 
     static func readiness(dashscopeKey: String?, workspaceId: String?) -> Readiness {
@@ -75,7 +84,8 @@ final class LiveClassSession: ObservableObject, Identifiable {
 
     func buildInitialInstructions(episodeTitle: String?, channel: String?, chapters: [ChapterDTO], sentences: [SentenceDTO], startMs: Int) -> String {
         let material = classroomContext(episodeTitle: episodeTitle, channel: channel, chapters: chapters, sentences: sentences, atMs: startMs)
-        return baseClassroomInstructions(material: material, materialKind: materialKind)
+        return baseClassroomInstructions(material: material, materialKind: materialKind,
+                                         episodeMaterial: episodeTranscriptContext(sentences))
     }
 
     /// Set while the 洞察 page is open, so a question asked there is answered about the PAGE.
@@ -92,25 +102,51 @@ final class LiveClassSession: ObservableObject, Identifiable {
         return classroomContext(episodeTitle: episodeTitle, channel: channel, chapters: chapters, sentences: sentences, atMs: positionMs)
     }
 
-#if os(iOS)
-    private var transport: QwenRealtimeTransport?
-
     // Starts wherever playback currently is. There is no anchor parameter by
     // design: discussion is always about the moment the learner is in.
     func start() async {
+        guard !Task.isCancelled else { return }
+        guard !canCarryATurn else { return }
+        if let connectionTask {
+            await connectionTask.value
+            return
+        }
+        controller?.end()
+        transport?.disconnect()
+        connected = false
+        let generation = UUID()
+        connectionGeneration = generation
+        connecting = true
+        let task = Task { await self.connect(generation: generation) }
+        connectionTask = task
+        await task.value
+        guard connectionGeneration == generation else { return }
+        connectionTask = nil
+        connecting = false
+    }
+
+    private func connect(generation: UUID) async {
+        guard !Task.isCancelled, connectionGeneration == generation else { return }
         error = nil
-        let key = keychain.get(.dashscopeKey)
-        let workspace = keychain.get(.dashscopeWorkspaceId)
+        let key = readCredential(.dashscopeKey)
+        let workspace = readCredential(.dashscopeWorkspaceId)
         let readiness = Self.readiness(dashscopeKey: key, workspaceId: workspace)
         guard readiness.configured, let key, let workspace else { error = readiness.message; return }
         loadFromStore()
         // The mic opens while the source is still playing, so the audio session
         // has to allow recording with echo cancellation before we connect.
-        playback.configureAudioSession(voiceMode: true)
+        configureVoiceAudio(true)
         let startMs = classroomCursorPosition(playback.currentMs, nil, 0)
         let instructions = buildInitialInstructions(episodeTitle: episodeTitle, channel: channel, chapters: chapters, sentences: sentences, startMs: startMs)
-        let transport = QwenRealtimeTransport()
+        let transport = makeTransport()
         self.transport = transport
+        transport.onFailure = { [weak self] message in
+            guard let self, self.connectionGeneration == generation else { return }
+            self.connected = false
+            self.error = message
+            self.controller?.end()
+            self.configureVoiceAudio(false)
+        }
         let controller = ClassroomController(
             sentences: sentences, playback: playback, transport: transport,
             onNotice: { [weak self] in self?.showNotice($0) },
@@ -126,28 +162,50 @@ final class LiveClassSession: ObservableObject, Identifiable {
         // source keeps playing. The learner speaking is what pauses it, and the
         // model is told the position it was interrupted at.
         do {
+            transport.setTurnMode(.pushToTalk)
             try await transport.connect(instructions: instructions, apiKey: key, workspaceId: workspace,
-                                        region: region, model: model) { [weak controller] event in
-                Task { @MainActor in controller?.handleRealtimeEvent(event) }
+                                        region: region, model: model) { [weak self, weak controller] event in
+                guard let self, self.connectionGeneration == generation else { return }
+                controller?.handleRealtimeEvent(event)
+            }
+            guard !Task.isCancelled, connectionGeneration == generation else {
+                transport.disconnect()
+                return
             }
             connected = true
             // Default to push-to-talk: a hold starts a turn, release ends it.
             // Sliding to lock later flips this to continuous.
             transport.setTurnMode(.pushToTalk)
         } catch {
+            guard connectionGeneration == generation else { return }
+            controller.end()
+            transport.disconnect()
             self.error = error.localizedDescription
             connected = false
+            configureVoiceAudio(false)
         }
     }
 
     func end() {
+        connectionGeneration = UUID()
+        connectionTask?.cancel()
+        connectionTask = nil
+        connecting = false
         connected = false
+        controller?.end()
+        transport?.disconnect()
         controller = nil
         transport = nil
         noticeExpiry?.cancel()
         notice = ""
         // Give the source its full-fidelity playback session back.
-        playback.configureAudioSession(voiceMode: false)
+        configureVoiceAudio(false)
+    }
+
+    private func configureVoiceAudio(_ enabled: Bool) {
+#if os(iOS)
+        playback.configureAudioSession(voiceMode: enabled)
+#endif
     }
 
     /// Writes a note the teacher was asked to keep.
@@ -211,9 +269,12 @@ final class LiveClassSession: ObservableObject, Identifiable {
     /// moment someone asks something, and reconnecting in the background would keep a
     /// mic-capable session alive for a screen nobody is talking to.
     func reconnectIfNeeded() async {
+        if let connectionTask {
+            await connectionTask.value
+            return
+        }
         guard !canCarryATurn else { return }
         end()
         await start()
     }
-#endif
 }
