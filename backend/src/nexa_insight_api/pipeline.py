@@ -64,6 +64,14 @@ def chinese_prose(value: object) -> str | None:
 class MediaAdapter(Protocol):
     def metadata(self, url: str) -> MediaMetadata: ...
     def stream(self, url: str) -> tuple[str | None, datetime | None]: ...
+    # These four sat INSIDE YtDlpMediaAdapter, after the real implementations. Python keeps the last
+    # definition, so every one of them resolved to `...` — `download_audio` returned None having done
+    # nothing, and the verification inside the real function never ran. Present since the first
+    # commit, and only visible once something checked whether the file existed.
+    def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
+    def download_audio(self, url: str, destination: Path) -> Path: ...
+    def is_constant_bitrate(self, audio: Path) -> bool: ...
+    def split_audio(self, audio: Path, output_dir: Path) -> list[Path]: ...
 class AIAdapter(Protocol):
     def transcribe(self, path: Path, offset_ms: int) -> list[TranscriptSegment]: ...
     def translate(self, texts: list[str]) -> list[str]: ...
@@ -289,11 +297,6 @@ class YtDlpMediaAdapter:
         # which names an OpenAI model against a DashScope endpoint and dies on a 404 two layers from
         # the real problem — take any caption file that exists.
         return next(iter(sorted(destination.glob("captions.*.json3"))), None)
-
-    def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]: ...
-    def download_audio(self, url: str, destination: Path) -> Path: ...
-    def is_constant_bitrate(self, audio: Path) -> bool: ...
-    def split_audio(self, audio: Path, output_dir: Path) -> list[Path]: ...
 
     def captions(self, url: str, destination: Path) -> tuple[list[TranscriptSegment], list[TranscriptSegment] | None]:
         # Only the source-language track is fetched now. The zh-Hans auto-caption
@@ -1468,23 +1471,6 @@ class ImportPipeline:
     # Beyond this an "example" is a passage, not a sentence, and shows the learner nothing
     # about the expression's shape.
     MAX_EXAMPLE_CHARS = 220
-
-    @classmethod
-    def _example_line(cls, text: str, raw: object) -> str:
-        """One sentence containing the expression, or a hard-capped fallback.
-
-        The example is the one section a card cannot do without, so unlike 这集里 this cannot
-        simply be dropped — but it must not be a paragraph either. When no sentence contains the
-        expression, the raw text is truncated rather than stored whole.
-        """
-        passage = str(raw or "")
-        line = cls._source_line(text, passage)
-        if line and len(line) <= cls.MAX_EXAMPLE_CHARS:
-            return line
-        candidate = line or " ".join(cls.SPEAKER_MARKER.sub(" ", passage).split())
-        if len(candidate) <= cls.MAX_EXAMPLE_CHARS:
-            return candidate
-        return candidate[: cls.MAX_EXAMPLE_CHARS].rsplit(" ", 1)[0] + "…"
 
     # Words that mean the sentence is talking ABOUT this episode rather than defining the
     # expression: "此处…", "说话人用它表示…". A company name is NOT evidence — "frontier labs"

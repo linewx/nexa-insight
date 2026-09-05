@@ -1365,6 +1365,32 @@ def test_a_line_that_will_not_translate_keeps_its_source(repo, tmp_path):
     assert pipeline._untranslated_lines == 1, "and it is counted, so a broken translator is caught"
 
 
+def test_no_class_defines_a_method_twice():
+    """`download_audio` returned None having done nothing, and had since the first commit.
+
+    Four Protocol stubs — `captions`, `download_audio`, `is_constant_bitrate`, `split_audio` — sat
+    INSIDE YtDlpMediaAdapter, after the real implementations. Python keeps the last definition, so
+    every one of them resolved to `...`. The download never ran, the verification inside the real
+    function never ran, and the whole 124-test suite passed throughout: the fakes override these
+    methods, so no test ever called the shadowed ones.
+
+    This is the fifth time this session a definition landed in the wrong class. A duplicate is always
+    a mistake here, and unlike the others it is mechanically detectable.
+    """
+    import ast
+    source = Path("src/nexa_insight_api/pipeline.py").read_text()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        names = [child.name for child in node.body
+                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        duplicates = {name for name in names if names.count(name) > 1}
+        assert not duplicates, (
+            f"{node.name} defines {sorted(duplicates)} more than once — the later definition wins, "
+            "and a stub silently replaces the implementation"
+        )
+
+
 def test_the_data_directory_does_not_depend_on_the_working_directory():
     """An import failed with "Audio was not downloaded" for a file it had just written.
 
